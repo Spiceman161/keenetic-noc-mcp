@@ -4,6 +4,7 @@ import { capList } from '../shape/budget.js';
 import { projectInterface } from '../shape/project.js';
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 import { describeWrite, verifiedWrite } from './write.js';
+import { GuardError, VerificationError } from '../router/errors.js';
 
 type InterfaceKind = 'all' | 'wan' | 'lan' | 'wifi' | 'vpn' | 'bridge';
 
@@ -133,25 +134,50 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
         'the interface carries with get_interface before calling this.',
       inputSchema: {
         name: z.string().describe('Interface id from list_interfaces.'),
-        state: z.enum(['up', 'down']).describe('Desired administrative state.')
+        state: z.enum(['up', 'down']).describe('Desired administrative state.'),
+        dry_run: z.boolean().optional().default(true),
+        confirm: z.boolean().optional().default(false)
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
     },
-    guard(async ({ name, state }): Promise<ToolResult> => {
-      const snapshot = await ctx.backup.ensure();
+    guard(async ({ name, state, dry_run, confirm }): Promise<ToolResult> => {
       const body =
         state === 'up'
           ? { interface: { [name]: { up: true } } }
           : { interface: { [name]: { up: { no: true } } } };
-
-      await verifiedWrite({
-        apply: () => ctx.client.rci.post(body),
-        readBack: () => readInterface(ctx, name),
-        check: record => record['state'] === state,
-        what: `${name} state=${state}`
-      });
-
-      return ok(describeWrite({ interface: name, state }, snapshot.path));
+      const base = { tool: 'set_interface_state', dryRun: dry_run, confirmed: confirm, risk: state === 'down' ? 'high' : 'medium', target: name, planned: body };
+      if (ctx.protectedInterfaces?.has(name)) { await ctx.audit?.write({ ...base, success: false, error: 'protected interface' }); throw new GuardError(`Interface "${name}" is protected.`); }
+      if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true, verified: false }); return ok({ dryRun: true, target: name, plannedRciRequest: body, expectedVerification: `state=${state}`, risk: base.risk }); }
+      if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real mutation requires confirm=true.'); }
+      try {
+        const before = await readInterface(ctx, name);
+        if (state === 'down' && before['defaultgw'] === true && !ctx.allowDestructive) throw new GuardError(`Disabling default-gateway interface "${name}" requires KEENETIC_ALLOW_DESTRUCTIVE=true.`);
+        const snapshot = await ctx.backup.ensure();
+        const after = await verifiedWrite({ apply: () => ctx.client.rci.post(body), readBack: () => readInterface(ctx, name), check: r => r['state'] === state, what: `${name} state=${state}` });
+        await ctx.audit?.write({ ...base, before, after, verified: true, saved: false, backupPath: snapshot.path, success: true });
+        return ok(describeWrite({ interface: name, state }, snapshot.path));
+      } catch (error) { await ctx.audit?.write({ ...base, verified: false, success: false, error: (error as Error).message }); throw error; }
     })
   );
+
+  server.registerTool('restart_interface', {
+    title: 'Restart an interface', description: 'Bounded down/up cycle with verification. Previewed by default.',
+    inputSchema: { name: z.string(), dry_run: z.boolean().optional().default(true), confirm: z.boolean().optional().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+  }, guard(async ({ name, dry_run, confirm }) => {
+    const planned = [{ interface: { [name]: { up: { no: true } } } }, { interface: { [name]: { up: true } } }];
+    const base = { tool: 'restart_interface', dryRun: dry_run, confirmed: confirm, risk: 'high', target: name, planned };
+    if (ctx.protectedInterfaces?.has(name)) { await ctx.audit?.write({ ...base, success: false, error: 'protected interface' }); throw new GuardError(`Interface "${name}" is protected.`); }
+    if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequests: planned, expectedVerification: 'down then final state up', risk: 'high' }); }
+    if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real mutation requires confirm=true.'); }
+    let backupPath: string | null = null;
+    try { const before = await readInterface(ctx, name);
+      if (before['defaultgw'] === true && !ctx.allowDestructive) throw new GuardError(`Restarting default-gateway interface "${name}" requires KEENETIC_ALLOW_DESTRUCTIVE=true.`);
+      const snapshot = await ctx.backup.ensure(); backupPath = snapshot.path;
+      await ctx.client.rci.post(planned[0]); if ((await readInterface(ctx, name))['state'] !== 'down') throw new VerificationError(`${name} did not go down.`);
+      await new Promise(resolve => setTimeout(resolve, 500)); await ctx.client.rci.post(planned[1]); const after = await readInterface(ctx, name);
+      if (after['state'] !== 'up') throw new VerificationError(`${name} did not return up.`);
+      await ctx.audit?.write({ ...base, after, verified: true, saved: false, backupPath, success: true }); return ok(describeWrite({ interface: name, action: 'restart' }, backupPath));
+    } catch (error) { await ctx.audit?.write({ ...base, success: false, error: (error as Error).message, backupPath }); throw error; }
+  }));
 }

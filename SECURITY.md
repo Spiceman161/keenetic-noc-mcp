@@ -2,25 +2,33 @@
 
 ## What this software can reach
 
-It authenticates to a router as an administrator and can change its
+It authenticates to a router as a dedicated operator and can change its
 configuration. That is the point of it, and it is also the whole risk: anything
 that can talk to this server can reconfigure the network it runs on.
 
-## Where the password goes
+## Router passwords and profiles
 
-The setup wizard stores the router password in the operating system keychain -
-Keychain Services on macOS, Credential Manager on Windows, Secret Service on
-Linux. If no keychain is available it falls back to a file with mode `0600` and
-says so rather than pretending otherwise.
+Use `keenetic-noc-mcp router add` from a user-owned TTY. The wizard asks for a
+dedicated router user, checks the connection before committing anything, and
+stores a versioned profile without its password. `init` is the compatible alias.
 
-The password is never written to a settings file, never included in a tool
-response, and never logged. `KEENETIC_HOST`, `KEENETIC_USER` and
-`KEENETIC_PASSWORD` override the stored values, which is what a container wants.
+On macOS, Linux, and Windows it first probes the system keychain (Keychain
+Services, Secret Service, or Credential Manager) with a disposable canary. A
+working keychain is used automatically. Only when it is unavailable does the
+wizard offer an owner-only local-file fallback, after confirmation. That
+fallback uses a `0700` directory and `0600` secret file (or equivalent Windows
+ACLs), is atomically written, and is forbidden in a Git worktree.
+
+Passwords are never written to profile JSON, agent registration, tool output,
+audit, logs, errors, or command previews. Secret-bearing wizard steps refuse
+piped or redirected input. For containers, prefer `KEENETIC_PASSWORD_FILE`;
+explicit environment configuration is compatible but does not merge with a
+saved profile.
 
 ## What it does not do
 
-No cloud, no telemetry, no outbound connection to anything but your router. It
-runs on your machine and speaks to the router over your LAN.
+No telemetry. It connects only to the selected router LAN address or KeenDNS
+HTTPS endpoint. Verified TLS is never disabled for normal remote requests.
 
 ## Reducing what it can do
 
@@ -32,7 +40,7 @@ Changes apply to the running configuration and are discarded on reboot until
 
 ## Reporting something
 
-Open a [security advisory](https://github.com/salatmaster/keenetic-mcp/security/advisories/new)
+Open a [security advisory](https://github.com/Spiceman161/keenetic-noc-mcp/security/advisories/new)
 rather than a public issue, and give the model and KeeneticOS version. Expect a
 first reply within a week.
 

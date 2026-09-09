@@ -62,7 +62,7 @@ describe('result helpers', () => {
   it('fail marks isError and includes the guidance', () => {
     const result = fail(new AuthError('bad credentials'));
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('keenetic-mcp init');
+    expect(textOf(result)).toContain('keenetic-noc-mcp router test');
   });
 
   it('fail handles a non-Error value without crashing', () => {
@@ -105,7 +105,7 @@ describe('get_system_info', () => {
 
     const result = await handlers['get_system_info']!({});
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('keenetic-mcp init');
+    expect(textOf(result)).toContain('keenetic-noc-mcp router test');
   });
 
   it('registers read tools with readOnlyHint', () => {

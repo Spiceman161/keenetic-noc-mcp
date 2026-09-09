@@ -1,8 +1,8 @@
 {
-  "name": "keenetic-mcp",
+  "name": "keenetic-noc-mcp",
   "version": "0.0.0-dev",
-  "mcpName": "io.github.salatmaster/keenetic-mcp",
-  "description": "Control your Keenetic router from Claude, Codex, Cursor, or any MCP agent",
+  "mcpName": "io.github.spiceman161/keenetic-noc-mcp",
+  "description": "Production-oriented remote and LAN Keenetic RCI MCP server",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -21,20 +21,20 @@
     "llm",
     "ai-agent"
   ],
-  "homepage": "https://github.com/salatmaster/keenetic-mcp#readme",
+  "homepage": "https://github.com/Spiceman161/keenetic-noc-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/salatmaster/keenetic-mcp.git"
+    "url": "git+https://github.com/Spiceman161/keenetic-noc-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/salatmaster/keenetic-mcp/issues"
+    "url": "https://github.com/Spiceman161/keenetic-noc-mcp/issues"
   },
-  "author": "salatmaster",
+  "author": "Spiceman161",
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "keenetic-mcp": "./dist/index.js"
+    "keenetic-noc-mcp": "./dist/index.js"
   },
   "exports": {
     ".": "./dist/index.js",
@@ -52,7 +52,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit --pretty false -p tsconfig.all.json",
     "capture:fixtures": "tsx scripts/capture-fixtures.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:remote": "tsx scripts/smoke-remote.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

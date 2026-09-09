@@ -7,7 +7,9 @@ coverage/
 # Editor and IDE state
 .idea/
 .vscode/
+.codex/
 .DS_Store
+*.tgz
 
 # Working design docs and plans, not part of the published project
 docs/superpowers/

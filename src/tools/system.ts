@@ -8,6 +8,19 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
   server.registerTool(
+    'get_connection_status',
+    { title: 'Connection status', description: 'Safely tests RCI reachability and authentication without exposing credentials.', inputSchema: {}, annotations: READ_ONLY },
+    guard(async () => {
+      const started = performance.now();
+      const caps = await ctx.client.capabilities();
+      const endpoint = new URL(ctx.connection?.endpoint ?? 'http://router.invalid/');
+      return ok({ routerId: ctx.routerId ?? 'home', mode: ctx.connection?.mode ?? 'lan', endpointHostname: endpoint.hostname,
+        https: endpoint.protocol === 'https:', tlsVerified: endpoint.protocol === 'https:' ? true : null,
+        rciReachable: true, authentication: 'ok', latencyMs: Math.round(performance.now() - started),
+        model: caps.model, firmware: caps.firmware, backupPathCapability: ctx.backup.taken() ? 'verified' : 'not-tested' });
+    })
+  );
+  server.registerTool(
     'get_system_info',
     {
       title: 'Router system information',

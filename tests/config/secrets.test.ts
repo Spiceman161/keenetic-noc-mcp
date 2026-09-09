@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createSecretStore, keychainCommand, type Runner } from '../../src/config/secrets.js';
 
-const SERVICE = 'keenetic-mcp';
+const SERVICE = 'keenetic-noc-mcp';
 
 function runner(result: { code: number; stdout: string }): Runner {
   return vi.fn().mockResolvedValue(result) as unknown as Runner;

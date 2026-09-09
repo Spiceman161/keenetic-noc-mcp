@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const SERVICE = 'keenetic-mcp';
+const SERVICE = 'keenetic-noc-mcp';
 
 export type Runner = (
   command: string,
@@ -185,5 +185,32 @@ export function createSecretStore(
         await writeFallbackFile(all);
       }
     }
+  };
+}
+
+/**
+ * System-keychain-only adapter. Profile setup probes this before offering the
+ * explicitly confirmed file fallback: it must never silently create a file
+ * while deciding whether the keychain works.
+ */
+export function createKeychainStore(platform: NodeJS.Platform, run: Runner): SecretStore {
+  async function execute(op: 'save' | 'read' | 'remove', account: string, secret?: string): Promise<{ code: number; stdout: string }> {
+    const cmd = keychainCommand(platform, op, account);
+    if (!cmd) throw new Error('No system keychain adapter is available');
+    const args = op === 'save' && cmd.secretVia === 'argv' ? [...cmd.args, secret ?? ''] : cmd.args;
+    return run(cmd.command, args, op === 'save' && cmd.secretVia === 'stdin' ? secret : undefined);
+  }
+  return {
+    async save(account, secret) {
+      const result = await execute('save', account, secret);
+      if (result.code !== 0) throw new Error('System keychain rejected the password');
+      const read = await execute('read', account);
+      if (read.code !== 0 || read.stdout.trim() !== secret) throw new Error('System keychain did not verify the password');
+      return 'the system keychain';
+    },
+    async read(account) {
+      try { const result = await execute('read', account); return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null; } catch { return null; }
+    },
+    async remove(account) { try { await execute('remove', account); } catch { /* absent or unavailable */ } }
   };
 }

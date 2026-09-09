@@ -1,24 +1,27 @@
 # Contributing
 
-Bug reports and pull requests are welcome. Two external contributions have
-already landed, so this is not a formality.
+Bug reports and pull requests are welcome.
 
 ## Running it
 
-```
-npm install
-npm test          # no router required
+```sh
+npm ci
 npm run typecheck
+npm test
 npm run build
+git diff --check
 ```
 
-Tests run against sanitized fixtures captured from a real router. To refresh
-them, or to run a read-only smoke test against your own:
+Tests run against sanitized fixtures; no router is required. The optional
+smoke tests are read-only and are never run in CI:
 
+```sh
+KEENETIC_TEST_HOST=... KEENETIC_TEST_PASSWORD=... npm run smoke
+KEENETIC_TEST_URL=https://rci.example.net/rci/ KEENETIC_TEST_USER=... KEENETIC_TEST_PASSWORD=... npm run smoke:remote
 ```
-KEENETIC_HOST=… KEENETIC_PASSWORD=… npm run capture:fixtures
-KEENETIC_TEST_HOST=… KEENETIC_TEST_PASSWORD=… npm run smoke
-```
+
+Do not run a live mutation during a test or smoke check. Never commit captured
+router responses; retain only sanitized shapes and counts in fixtures.
 
 ## The one thing that matters most
 
@@ -44,6 +47,10 @@ have leaked here before, including from a fixture captured off a live router.
 
 Device names and SSIDs have no detectable shape, so nothing catches those.
 Read your own diff before pushing it.
+
+Before opening a pull request, run the commands above and describe the router
+model, KeeneticOS version, and only the read-only evidence you used. Call out
+any remote path that you could not test.
 
 ## Style
 

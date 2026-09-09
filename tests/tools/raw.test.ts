@@ -51,13 +51,13 @@ describe('rci_call', () => {
 
   it('performs a POST with the given body', async () => {
     const { handlers, post } = harness();
-    await handlers['rci_call']!({ method: 'POST', body: { show: { version: {} } } });
+    await handlers['rci_call']!({ method: 'POST', body: { show: { version: {} } }, dry_run: false, confirm: true });
     expect(post).toHaveBeenCalledWith({ show: { version: {} } });
   });
 
   it('posts an array body unchanged, for a batch', async () => {
     const { handlers, post } = harness();
-    await handlers['rci_call']!({ method: 'POST', body: [{ parse: 'show version' }] });
+    await handlers['rci_call']!({ method: 'POST', body: [{ parse: 'show version' }], dry_run: false, confirm: true });
     expect(post).toHaveBeenCalledWith([{ parse: 'show version' }]);
   });
 
@@ -66,13 +66,13 @@ describe('rci_call', () => {
   // back as `{}` - indistinguishable from success.
   it('decodes a body that arrived as a JSON string', async () => {
     const { handlers, post } = harness();
-    await handlers['rci_call']!({ method: 'POST', body: '{"show":{"version":{}}}' });
+    await handlers['rci_call']!({ method: 'POST', body: '{"show":{"version":{}}}', dry_run: false, confirm: true });
     expect(post).toHaveBeenCalledWith({ show: { version: {} } });
   });
 
   it('decodes a stringified array body', async () => {
     const { handlers, post } = harness();
-    await handlers['rci_call']!({ method: 'POST', body: '[{"parse":"show version"}]' });
+    await handlers['rci_call']!({ method: 'POST', body: '[{"parse":"show version"}]', dry_run: false, confirm: true });
     expect(post).toHaveBeenCalledWith([{ parse: 'show version' }]);
   });
 

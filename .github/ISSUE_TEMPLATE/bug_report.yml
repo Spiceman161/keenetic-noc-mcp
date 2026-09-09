@@ -44,6 +44,6 @@ body:
   - type: input
     id: version
     attributes:
-      label: keenetic-mcp version
-      description: "`npx keenetic-mcp --version`"
+      label: keenetic-noc-mcp version
+      description: "npx keenetic-noc-mcp --version"
       placeholder: "0.3.0"

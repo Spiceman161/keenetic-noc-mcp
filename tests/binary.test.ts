@@ -127,7 +127,7 @@ describe('the built binary', () => {
   // 0.1.0 compared them unresolved, matched nothing, and exited silently.
   it('answers initialize when run through a symlink, the way npx does', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-bin-'));
-    const link = join(dir, 'keenetic-mcp');
+    const link = join(dir, 'keenetic-noc-mcp');
     await symlink(DIST, link);
 
     const result = await run(link, `${INITIALIZE}\n`, CONFIGURED);
@@ -136,14 +136,15 @@ describe('the built binary', () => {
     );
   });
 
-  it('explains itself and fails when nothing is configured', async () => {
+  it('answers initialize in safe mode when nothing is configured', async () => {
     const bare: NodeJS.ProcessEnv = { ...process.env };
     delete bare['KEENETIC_HOST'];
     delete bare['KEENETIC_PASSWORD'];
     bare['KEENETIC_CONFIG_DIR'] = await mkdtemp(join(tmpdir(), 'kn-empty-'));
 
-    const result = await run(DIST, '', bare);
-    expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain('keenetic-mcp init');
+    const result = await run(DIST, `${INITIALIZE}\n`, bare);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('"serverInfo"');
+    expect(result.stderr).toBe('');
   });
 });

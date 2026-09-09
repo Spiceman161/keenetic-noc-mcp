@@ -22,6 +22,16 @@ const HOSTS = {
       interface: { name: 'Home' }
     },
     {
+      mac: '02:00:00:00:00:04',
+      ip: '192.0.2.8',
+      name: 'iPhosha 13',
+      active: true,
+      rxbytes: 0,
+      txbytes: 0,
+      access: 'permit',
+      interface: { name: 'Home' }
+    },
+    {
       mac: '02:00:00:00:00:02',
       ip: '192.0.2.6',
       name: 'device-2',
@@ -73,7 +83,7 @@ function payload(result: ToolResult): any {
 describe('list_devices', () => {
   it('projects each host down to the summary fields', async () => {
     const out = payload(await harness()['list_devices']!({}));
-    expect(out.devices).toHaveLength(3);
+    expect(out.devices).toHaveLength(4);
     expect(Object.keys(out.devices[0]).sort()).toEqual(
       ['active', 'blocked', 'connection', 'ip', 'mac', 'name', 'rssi', 'rxBytes', 'txBytes'].sort()
     );
@@ -81,7 +91,7 @@ describe('list_devices', () => {
 
   it('filters to active devices', async () => {
     const out = payload(await harness()['list_devices']!({ filter: 'active' }));
-    expect(out.devices.map((d: any) => d.name)).toEqual(['device-1', 'device-2']);
+    expect(out.devices.map((d: any) => d.name)).toEqual(['device-1', 'device-2', 'iPhosha 13']);
   });
 
   it('filters to wireless devices', async () => {
@@ -96,14 +106,14 @@ describe('list_devices', () => {
 
   it('sorts by total traffic descending', async () => {
     const out = payload(await harness()['list_devices']!({ sort: 'traffic' }));
-    expect(out.devices.map((d: any) => d.name)).toEqual(['device-1', 'device-2', 'device-3']);
+    expect(out.devices.map((d: any) => d.name)).toEqual(['device-1', 'device-2', 'device-3', 'iPhosha 13']);
   });
 
   it('reports totals and truncation when the limit bites', async () => {
     const out = payload(await harness()['list_devices']!({ limit: 1 }));
     expect(out.shown).toBe(1);
-    expect(out.total).toBe(3);
-    expect(out.note).toContain('3');
+    expect(out.total).toBe(4);
+    expect(out.note).toContain('4');
   });
 
   it('handles a router with no hosts', async () => {
@@ -130,10 +140,25 @@ describe('get_device', () => {
     expect(out.mac).toBe('02:00:00:00:00:03');
   });
 
-  it('returns isError listing known devices when nothing matches', async () => {
+  it('normalizes case and spaces in a device name', async () => {
+    const out = payload(await harness()['get_device']!({ name: 'Iphosha13' }));
+    expect(out.mac).toBe('02:00:00:00:00:04');
+  });
+
+  it('does not list known devices when nothing matches', async () => {
     const result = await harness()['get_device']!({ mac: '02:00:00:00:00:99' });
     expect(result.isError).toBe(true);
-    expect(result.content.map(p => p.text).join('')).toContain('device-1');
+    expect(result.content.map(p => p.text).join('')).not.toContain('device-1');
+  });
+
+  it('refuses an ambiguous normalized name', async () => {
+    const hosts = { host: [
+      { mac: '02:00:00:00:00:11', name: 'device 1' },
+      { mac: '02:00:00:00:00:12', name: 'Device1' }
+    ] };
+    const result = await harness(hosts)['get_device']!({ name: 'DEVICE  1' });
+    expect(result.isError).toBe(true);
+    expect(result.content.map(p => p.text).join('')).toMatch(/ambiguous/i);
   });
 
   it('returns isError when no identifier is supplied', async () => {

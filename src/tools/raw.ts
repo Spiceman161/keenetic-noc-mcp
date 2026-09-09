@@ -46,6 +46,13 @@ function decodeBody(body: RawBody): Decoded {
   return { ok: true, body: parsed };
 }
 
+function unsafeRaw(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(unsafeRaw);
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value as Record<string, unknown>).some(([key, child]) =>
+    /^(user|crypto|auth|security|http-proxy)$/i.test(key) || unsafeRaw(child));
+}
+
 export function registerRawTool(server: McpServer, ctx: ToolContext): void {
   server.registerTool(
     'rci_call',
@@ -76,7 +83,9 @@ export function registerRawTool(server: McpServer, ctx: ToolContext): void {
           .int()
           .min(200)
           .optional()
-          .describe('Lower the response ceiling for this call. It can never raise it.')
+          .describe('Lower the response ceiling for this call. It can never raise it.'),
+        dry_run: z.boolean().optional().default(true).describe('POST preview; defaults true.'),
+        confirm: z.boolean().optional().default(false).describe('Required with dry_run=false.')
       },
       // In read-only mode POST is refused, so the tool genuinely cannot modify
       // anything and the annotation says so rather than overstating the risk.
@@ -84,7 +93,7 @@ export function registerRawTool(server: McpServer, ctx: ToolContext): void {
         ? { readOnlyHint: true, openWorldHint: false }
         : { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
     },
-    guard(async ({ method, path, body, max_bytes }): Promise<ToolResult> => {
+    guard(async ({ method, path, body, max_bytes, dry_run, confirm }): Promise<ToolResult> => {
       let payload: unknown;
 
       if (method === 'GET') {
@@ -95,10 +104,12 @@ export function registerRawTool(server: McpServer, ctx: ToolContext): void {
         if (ctx.readOnly) {
           return fail(
             new Error(
-              'This server is running read-only, so POST is refused. Use GET to read, or ' +
-                'ask the user to restart the server without --read-only.'
+              'This server is running read-only, so raw POST is refused.'
             )
           );
+        }
+        if (ctx.allowRawWrite === false) {
+          return fail(new Error('Raw POST is disabled. Set KEENETIC_ALLOW_RAW_WRITE=true to enable its guarded use.'));
         }
         if (body === undefined) {
           return fail(new Error('POST needs a body, for example {"show": {"version": {}}}.'));
@@ -106,10 +117,20 @@ export function registerRawTool(server: McpServer, ctx: ToolContext): void {
         const decoded = decodeBody(body);
         if (!decoded.ok) return fail(new Error(decoded.message));
         payload = decoded.body;
+        if (unsafeRaw(payload)) return fail(new Error('Raw POST refused: payload touches an auth, crypto, security, user, or HTTP proxy branch.'));
+        if (dry_run !== false) return ok({ dryRun: true, plannedRciRequest: payload, risk: 'high', expectedVerification: 'manual narrow GET read-back required' });
+        if (!confirm) return fail(new Error('Raw POST requires confirm=true together with dry_run=false.'));
+        await ctx.backup.ensure();
       }
 
-      const result =
-        method === 'GET' ? await ctx.client.rci.get(path as string) : await ctx.client.rci.post(payload);
+      let result: unknown;
+      try {
+        result = method === 'GET' ? await ctx.client.rci.get(path as string) : await ctx.client.rci.post(payload);
+        if (method === 'POST') await ctx.audit?.write({ tool: 'rci_call', dryRun: false, confirmed: true, risk: 'high', target: 'raw RCI', planned: payload, verified: false, saved: false, success: true });
+      } catch (error) {
+        if (method === 'POST') await ctx.audit?.write({ tool: 'rci_call', dryRun: false, confirmed: true, risk: 'high', target: 'raw RCI', planned: payload, verified: false, saved: false, success: false, error: (error as Error).message });
+        throw error;
+      }
 
       // max_bytes may only tighten the ceiling: a tool argument must not be able
       // to overrun the budget the operator configured with --max-response-bytes.

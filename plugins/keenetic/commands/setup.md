@@ -1,44 +1,37 @@
 ---
-description: Connect this plugin to your Keenetic router
+description: Guide a user through creating and registering a Keenetic router profile
 ---
 
 The user wants to connect the Keenetic MCP server to their router.
 
-The server needs three things: the router address, a login, and a password. It
-finds the address itself and stores the password in the operating system
-keychain, so the only thing you have to do is walk the user through running the
-wizard.
-
-**Do not ask the user for their password and do not run the wizard yourself.**
-It reads the password from the terminal without echoing it, which only works
-when the user runs it. Tell them to run this in their own terminal:
+Never ask for a password, endpoint credentials, or secret file path in chat.
+Do not run a secret-bearing wizard for the user: it requires their local TTY.
+Ask them to run this in their own terminal:
 
 ```
-npx -y keenetic-mcp init
+keenetic-noc-mcp router add
 ```
 
-Explain what will happen, so nothing is a surprise:
+Explain that the wizard creates a named profile, validates LAN discovery or
+remote DNS/TLS, generates a dedicated-user password, tests the credentials, and
+shows a review before saving. It uses the system keychain automatically; if the
+keychain is unavailable, it explains and asks permission for an owner-only file
+fallback. For remote access, remind them to use a dedicated router user and a
+KeenDNS HTTPS `/rci/` endpoint.
 
-1. It reads the default gateway and offers it as the router address. Pressing
-   enter accepts it.
-2. It confirms the address really is a Keenetic before asking for anything else.
-3. The login defaults to `admin`.
-4. The password is typed without being shown, and is checked against the router
-   immediately. Nothing is stored if the router rejects it.
-5. The password goes into the system keychain. The settings file holds only the
-   address and the login.
+After it completes, have them run:
 
-Once they say it finished, verify it by calling `get_system_info`. It should
-return the model and firmware version. If it fails:
+```
+keenetic-noc-mcp router test <profile-id>
+keenetic-noc-mcp router register <profile-id>
+```
 
-- **"No router configured"** means the wizard did not complete. Ask them to run
-  it again and read out any message it printed.
-- **"the router rejected credentials"** means the password is wrong. The router
-  password is the one for its web interface, which is often not the Wi-Fi
-  password.
-- **"The router was unreachable"** means this machine is not on the same network
-  as the router, or the address is wrong.
+`router test` is read-only and reports connection, authentication, RCI, router,
+internet, config-read, and backup capability. `router register` previews and
+confirms the Codex or Claude registration, without placing a secret in agent
+configuration.
 
-If the user would rather not store anything, the server also reads
-`KEENETIC_HOST`, `KEENETIC_USER` and `KEENETIC_PASSWORD` from the environment,
-and those take precedence over the stored settings.
+If setup fails, ask them to share the non-secret error text only. A rejected
+login means the dedicated router credentials were not accepted; an unreachable
+router means the machine cannot reach the selected LAN address or remote RCI
+endpoint. Do not ask them to paste a password as troubleshooting evidence.

@@ -52,11 +52,11 @@ export function configDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): st
   if (override) return override;
 
   const home = env['HOME'] ?? env['USERPROFILE'] ?? '.';
-  if (platform === 'win32') return win32.join(env['APPDATA'] ?? home, 'keenetic-mcp');
+  if (platform === 'win32') return win32.join(env['APPDATA'] ?? home, 'keenetic-noc-mcp');
   if (platform === 'darwin') {
-    return posix.join(home, 'Library', 'Application Support', 'keenetic-mcp');
+    return posix.join(home, 'Library', 'Application Support', 'keenetic-noc-mcp');
   }
-  return posix.join(env['XDG_CONFIG_HOME'] ?? posix.join(home, '.config'), 'keenetic-mcp');
+  return posix.join(env['XDG_CONFIG_HOME'] ?? posix.join(home, '.config'), 'keenetic-noc-mcp');
 }
 
 export interface StoredConfig {

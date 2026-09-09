@@ -2,6 +2,8 @@ import { KeeneticError } from '../router/errors.js';
 import type { BackupGuard } from '../router/backup.js';
 import type { KeeneticClient } from '../router/client.js';
 import { capText } from '../shape/budget.js';
+import { redact, redactText } from '../security/redact.js';
+import type { AuditWriter } from '../security/audit.js';
 
 export interface ToolContext {
   client: KeeneticClient;
@@ -9,6 +11,12 @@ export interface ToolContext {
   readOnly: boolean;
   /** Snapshots the startup config once, before the first mutating call. */
   backup: BackupGuard;
+  allowRawWrite?: boolean;
+  routerId?: string;
+  connection?: { mode: 'lan' | 'remote'; endpoint: string };
+  audit?: AuditWriter;
+  protectedInterfaces?: ReadonlySet<string>;
+  allowDestructive?: boolean;
 }
 
 /**
@@ -24,7 +32,7 @@ export interface ToolResult {
 
 /** `maxBytes` caps the serialised payload; omit it for responses already shaped. */
 export function ok(payload: unknown, maxBytes?: number): ToolResult {
-  const text = JSON.stringify(payload, null, 2);
+  const text = JSON.stringify(redact(payload), null, 2);
   return {
     content: [{ type: 'text', text: maxBytes === undefined ? text : capText(text, maxBytes) }]
   };
@@ -37,9 +45,9 @@ export function ok(payload: unknown, maxBytes?: number): ToolResult {
 export function fail(error: unknown): ToolResult {
   const text =
     error instanceof KeeneticError
-      ? error.message
+      ? redactText(error.message)
       : error instanceof Error
-        ? `${error.message} Retry, or call get_system_info to check connectivity.`
+        ? `${redactText(error.message)} Retry, or call get_system_info to check connectivity.`
         : `${String(error)} Retry, or call get_system_info to check connectivity.`;
   return { content: [{ type: 'text', text }], isError: true };
 }

@@ -1,9 +1,17 @@
+import { readFile } from 'node:fs/promises';
+
+export type AuthMode = 'lan' | 'remote';
 export interface AppConfig {
+  routerId: string;
+  mode: AuthMode;
   host: string;
+  endpoint: string;
   login: string;
   password: string;
   readOnly: boolean;
   maxResponseBytes: number;
+  timeoutMs: number;
+  allowRawWrite: boolean;
 }
 
 export interface StoredCredentials {
@@ -13,6 +21,20 @@ export interface StoredCredentials {
 }
 
 export const DEFAULT_MAX_RESPONSE_BYTES = 25_000;
+
+export function normalizeRemoteUrl(raw: string): string {
+  const url = new URL(raw);
+  if (url.protocol !== 'https:') throw new Error('KEENETIC_URL must use https://');
+  if (url.username || url.password) throw new Error('KEENETIC_URL must not contain credentials');
+  if (url.search || url.hash) throw new Error('KEENETIC_URL must not contain query or fragment');
+  if (url.pathname === '/' || url.pathname === '' || url.pathname === '/rci') url.pathname = '/rci/';
+  if (url.pathname !== '/rci/') throw new Error('KEENETIC_URL path must be /rci/');
+  return url.toString();
+}
+
+function bool(env: NodeJS.ProcessEnv, name: string): boolean {
+  return env[name]?.toLowerCase() === 'true';
+}
 
 function flagValue(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
@@ -32,8 +54,18 @@ export async function loadConfig(
   env: NodeJS.ProcessEnv,
   stored?: StoredCredentials
 ): Promise<AppConfig> {
-  const host = env['KEENETIC_HOST'] ?? flagValue(argv, '--host') ?? stored?.host;
-  const password = env['KEENETIC_PASSWORD'] ?? stored?.password;
+  const rawUrl = env['KEENETIC_URL'];
+  const explicitMode = env['KEENETIC_AUTH_MODE'];
+  if (explicitMode && explicitMode !== 'lan' && explicitMode !== 'remote') {
+    throw new Error('KEENETIC_AUTH_MODE must be "lan" or "remote"');
+  }
+  const mode: AuthMode = (explicitMode as AuthMode | undefined) ?? (rawUrl ? 'remote' : 'lan');
+  const host = env['KEENETIC_HOST'] ?? flagValue(argv, '--host') ?? stored?.host ?? '';
+  const passwordFile = env['KEENETIC_PASSWORD_FILE'];
+  const filePassword = passwordFile ? (await readFile(passwordFile, 'utf8')).trimEnd() : undefined;
+  const password = env['KEENETIC_PASSWORD'] ?? filePassword ?? stored?.password;
+  const timeoutMs = Number.parseInt(env['KEENETIC_TIMEOUT_MS'] ?? '10000', 10);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('KEENETIC_TIMEOUT_MS must be a positive integer');
   const login = env['KEENETIC_USER'] ?? stored?.login ?? 'admin';
 
   const rawMax = flagValue(argv, '--max-response-bytes');
@@ -42,18 +74,23 @@ export async function loadConfig(
     throw new Error(`--max-response-bytes must be a positive integer, got "${rawMax}"`);
   }
 
-  if (!host || !password) {
+  if ((mode === 'lan' && !host) || (mode === 'remote' && !rawUrl) || !password) {
     throw new Error(
-      'No router configured. Run "npx keenetic-mcp init" to set one up, or set ' +
-        'KEENETIC_HOST and KEENETIC_PASSWORD in the environment.'
+      'No router configured. Run "npx keenetic-noc-mcp router add" to set one up, or set ' +
+        'KEENETIC_HOST (or KEENETIC_URL), KEENETIC_USER, and KEENETIC_PASSWORD_FILE.'
     );
   }
 
   return {
+    routerId: env['KEENETIC_ROUTER_ID']?.trim() || 'home',
+    mode,
     host,
+    endpoint: mode === 'remote' ? normalizeRemoteUrl(rawUrl as string) : `http://${host}/rci/`,
     login,
     password,
     readOnly: argv.includes('--read-only'),
-    maxResponseBytes: parsedMax
+    maxResponseBytes: parsedMax,
+    timeoutMs,
+    allowRawWrite: bool(env, 'KEENETIC_ALLOW_RAW_WRITE')
   };
 }

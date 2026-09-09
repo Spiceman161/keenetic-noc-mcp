@@ -86,19 +86,19 @@ describe('identifyRouter', () => {
 describe('configDir', () => {
   it('honours XDG_CONFIG_HOME on Linux', () => {
     expect(configDir('linux', { XDG_CONFIG_HOME: '/c' } as NodeJS.ProcessEnv)).toBe(
-      '/c/keenetic-mcp'
+      '/c/keenetic-noc-mcp'
     );
   });
 
   it('uses Application Support on macOS', () => {
     expect(configDir('darwin', { HOME: '/Users/u' } as NodeJS.ProcessEnv)).toBe(
-      '/Users/u/Library/Application Support/keenetic-mcp'
+      '/Users/u/Library/Application Support/keenetic-noc-mcp'
     );
   });
 
   it('uses APPDATA on Windows with backslashes', () => {
     expect(configDir('win32', { APPDATA: 'C:\\a' } as NodeJS.ProcessEnv)).toBe(
-      'C:\\a\\keenetic-mcp'
+      'C:\\a\\keenetic-noc-mcp'
     );
   });
 });

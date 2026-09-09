@@ -33,16 +33,15 @@ jobs:
       - name: Test
         run: npm test
 
-      # Proves what a unit test cannot: that `files` in package.json is complete
-      # and that the bin works through the symlink npm installs, which is how
-      # every `npx keenetic-mcp` invocation reaches it.
+      # Proves what a unit test cannot: that package contents are complete
+      # and that the bin works through the symlink npm installs.
       - name: Install the packed tarball and run it through npx
         run: |
           npm pack
           mkdir -p /tmp/pkgcheck && cd /tmp/pkgcheck && npm init -y >/dev/null
-          npm install --no-save "$GITHUB_WORKSPACE"/keenetic-mcp-*.tgz
+          npm install --no-save "$GITHUB_WORKSPACE"/keenetic-noc-mcp-*.tgz
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
-            | KEENETIC_HOST=192.0.2.1 KEENETIC_PASSWORD=x ./node_modules/.bin/keenetic-mcp \
+            | KEENETIC_HOST=192.0.2.1 KEENETIC_PASSWORD=x ./node_modules/.bin/keenetic-noc-mcp \
             | grep -q '"serverInfo"'
 
   audit:

@@ -1,9 +1,9 @@
 # The Keenetic RCI API
 
-Notes taken while building [keenetic-mcp](https://github.com/salatmaster/keenetic-mcp).
-Keenetic does not publish coherent documentation for RCI, so everything here was
-established against a live **Keenetic Ultra (KN-1811) running KeeneticOS 5.1.3**
-and is marked where it was not.
+Notes maintained for Keenetic NOC MCP. Keenetic does not publish coherent
+documentation for RCI, so the observations here were established against a live
+**Keenetic Ultra (KN-1811) running KeeneticOS 5.1.3** and are marked where they
+were not. Upstream provenance is recorded in [SOURCE_REVIEW.md](SOURCE_REVIEW.md).
 
 RCI is a standard part of KeeneticOS rather than a feature of high-end models,
 and has existed since the NDMS 2.x era. What differs between routers is the set
@@ -272,13 +272,20 @@ configuration through RCI was not solved.
 
 ## Paths that do not exist
 
-Do not assume an installed component implies a path of the same name. All 404 on
-5.1.3, `wireguard` component installed and WireGuard interfaces live:
+Do not assume an installed component implies a path of the same name. All GET
+paths below return 404 on 5.1.3, `wireguard` component installed and WireGuard
+interfaces live:
 
 `show/wireguard`, `show/log`, `show/ipsec`, `show/components/list`,
 `show/ntce`, `show/skydns`, `show/wlan`
 
 WireGuard state is under `show/interface/Wireguard3`.
+
+`show log` is the exception for command dispatch: the equivalent read-only
+`POST /rci/` body `{"show":{"log":{}}}` succeeds even though
+`GET /rci/show/log` does not. On 5.1.3 it returns a numeric-keyed map under
+`show.log.log`; each row contains `timestamp`, `ident`, and a nested `message`
+object.
 
 ## A useful path index
 

@@ -17,25 +17,25 @@ afterEach(() => vi.unstubAllEnvs());
 describe('stateDir', () => {
   it('uses XDG_STATE_HOME on Linux', () => {
     expect(stateDir('linux', { XDG_STATE_HOME: '/x' } as NodeJS.ProcessEnv)).toBe(
-      '/x/keenetic-mcp'
+      '/x/keenetic-noc-mcp'
     );
   });
 
   it('falls back to ~/.local/state on Linux without XDG_STATE_HOME', () => {
     expect(stateDir('linux', { HOME: '/home/u' } as NodeJS.ProcessEnv)).toBe(
-      '/home/u/.local/state/keenetic-mcp'
+      '/home/u/.local/state/keenetic-noc-mcp'
     );
   });
 
   it('uses Application Support on macOS', () => {
     expect(stateDir('darwin', { HOME: '/Users/u' } as NodeJS.ProcessEnv)).toBe(
-      '/Users/u/Library/Application Support/keenetic-mcp'
+      '/Users/u/Library/Application Support/keenetic-noc-mcp'
     );
   });
 
   it('uses LOCALAPPDATA on Windows', () => {
     expect(stateDir('win32', { LOCALAPPDATA: 'C:\\a' } as NodeJS.ProcessEnv)).toBe(
-      'C:\\a\\keenetic-mcp'
+      'C:\\a\\keenetic-noc-mcp'
     );
   });
 

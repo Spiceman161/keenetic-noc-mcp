@@ -94,6 +94,6 @@ describe('no version is written down in the sources', () => {
     const mcp = await json<{ mcpServers: Record<string, { args: string[] }> }>(
       'plugins/keenetic/.mcp.json'
     );
-    expect(mcp.mcpServers['keenetic']?.args.at(-1)).toBe('keenetic-mcp@^0');
+    expect(mcp.mcpServers['keenetic']?.args.at(-1)).toBe('keenetic-noc-mcp@^0');
   });
 });

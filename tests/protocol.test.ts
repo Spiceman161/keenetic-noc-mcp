@@ -12,24 +12,27 @@ const READ_TOOLS = [
   'backup_config',
   'rci_call',
   'get_config_state',
+  'get_connection_status',
   'get_device',
   'get_interface',
   'get_internet_status',
+  'get_dns_status',
+  'get_logs',
+  'get_logs_by_device',
   'get_system_info',
   'get_wifi_status',
+  'get_vpn',
   'list_devices',
   'list_interfaces',
   'list_policies',
-  'list_routes',
+  'list_routes', 'list_vpn',
   'list_segments'
 ];
 
 const WRITE_TOOLS = [
-  'update_device',
   'set_interface_state',
+  'restart_interface',
   'save_config',
-  'create_segment',
-  'delete_segment'
 ];
 
 function context(readOnly: boolean): ToolContext {

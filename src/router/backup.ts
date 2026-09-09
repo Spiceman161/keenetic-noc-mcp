@@ -20,18 +20,18 @@ export interface BackupGuard {
  *
  * The path flavour is chosen from the `platform` argument rather than from the
  * host, so the Windows layout is still produced correctly when this runs
- * anywhere else. Using the ambient `join` would emit `C:\a/keenetic-mcp`.
+ * anywhere else. Using the ambient `join` would emit `C:\a/keenetic-noc-mcp`.
  */
 export function stateDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
   const override = env['KEENETIC_STATE_DIR'];
   if (override) return override;
 
   const home = env['HOME'] ?? env['USERPROFILE'] ?? '.';
-  if (platform === 'win32') return win32.join(env['LOCALAPPDATA'] ?? home, 'keenetic-mcp');
+  if (platform === 'win32') return win32.join(env['LOCALAPPDATA'] ?? home, 'keenetic-noc-mcp');
   if (platform === 'darwin') {
-    return posix.join(home, 'Library', 'Application Support', 'keenetic-mcp');
+    return posix.join(home, 'Library', 'Application Support', 'keenetic-noc-mcp');
   }
-  return posix.join(env['XDG_STATE_HOME'] ?? posix.join(home, '.local', 'state'), 'keenetic-mcp');
+  return posix.join(env['XDG_STATE_HOME'] ?? posix.join(home, '.local', 'state'), 'keenetic-noc-mcp');
 }
 
 export function createBackupGuard(rci: Rci, host: string, now: () => Date): BackupGuard {

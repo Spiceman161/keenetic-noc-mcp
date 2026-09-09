@@ -7,6 +7,11 @@ import { describeWrite, verifiedWrite } from './write.js';
 
 type HostRecord = Record<string, unknown>;
 
+/** Name lookup is forgiving about display casing and spaces, but nothing else. */
+export function normalizeDeviceName(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/\s+/gu, '');
+}
+
 async function fetchHosts(ctx: ToolContext): Promise<HostRecord[]> {
   const raw = await ctx.client.rci.get('show/ip/hotspot');
   const container = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
@@ -127,7 +132,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
 
       const hosts = await fetchHosts(ctx);
       const wanted = mac?.toLowerCase();
-      const match = hosts.find(host => {
+      let match = hosts.find(host => {
         const hostMac = typeof host['mac'] === 'string' ? host['mac'].toLowerCase() : '';
         if (wanted && hostMac === wanted) return true;
         if (ip && host['ip'] === ip) return true;
@@ -135,12 +140,27 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
         return false;
       });
 
+      if (!match && name) {
+        const wantedName = normalizeDeviceName(name);
+        const matches = hosts.filter(host =>
+          ['name', 'hostname'].some(field =>
+            typeof host[field] === 'string' && normalizeDeviceName(host[field]) === wantedName
+          )
+        );
+        if (matches.length > 1) {
+          return fail(
+            new Error(
+              'The normalized device name is ambiguous. Supply its exact IP or MAC address.'
+            )
+          );
+        }
+        match = matches[0];
+      }
+
       if (!match) {
-        const known = hosts.map(h => String(h['name'] ?? h['hostname'] ?? h['mac'])).join(', ');
         return fail(
           new Error(
-            `No device matched. Known devices: ${known || 'none'}. ` +
-              'Call list_devices to see them with their addresses.'
+            'No device matched. Call list_devices to find its exact name, IP or MAC address.'
           )
         );
       }

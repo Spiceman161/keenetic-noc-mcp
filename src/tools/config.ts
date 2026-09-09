@@ -9,6 +9,7 @@ import {
   type LastChange
 } from '../router/config-state.js';
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
+import { GuardError } from '../router/errors.js';
 
 /**
  * The router answers the save command with "saving (http/rci)." in the present
@@ -76,25 +77,25 @@ export function registerConfigTools(server: McpServer, ctx: ToolContext): void {
         'Writes the running configuration to the startup configuration, so pending ' +
         'changes survive a reboot. Nothing else in this server saves, so call this only ' +
         'once the user has confirmed the changes are what they want.',
-      inputSchema: {},
+      inputSchema: { dry_run: z.boolean().optional().default(true), confirm: z.boolean().optional().default(false) },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
     },
-    guard(async (): Promise<ToolResult> => {
+    guard(async ({ dry_run, confirm }): Promise<ToolResult> => {
+      const planned = { system: { configuration: { save: {} } } };
+      const base = { tool: 'save_config', dryRun: dry_run, confirmed: confirm, risk: 'high', target: 'startup configuration', planned };
+      if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequest: planned, expectedVerification: 'saved checksum equals running checksum', risk: 'high' }); }
+      if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real save requires confirm=true.'); }
       // Taken before the command so the poll can tell the router has acted.
       const before = await readLastChange(ctx.client.rci);
-      await ctx.client.rci.post({ system: { configuration: { save: {} } } });
-      if (!(await waitForSaved(ctx, before))) {
-        return fail(
-          new Error(
-            'The save command was accepted but the router still reports unsaved changes. ' +
-              'Call get_config_state to inspect the current state before retrying.'
-          )
-        );
+      try {
+        await ctx.client.rci.post(planned);
+        if (!(await waitForSaved(ctx, before))) throw new Error('The save command was accepted but the router still reports unsaved changes. Call get_config_state before retrying.');
+        await ctx.audit?.write({ ...base, before, verified: true, saved: true, success: true });
+        return ok({ saved: true, note: 'The running configuration is now the startup configuration.' });
+      } catch (error) {
+        await ctx.audit?.write({ ...base, before, verified: false, saved: false, success: false, error: (error as Error).message });
+        throw error;
       }
-      return ok({
-        saved: true,
-        note: 'The running configuration is now the startup configuration.'
-      });
     })
   );
 }

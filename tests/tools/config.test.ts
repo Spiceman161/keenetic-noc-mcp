@@ -81,14 +81,14 @@ function payload(result: ToolResult): any {
 describe('save_config', () => {
   it('sends the save command and confirms afterwards', async () => {
     const { handlers, posts } = harness();
-    const out = payload(await handlers['save_config']!({}));
+    const out = payload(await handlers['save_config']!({ dry_run: false, confirm: true }));
     expect(posts).toContainEqual({ system: { configuration: { save: {} } } });
     expect(out.saved).toBe(true);
   });
 
   it('fails when the router still reports unsaved changes', async () => {
     const { handlers } = harness({ unsavedAfter: true });
-    const result = await handlers['save_config']!({});
+    const result = await handlers['save_config']!({ dry_run: false, confirm: true });
     expect(result.isError).toBe(true);
     expect(result.content.map(p => p.text).join('')).toMatch(/still reports unsaved/i);
   }, 10_000);
@@ -97,14 +97,14 @@ describe('save_config', () => {
   // cheap endpoint turned one save into roughly 100 KB of traffic.
   it('reads the startup config once, however many times it polls', async () => {
     const { handlers, get, getText } = harness();
-    await handlers['save_config']!({});
+    await handlers['save_config']!({ dry_run: false, confirm: true });
     expect(getText).toHaveBeenCalledTimes(1);
     expect(get.mock.calls.length).toBeGreaterThan(1);
   });
 
   it('reads it once on the failing path too', async () => {
     const { handlers, getText } = harness({ unsavedAfter: true });
-    await handlers['save_config']!({});
+    await handlers['save_config']!({ dry_run: false, confirm: true });
     expect(getText).toHaveBeenCalledTimes(1);
   }, 10_000);
 

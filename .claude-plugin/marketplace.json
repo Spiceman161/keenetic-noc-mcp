@@ -1,20 +1,20 @@
 {
   "name": "keenetic",
   "owner": {
-    "name": "salatmaster",
-    "url": "https://github.com/salatmaster"
+    "name": "Spiceman161",
+    "url": "https://github.com/Spiceman161"
   },
-  "description": "MCP server for Keenetic routers",
+  "description": "Security-first MCP server for Keenetic and Netcraze routers",
   "plugins": [
     {
       "name": "keenetic",
       "source": "./plugins/keenetic",
-      "description": "Control your Keenetic router from Claude: who is on the network, Wi-Fi, interfaces, routing policies, and safe configuration changes",
+      "description": "Safely diagnose and manage Keenetic and Netcraze routers from Claude",
       "author": {
-        "name": "salatmaster"
+        "name": "Spiceman161"
       },
-      "homepage": "https://github.com/salatmaster/keenetic-mcp",
-      "repository": "https://github.com/salatmaster/keenetic-mcp",
+      "homepage": "https://github.com/Spiceman161/keenetic-noc-mcp",
+      "repository": "https://github.com/Spiceman161/keenetic-noc-mcp",
       "license": "MIT",
       "category": "networking",
       "tags": [

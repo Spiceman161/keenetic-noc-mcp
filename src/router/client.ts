@@ -1,6 +1,7 @@
 import { fetchCapabilities, type Capabilities } from './capabilities.js';
 import { Rci } from './rci.js';
 import { Session, type SessionOptions } from './session.js';
+import { RemoteSession, type RemoteSessionOptions } from './remote-session.js';
 
 /** The seam the tool layer depends on. Tests substitute a plain object. */
 export interface KeeneticClient {
@@ -20,4 +21,10 @@ export function createClient(opts: SessionOptions): KeeneticClient {
       return pending;
     }
   };
+}
+
+export function createRemoteClient(opts: RemoteSessionOptions): KeeneticClient {
+  const rci = new Rci(new RemoteSession(opts));
+  let pending: Promise<Capabilities> | null = null;
+  return { rci, capabilities() { pending ??= fetchCapabilities(rci); return pending; } };
 }

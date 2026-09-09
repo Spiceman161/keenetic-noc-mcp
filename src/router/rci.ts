@@ -1,5 +1,5 @@
 import { RciError } from './errors.js';
-import type { Session } from './session.js';
+export interface RciSession { request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response>; }
 
 export interface RciStatus {
   status: string;
@@ -48,7 +48,7 @@ export function collectStatuses(value: unknown): RciStatus[] {
 }
 
 export class Rci {
-  constructor(private readonly session: Session) {}
+  constructor(private readonly session: RciSession) {}
 
   async get<T = unknown>(path: string): Promise<T> {
     const clean = path.replace(/^\/+/, '');

@@ -1,16 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.salatmaster/keenetic-mcp",
-  "description": "Control a Keenetic router: devices, Wi-Fi, VPN routing, segments, safe verified writes.",
+  "name": "io.github.spiceman161/keenetic-noc-mcp",
+  "description": "Diagnose and safely manage Keenetic and Netcraze routers over remote HTTPS or LAN RCI.",
   "repository": {
-    "url": "https://github.com/salatmaster/keenetic-mcp",
+    "url": "https://github.com/Spiceman161/keenetic-noc-mcp",
     "source": "github"
   },
   "version": "0.0.0-dev",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "keenetic-mcp",
+      "identifier": "keenetic-noc-mcp",
       "version": "0.0.0-dev",
       "transport": {
         "type": "stdio"
@@ -18,7 +18,7 @@
       "environmentVariables": [
         {
           "name": "KEENETIC_HOST",
-          "description": "Router address on the LAN, for example 192.168.1.1. Optional: `npx keenetic-mcp init` discovers it from the default gateway and stores it.",
+          "description": "LAN router address. Use the profile wizard or set this with KEENETIC_USER and KEENETIC_PASSWORD_FILE.",
           "isRequired": false,
           "isSecret": false,
           "format": "string"
@@ -31,10 +31,17 @@
           "format": "string"
         },
         {
-          "name": "KEENETIC_PASSWORD",
-          "description": "Router password. Optional: the setup wizard stores it in the operating system keychain instead. Use this in a container, where there is no keychain.",
+          "name": "KEENETIC_PASSWORD_FILE",
+          "description": "Path to a file containing the router password. Preferred for non-interactive deployments.",
           "isRequired": false,
           "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "KEENETIC_URL",
+          "description": "Remote HTTPS RCI endpoint, ending in /rci/. Mutually exclusive with KEENETIC_HOST.",
+          "isRequired": false,
+          "isSecret": false,
           "format": "string"
         }
       ]

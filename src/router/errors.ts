@@ -16,7 +16,7 @@ export abstract class KeeneticError extends Error {
 
 export class AuthError extends KeeneticError {
   readonly guidance =
-    'The server cannot fix this itself - ask the user to run: npx keenetic-mcp init';
+    'The server cannot fix this itself - ask the user to run: keenetic-noc-mcp router test <profile-id>';
 
   constructor(cause: string) {
     super(cause);
@@ -26,13 +26,22 @@ export class AuthError extends KeeneticError {
 
 export class TransportError extends KeeneticError {
   readonly guidance =
-    'The router was unreachable. Check that the machine is on the same network ' +
-    'and that KEENETIC_HOST points at the router.';
+    'The router was unreachable. Check the selected LAN host or remote HTTPS RCI endpoint.';
 
   constructor(cause: string) {
     super(cause);
     this.finalize(cause);
   }
+}
+
+export class VerificationError extends KeeneticError {
+  readonly guidance = 'Read the target state and do not save the configuration until it matches.';
+  constructor(cause: string) { super(cause); this.finalize(cause); }
+}
+
+export class GuardError extends KeeneticError {
+  readonly guidance = 'Review the safety policy and explicitly preview and confirm the operation.';
+  constructor(cause: string) { super(cause); this.finalize(cause); }
 }
 
 export interface RciErrorDetails {
@@ -60,8 +69,20 @@ export class RciError extends KeeneticError {
 
 export class NotSupportedError extends KeeneticError {
   readonly guidance =
-    'This router does not have the required component installed. ' +
-    'Call get_system_info to see the component list.';
+    'This capability is unavailable through the current firmware or connection mode. ' +
+    'Call get_system_info to inspect the router and use the suggested alternate access path.';
+
+  constructor(cause: string) {
+    super(cause);
+    this.finalize(cause);
+  }
+}
+
+/** A remote RCI proxy can authenticate normal RCI calls but deny auxiliary HTTP paths. */
+export class RemoteCapabilityError extends KeeneticError {
+  readonly guidance =
+    'The remote proxy does not expose this read-only router endpoint. ' +
+    'Use a LAN profile for this operation; normal RCI tools can still be available remotely.';
 
   constructor(cause: string) {
     super(cause);

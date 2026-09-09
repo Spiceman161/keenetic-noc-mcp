@@ -62,23 +62,36 @@ function payload(result: ToolResult): any {
 }
 
 describe('set_interface_state', () => {
+  it('defaults to dry-run and performs zero mutations', async () => {
+    const { handlers, writes } = harness('up');
+    const out = payload(await handlers['set_interface_state']!({ name: NAME, state: 'down' }));
+    expect(out.dryRun).toBe(true);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('refuses a real call without confirmation', async () => {
+    const { handlers, writes } = harness('up');
+    const result = await handlers['set_interface_state']!({ name: NAME, state: 'down', dry_run: false, confirm: false });
+    expect(result.isError).toBe(true);
+    expect(writes).toHaveLength(0);
+  });
   it('brings an interface up', async () => {
     const { handlers, writes } = harness('down');
-    const result = await handlers['set_interface_state']!({ name: NAME, state: 'up' });
+    const result = await handlers['set_interface_state']!({ name: NAME, state: 'up', dry_run: false, confirm: true });
     expect(result.isError).toBeUndefined();
     expect(writes).toContainEqual({ interface: { [NAME]: { up: true } } });
   });
 
   it('brings an interface down with the negated up command', async () => {
     const { handlers, writes } = harness('up');
-    const result = await handlers['set_interface_state']!({ name: NAME, state: 'down' });
+    const result = await handlers['set_interface_state']!({ name: NAME, state: 'down', dry_run: false, confirm: true });
     expect(result.isError).toBeUndefined();
     expect(writes).toContainEqual({ interface: { [NAME]: { up: { no: true } } } });
   });
 
   it('reports the change as unsaved and names the backup', async () => {
     const { handlers } = harness('down');
-    const out = payload(await handlers['set_interface_state']!({ name: NAME, state: 'up' }));
+    const out = payload(await handlers['set_interface_state']!({ name: NAME, state: 'up', dry_run: false, confirm: true }));
     expect(out.saved).toBe(false);
     expect(out.unsavedChanges).toBe(true);
     expect(out.backup).toBeTruthy();
@@ -87,7 +100,7 @@ describe('set_interface_state', () => {
 
   it('fails when the interface did not actually change state', async () => {
     const { handlers } = harness('up', false);
-    const result = await handlers['set_interface_state']!({ name: NAME, state: 'down' });
+    const result = await handlers['set_interface_state']!({ name: NAME, state: 'down', dry_run: false, confirm: true });
     expect(result.isError).toBe(true);
     expect(result.content.map(p => p.text).join('')).toMatch(/did not take effect/i);
   });

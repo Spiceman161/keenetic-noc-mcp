@@ -1,12 +1,12 @@
 {
   "name": "keenetic",
-  "description": "Control your Keenetic router: who is on the network, Wi-Fi, interfaces, routing policies, and safe configuration changes",
+  "description": "Safely diagnose and manage Keenetic and Netcraze routers",
   "author": {
-    "name": "salatmaster",
-    "url": "https://github.com/salatmaster"
+    "name": "Spiceman161",
+    "url": "https://github.com/Spiceman161"
   },
-  "homepage": "https://github.com/salatmaster/keenetic-mcp",
-  "repository": "https://github.com/salatmaster/keenetic-mcp",
+  "homepage": "https://github.com/Spiceman161/keenetic-noc-mcp",
+  "repository": "https://github.com/Spiceman161/keenetic-noc-mcp",
   "license": "MIT",
   "keywords": [
     "keenetic",
@@ -23,13 +23,13 @@
     "displayName": "Keenetic",
     "shortDescription": "Inspect and control a Keenetic router",
     "longDescription": "Ask about your home network in plain language: which devices are connected, what is using the bandwidth, how the Wi-Fi looks, why the internet is down. Change what needs changing, safely: nothing is saved until you ask, a backup is taken before the first change, and every change is read back and verified. Talks to the router over your LAN with nothing installed on the router itself.",
-    "developerName": "salatmaster",
+    "developerName": "Spiceman161",
     "category": "Developer Tools",
     "capabilities": [
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/salatmaster/keenetic-mcp",
+    "websiteURL": "https://github.com/Spiceman161/keenetic-noc-mcp",
     "defaultPrompt": [
       "Which devices are on my network right now, and what is using the most bandwidth?"
     ]

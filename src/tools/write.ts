@@ -6,6 +6,13 @@ export interface WriteOutcome {
   note: string;
 }
 
+export interface ChangeControl { dry_run?: boolean; confirm?: boolean; }
+
+export function requireConfirmed(args: ChangeControl): void {
+  if (args.dry_run !== false) return;
+  if (args.confirm !== true) throw new Error('Real mutation refused: set dry_run=false and confirm=true after reviewing the preview.');
+}
+
 /**
  * Applies a change and proves it landed.
  *
