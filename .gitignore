@@ -13,6 +13,8 @@ coverage/
 
 # Working design docs and plans, not part of the published project
 docs/superpowers/
+# Local live-router validation records are deliberately not publishable.
+docs/VALIDATION_*.md
 
 # Local credentials and captured state - must never be committed
 .env

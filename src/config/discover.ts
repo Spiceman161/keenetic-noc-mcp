@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, posix, win32 } from 'node:path';
 
 export function gatewayCommand(platform: NodeJS.Platform): { command: string; args: string[] } {
@@ -47,16 +47,54 @@ export async function identifyRouter(
   }
 }
 
-export function configDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
-  const override = env['KEENETIC_CONFIG_DIR'];
-  if (override) return override;
-
+function platformConfigDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, directory: string): string {
   const home = env['HOME'] ?? env['USERPROFILE'] ?? '.';
-  if (platform === 'win32') return win32.join(env['APPDATA'] ?? home, 'keenetic-noc-mcp');
+  if (platform === 'win32') return win32.join(env['APPDATA'] ?? home, directory);
   if (platform === 'darwin') {
-    return posix.join(home, 'Library', 'Application Support', 'keenetic-noc-mcp');
+    return posix.join(home, 'Library', 'Application Support', directory);
   }
-  return posix.join(env['XDG_CONFIG_HOME'] ?? posix.join(home, '.config'), 'keenetic-noc-mcp');
+  return posix.join(env['XDG_CONFIG_HOME'] ?? posix.join(home, '.config'), directory);
+}
+
+/** The directory advertised by the package and used by every normal MCP launch. */
+export function configDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
+  return env['KEENETIC_CONFIG_DIR'] ?? platformConfigDir(platform, env, 'keenetic-noc-mcp');
+}
+
+function legacyConfigDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
+  // An explicit directory belongs to the operator. Never infer or move data
+  // beside it, even if it happens to be empty.
+  if (env['KEENETIC_CONFIG_DIR']) return null;
+  return platformConfigDir(platform, env, 'keenetic-mcp');
+}
+
+/**
+ * Moves the pre-release profile directory to the published package location.
+ *
+ * A rename preserves file ownership and restrictive modes for file-backed
+ * secrets. It runs only when the canonical directory is absent: configurations
+ * are never merged, overwritten, or copied between two existing directories.
+ */
+export async function migrateLegacyConfigDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Promise<boolean> {
+  const legacy = legacyConfigDir(platform, env);
+  if (legacy === null) return false;
+  const target = configDir(platform, env);
+  try {
+    await lstat(target);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    // The target is absent; inspect the source before attempting its atomic move.
+  }
+  try {
+    if (!(await lstat(legacy)).isDirectory()) return false;
+    await rename(legacy, target);
+    return true;
+  } catch {
+    // Setup must remain usable even when no legacy directory exists or a
+    // concurrent process has already created the canonical one.
+    return false;
+  }
 }
 
 export interface StoredConfig {

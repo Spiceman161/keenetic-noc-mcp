@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { runRouterFromTerminal } from './cli/router.js';
-import { configDir, readStoredConfig } from './config/discover.js';
+import { configDir, migrateLegacyConfigDir, readStoredConfig } from './config/discover.js';
 import { loadConfig, type StoredCredentials } from './config/load.js';
 import { createSecretStore, spawnRunner } from './config/secrets.js';
 import { createBackupGuard } from './router/backup.js';
@@ -100,6 +100,7 @@ async function main(): Promise<void> {
 
   let ctx: ToolContext;
   try {
+    await migrateLegacyConfigDir(process.platform, process.env);
     const dir = configDir(process.platform, process.env);
     const storedConfig = await readStoredConfig(dir);
     const store = createSecretStore(process.platform, spawnRunner, dir);

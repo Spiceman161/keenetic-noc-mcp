@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import {
   configDir,
   gatewayCommand,
   identifyRouter,
+  migrateLegacyConfigDir,
   parseGateway,
   readStoredConfig,
   writeStoredConfig
@@ -100,6 +101,44 @@ describe('configDir', () => {
     expect(configDir('win32', { APPDATA: 'C:\\a' } as NodeJS.ProcessEnv)).toBe(
       'C:\\a\\keenetic-noc-mcp'
     );
+  });
+
+  it('lets an operator explicitly override the profile directory', () => {
+    expect(configDir('linux', { KEENETIC_CONFIG_DIR: '/profiles' } as NodeJS.ProcessEnv)).toBe('/profiles');
+  });
+
+  it('moves a legacy profile directory only when the canonical directory is absent', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'kn-profile-migration-'));
+    const env = { XDG_CONFIG_HOME: base } as NodeJS.ProcessEnv;
+    const legacy = join(base, 'keenetic-mcp');
+    await mkdir(join(legacy, 'secrets'), { recursive: true, mode: 0o700 });
+    await writeFile(join(legacy, 'routers.json'), '{"version":1,"profiles":[]}\n', { mode: 0o600 });
+    await writeFile(join(legacy, 'secrets', 'home'), 'not-a-real-secret\n', { mode: 0o600 });
+
+    await expect(migrateLegacyConfigDir('linux', env)).resolves.toBe(true);
+    const target = join(base, 'keenetic-noc-mcp');
+    await expect(readFile(join(target, 'routers.json'), 'utf8')).resolves.toContain('profiles');
+    expect((await stat(join(target, 'secrets', 'home'))).mode & 0o777).toBe(0o600);
+    await expect(stat(legacy)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not merge a legacy profile directory into an existing canonical directory', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'kn-profile-migration-'));
+    const env = { XDG_CONFIG_HOME: base } as NodeJS.ProcessEnv;
+    await mkdir(join(base, 'keenetic-mcp'), { recursive: true });
+    await mkdir(join(base, 'keenetic-noc-mcp'), { recursive: true });
+
+    await expect(migrateLegacyConfigDir('linux', env)).resolves.toBe(false);
+    await expect(stat(join(base, 'keenetic-mcp'))).resolves.toBeDefined();
+  });
+
+  it('does not migrate when the operator overrides the config directory', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'kn-profile-migration-'));
+    const env = { XDG_CONFIG_HOME: base, KEENETIC_CONFIG_DIR: join(base, 'chosen') } as NodeJS.ProcessEnv;
+    await mkdir(join(base, 'keenetic-mcp'), { recursive: true });
+
+    await expect(migrateLegacyConfigDir('linux', env)).resolves.toBe(false);
+    await expect(stat(join(base, 'keenetic-mcp'))).resolves.toBeDefined();
   });
 });
 

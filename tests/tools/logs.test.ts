@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
 import { RciError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
-import { registerLogTools } from '../../src/tools/logs.js';
+import { filterLogEntries, logEntries, registerLogTools } from '../../src/tools/logs.js';
 import type { ToolContext, ToolResult } from '../../src/tools/registry.js';
 import { stubBackup } from '../helpers/backup.js';
 
@@ -59,6 +59,41 @@ describe('log tools', () => {
     const out = payload(await handlers['get_logs_by_device']!({ device: 'Iphosha13' }));
     expect(out.aliases).toContain('192.0.2.5');
     expect(out.lines).toEqual(['00:02 Hotspot info Host 192.0.2.5 joined']);
+  });
+
+  it('combines device, interface, text and time filters without inspecting message text as a timestamp', () => {
+    const entries = logEntries({ log: {
+      '1': { timestamp: '2026-09-09T01:00:00Z', ident: 'Network', message: { message: 'Bridge0 linked 192.0.2.5' } },
+      '2': { timestamp: '2026-09-09T01:01:00Z', ident: 'Network', message: { message: 'Bridge1 linked 192.0.2.5' } },
+      '3': { timestamp: '2026-09-09T01:02:00Z', ident: 'Network', message: { message: 'Bridge0 linked 192.0.2.6' } }
+    } });
+    expect(filterLogEntries(entries, {
+      aliases: ['192.0.2.5'], interface: 'Bridge0', filter: 'linked',
+      since: '2026-09-09T00:59:00Z', until: '2026-09-09T01:01:00Z'
+    }).map(entry => entry.text)).toEqual(['2026-09-09T01:00:00Z Network Bridge0 linked 192.0.2.5']);
+  });
+
+  it('accepts the combined filters through the device-specific MCP tool', async () => {
+    const { handlers } = harness({ logs: { show: { log: { log: {
+      '1': { timestamp: '2026-09-09T01:00:00Z', ident: 'Hotspot', message: { message: 'Bridge0 192.0.2.5 joined' } }
+    } } } } });
+    const out = payload(await handlers['get_logs_by_device']!({
+      device: 'iPhosha13', interface: 'Bridge0', since: '2026-09-09T00:59:00Z', until: '2026-09-09T01:01:00Z'
+    }));
+    expect(out.lines).toEqual(['2026-09-09T01:00:00Z Hotspot Bridge0 192.0.2.5 joined']);
+    expect(out.filters).toMatchObject({ interface: 'Bridge0', since: '2026-09-09T00:59:00Z' });
+  });
+
+  it('accepts a device selector together with the general log filters', async () => {
+    const { handlers } = harness({ logs: { show: { log: { log: {
+      '1': { timestamp: '2026-09-09T01:00:00Z', ident: 'Hotspot', message: { message: 'Bridge0 192.0.2.5 joined' } }
+    } } } } });
+    const out = payload(await handlers['get_logs']!({
+      device: 'iPhosha13', interface: 'Bridge0', filter: 'joined',
+      since: '2026-09-09T00:59:00Z', until: '2026-09-09T01:01:00Z'
+    }));
+    expect(out.lines).toEqual(['2026-09-09T01:00:00Z Hotspot Bridge0 192.0.2.5 joined']);
+    expect(out.filters).toMatchObject({ device: 'iPhosha13', filter: 'joined' });
   });
 
   it('reports an unavailable log command as a capability limitation', async () => {

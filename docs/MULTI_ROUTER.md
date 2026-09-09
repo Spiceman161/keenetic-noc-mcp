@@ -9,6 +9,12 @@ keenetic-noc-mcp router register home --client codex
 keenetic-noc-mcp router register office --client codex
 ~~~
 
+Saved profiles use the project directory: `~/.config/keenetic-noc-mcp` on
+Linux (or the platform equivalent). A normal startup migrates the previous
+`keenetic-mcp` directory only when the project directory does not exist; it
+never merges or overwrites two profile directories. Set `KEENETIC_CONFIG_DIR`
+only when an operator intentionally needs a different location.
+
 Registration previews the client command and requires confirmation. For Codex,
 it uses the supported codex mcp add command to create instances such as
 keenetic_home. The agent configuration contains only the executable and router
