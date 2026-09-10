@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createKeychainStore, spawnRunner } from '../config/secrets.js';
@@ -7,6 +8,7 @@ import { addProfile, readProfiles, saveRegistration, type RouterProfile } from '
 import { createProfileSecretStore, generatePassword, keychainAvailable, type ProfileSecretBackend, type ProfileSecretStore } from '../profiles/secrets.js';
 import { createClient, createRemoteClient, type KeeneticClient } from '../router/client.js';
 import { runRouterPreflight, type PreflightReport } from '../router/preflight.js';
+import { DEV_VERSION, resolveVersion } from '../version.js';
 import { accountInstructions } from './ui/hints.js';
 import type { PromptAdapter, PromptResult } from './ui/prompts.js';
 import { deriveProfileId, normalizeWizardEndpoint } from './router-wizard-helpers.js';
@@ -26,12 +28,48 @@ export interface RouterWizardDraft {
 }
 
 export interface RegistrationInvocation { command: string; args: string[] }
+export interface McpServerLaunch { command: string; args: string[] }
 
-export function registrationInvocation(client: 'codex' | 'claude', id: string): RegistrationInvocation {
+// Exact SemVer only: this value becomes part of an executable npm package
+// spec, so ranges, tags, aliases, paths, and URLs must never be accepted.
+const EXACT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/** Uses stable absolute paths instead of assuming the package bin is global. */
+export function currentMcpServerLaunch(
+  executable = process.execPath,
+  entrypoint = process.argv[1],
+  options: { platform?: NodeJS.Platform; version?: string } = {}
+): McpServerLaunch {
+  if (!entrypoint) throw new Error('Cannot register MCP: the current entrypoint is unavailable');
+  const resolvedEntrypoint = realpathSync(entrypoint);
+  if (resolvedEntrypoint.replaceAll('\\', '/').includes('/_npx/')) {
+    const version = options.version ?? resolveVersion();
+    if (version === DEV_VERSION) {
+      throw new Error('Cannot durably register a development build from the temporary npx cache; run it from a checkout or install it first');
+    }
+    if (!EXACT_SEMVER.test(version)) {
+      throw new Error('Cannot durably register from npx without an exact semantic version');
+    }
+    return { command: (options.platform ?? process.platform) === 'win32' ? 'npx.cmd' : 'npx',
+      args: ['-y', `keenetic-noc-mcp@${version}`] };
+  }
+  return { command: realpathSync(executable), args: [resolvedEntrypoint] };
+}
+
+export function registrationInvocation(
+  client: 'codex' | 'claude',
+  id: string,
+  server = currentMcpServerLaunch()
+): RegistrationInvocation {
   const instance = `keenetic_${id}`;
-  return client === 'codex'
-    ? { command: 'codex', args: ['mcp', 'add', instance, '--', 'keenetic-noc-mcp', '--router', id, '--read-only'] }
-    : { command: 'claude', args: ['mcp', 'add', instance, '--', 'keenetic-noc-mcp', '--router', id, '--read-only'] };
+  return { command: client, args: ['mcp', 'add', instance, '--', server.command,
+    ...server.args, '--router', id, '--read-only'] };
+}
+
+export function registrationPreview(invocation: RegistrationInvocation): string {
+  // JSON escaping keeps control characters and shell metacharacters inert on
+  // every platform. This is deliberately display-only, not a shell command.
+  return JSON.stringify([invocation.command, ...invocation.args]);
 }
 
 export interface RouterWizardDependencies {
@@ -42,6 +80,7 @@ export interface RouterWizardDependencies {
   createClient(profile: Pick<RouterProfile, 'id' | 'mode' | 'endpoint' | 'login'>, password: string): KeeneticClient;
   preflight(profile: Pick<RouterProfile, 'mode' | 'endpoint'>, client: KeeneticClient): Promise<PreflightReport>;
   addProfile(dir: string, profile: RouterProfile): Promise<void>;
+  serverLaunch(): McpServerLaunch;
   runRegistration(invocation: RegistrationInvocation): Promise<number>;
   saveRegistration(dir: string, id: string, client: 'codex' | 'claude', instanceName: string): Promise<void>;
   withPersistenceLock<T>(dir: string, task: (recoveredStaleLock: boolean) => Promise<T>): Promise<T>;
@@ -114,6 +153,7 @@ const defaultDependencies: RouterWizardDependencies = {
   },
   preflight: runRouterPreflight,
   addProfile,
+  serverLaunch: currentMcpServerLaunch,
   runRegistration: invocation => new Promise(resolve => {
     const child = spawn(invocation.command, invocation.args, { stdio: 'inherit' });
     child.on('close', code => resolve(code ?? 1));
@@ -333,12 +373,14 @@ export async function runRouterWizard(
   const clients: Array<'codex' | 'claude'> = draft.registration === 'both'
     ? ['codex', 'claude'] : draft.registration === 'neither' ? [] : [draft.registration];
   for (const client of clients) {
-    const invocation = registrationInvocation(client, draft.id);
     const instanceName = `keenetic_${draft.id}`;
     let code = 1;
-    try { code = await deps.runRegistration(invocation); } catch { /* handled below */ }
+    try {
+      const invocation = registrationInvocation(client, draft.id, deps.serverLaunch());
+      code = await deps.runRegistration(invocation);
+    } catch { /* handled below */ }
     if (code !== 0) {
-      ui.output(`! Registration with ${client} failed; the profile remains saved. Retry: ${invocation.command} ${invocation.args.join(' ')}`);
+      ui.output(`! Registration with ${client} failed; the profile remains saved. Run router register again from a durable installation.`);
       continue;
     }
     try {

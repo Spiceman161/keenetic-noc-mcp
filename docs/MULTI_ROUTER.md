@@ -21,26 +21,39 @@ only when an operator intentionally needs a different location.
 Standalone registration previews the client command and requires confirmation;
 that behavior is unchanged by the wizard. For Codex, it uses the supported
 `codex mcp add` command to create instances such as `keenetic_home`. The agent
-configuration contains only the executable and router selection, never a
-password or secret-file path. Existing instance names are not overwritten
-without confirmation. Use `--client claude` for the equivalent Claude
-registration, or omit the client flag to choose interactively.
+configuration uses the absolute Node executable and resolved current server
+entrypoint, so it does not depend on a globally installed `keenetic-noc-mcp`
+binary. A published package started from the temporary `npx` cache is instead
+registered as `npx -y keenetic-noc-mcp@<exact-version>`, so cache cleanup does
+not break it. An unpublished development build in that cache is refused; run it
+from a durable checkout or installation. The configuration contains only
+launch information and the router selection, never a password or secret-file
+path. Existing instance names are not overwritten without confirmation. Use
+`--client claude` for the equivalent Claude registration, or omit the client
+flag to choose interactively.
 
 Wizard-selected registrations run only after the password has been verified
 and the profile has been persisted. The client command is invoked as an
-argument array, not through a shell command string. A registration failure does
-not roll back the valid profile; the wizard prints a secret-free client command
-that can be retried later.
+argument array, not through a shell command string. Paths containing spaces
+remain one argument. The preview is an escaped JSON argv display, not a command
+to paste into a shell. A registration failure does not roll back the valid
+profile; retry `router register` from the same durable installation.
+
+For a checkout-based registration, Codex or Claude will execute that checkout's
+resolved entrypoint in future sessions. Keep the installation under the same
+trusted user ownership and do not make it group- or world-writable. Moving or
+deleting it requires registration again; modifying it changes the code the MCP
+client will execute, just like updating a global installation.
 
 The resulting configuration is equivalent to:
 
 ~~~toml
 [mcp_servers.keenetic_home]
-command = "node"
+command = "/usr/bin/node"
 args = ["/opt/keenetic-noc-mcp/dist/index.js", "--router", "home", "--read-only"]
 
 [mcp_servers.keenetic_office]
-command = "node"
+command = "/usr/bin/node"
 args = ["/opt/keenetic-noc-mcp/dist/index.js", "--router", "office", "--read-only"]
 ~~~
 

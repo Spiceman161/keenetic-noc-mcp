@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { currentMcpServerLaunch } from '../src/cli/router-wizard.js';
 
 const DIST = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 
@@ -30,8 +31,17 @@ function run(
   env: NodeJS.ProcessEnv,
   args: string[] = []
 ): Promise<RunResult> {
+  return runCommand(process.execPath, [entry, ...args], stdin, env);
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  stdin: string,
+  env: NodeJS.ProcessEnv
+): Promise<RunResult> {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [entry, ...args], { env });
+    const child = spawn(command, args, { env });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => {
@@ -134,6 +144,27 @@ describe('the built binary', () => {
     expect(result.stdout, 'the server produced no output through a symlink').toContain(
       '"serverInfo"'
     );
+  });
+
+  it('advertises tools through the exact durable registration launch', async () => {
+    const launch = currentMcpServerLaunch(process.execPath, DIST);
+    const input = [
+      INITIALIZE,
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
+    ].join('\n') + '\n';
+
+    const result = await runCommand(launch.command,
+      [...launch.args, '--router', 'test', '--read-only'], input, CONFIGURED);
+    const messages = result.stdout.trim().split('\n').map(line => JSON.parse(line) as {
+      id?: number;
+      result?: { tools?: Array<{ name?: string }> };
+    });
+    const tools = messages.find(message => message.id === 2)?.result?.tools ?? [];
+
+    expect(result.stderr).toBe('');
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.map(tool => tool.name)).toContain('get_config_diff');
   });
 
   it('answers initialize in safe mode when nothing is configured', async () => {

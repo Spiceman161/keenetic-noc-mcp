@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registrationInvocation, runRouterWizard, withPersistenceLock, type RouterWizardDependencies } from '../../src/cli/router-wizard.js';
+import { currentMcpServerLaunch, registrationInvocation, registrationPreview, runRouterWizard, withPersistenceLock, type McpServerLaunch, type RouterWizardDependencies } from '../../src/cli/router-wizard.js';
 import type { PromptAdapter, PromptResult } from '../../src/cli/ui/prompts.js';
 import type { ProfileSecretStore } from '../../src/profiles/secrets.js';
 
 const answer = <T>(value: T): PromptResult<T> => ({ kind: 'value', value });
 const back: PromptResult<never> = { kind: 'back' };
 const cancel: PromptResult<never> = { kind: 'cancel' };
+const SERVER_LAUNCH: McpServerLaunch = {
+  command: '/usr/bin/node',
+  args: ['/opt/keenetic noc/dist/index.js']
+};
 
 class FakePrompt implements PromptAdapter {
   readonly outputs: string[] = [];
@@ -59,6 +63,7 @@ function harness(options: { keychain?: boolean; addError?: Error; registrationCo
     createClient: vi.fn(() => ({}) as never),
     preflight: vi.fn(async () => ({ ready: true, model: 'Keenetic Test', firmware: '5.1.3', checks: {} })),
     addProfile: vi.fn(async () => { if (options.addError) throw options.addError; }),
+    serverLaunch: () => SERVER_LAUNCH,
     runRegistration: vi.fn(async () => options.registrationCode ?? 0),
     saveRegistration: vi.fn(async () => undefined),
     withPersistenceLock: vi.fn(async (_dir, task) => task(false))
@@ -247,14 +252,16 @@ describe('router onboarding state machine', () => {
     expect(deps.addProfile).not.toHaveBeenCalled();
   });
 
-  it('keeps a saved profile and prints a secret-free retry when registration fails', async () => {
+  it('keeps a saved profile and prints a secret-free retry instruction when registration fails', async () => {
     const { deps, store } = harness({ registrationCode: 1 });
     const ui = new FakePrompt(successfulScript('remote', 'codex'));
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
     expect(store.remove).not.toHaveBeenCalled();
     expect(deps.addProfile).toHaveBeenCalledOnce();
-    expect(deps.runRegistration).toHaveBeenCalledWith(registrationInvocation('codex', 'my-router'));
-    expect(ui.outputs.join('\n')).toContain('codex mcp add keenetic_my-router');
+    expect(deps.runRegistration).toHaveBeenCalledWith(
+      registrationInvocation('codex', 'my-router', SERVER_LAUNCH)
+    );
+    expect(ui.outputs.join('\n')).toContain('Run router register again');
     expect(ui.outputs.find(line => line.startsWith('Review'))).not.toContain('Abcdefghijk2345!Qrstuvwx');
     expect(ui.outputs.at(-1)).not.toContain('Abcdefghijk2345!Qrstuvwx');
   });
@@ -272,11 +279,24 @@ describe('router onboarding state machine', () => {
     }
   });
 
+  it('keeps the saved profile when the durable server launch cannot be resolved', async () => {
+    const { deps, store } = harness();
+    deps.serverLaunch = () => { throw new Error('entrypoint disappeared'); };
+    const ui = new FakePrompt(successfulScript('remote', 'codex'));
+    await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
+    expect(store.remove).not.toHaveBeenCalled();
+    expect(deps.addProfile).toHaveBeenCalledOnce();
+    expect(deps.runRegistration).not.toHaveBeenCalled();
+    expect(ui.outputs.at(-1)).toContain('profile remains saved');
+  });
+
   it('registers both clients with separate argv calls and metadata', async () => {
     const { deps } = harness();
     await expect(runRouterWizard('/safe/config', new FakePrompt(successfulScript('remote', 'both')), deps)).resolves.toBe(0);
-    expect(deps.runRegistration).toHaveBeenNthCalledWith(1, registrationInvocation('codex', 'my-router'));
-    expect(deps.runRegistration).toHaveBeenNthCalledWith(2, registrationInvocation('claude', 'my-router'));
+    expect(deps.runRegistration).toHaveBeenNthCalledWith(1,
+      registrationInvocation('codex', 'my-router', SERVER_LAUNCH));
+    expect(deps.runRegistration).toHaveBeenNthCalledWith(2,
+      registrationInvocation('claude', 'my-router', SERVER_LAUNCH));
     expect(deps.saveRegistration).toHaveBeenCalledTimes(2);
   });
 
@@ -339,10 +359,98 @@ describe('wizard persistence lock', () => {
 });
 
 describe('registration argv', () => {
-  it('contains no shell string or secret-bearing argument', () => {
-    expect(registrationInvocation('claude', 'home')).toEqual({
+  it('resolves the current executable and entrypoint to absolute existing paths', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'keenetic entry '));
+    try {
+      const entrypoint = join(dir, 'index.js');
+      await writeFile(entrypoint, '#!/usr/bin/env node\n');
+      const launch = currentMcpServerLaunch(process.execPath, entrypoint);
+      expect(launch.command).toMatch(/^\//);
+      expect(launch.args).toEqual([entrypoint]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('fails clearly when no current entrypoint can be resolved', () => {
+    expect(() => currentMcpServerLaunch(process.execPath, ''))
+      .toThrow(/entrypoint is unavailable/);
+  });
+
+  it('registers the absolute executable and entrypoint instead of a missing global bin', () => {
+    const invocation = registrationInvocation('claude', 'home', SERVER_LAUNCH);
+    expect(invocation).toEqual({
       command: 'claude',
-      args: ['mcp', 'add', 'keenetic_home', '--', 'keenetic-noc-mcp', '--router', 'home', '--read-only']
+      args: ['mcp', 'add', 'keenetic_home', '--', '/usr/bin/node',
+        '/opt/keenetic noc/dist/index.js', '--router', 'home', '--read-only']
     });
+    expect(invocation.args).not.toContain('keenetic-noc-mcp');
+  });
+
+  it('renders escaped display-only argv without exposing control characters', () => {
+    const launch = { command: '/usr/bin/node',
+      args: ["/opt/keenetic noc/& dangerous/' quote\nline/index.js"] };
+    const invocation = registrationInvocation('codex', 'home', launch);
+    const preview = registrationPreview(invocation);
+    expect(JSON.parse(preview)).toEqual([invocation.command, ...invocation.args]);
+    expect(preview).not.toContain('\n');
+    expect(preview).toContain('\\n');
+    expect(invocation.args[5]).toBe(launch.args[0]);
+  });
+
+  it.each([['linux', 'npx'], ['win32', 'npx.cmd']] as const)(
+    'pins published one-shot npx registrations on %s', async (platform, command) => {
+      const dir = await mkdtemp(join(tmpdir(), 'npm-cache-'));
+      try {
+        const npxDir = join(dir, '_npx', 'temporary', 'node_modules', 'keenetic-noc-mcp', 'dist');
+        await mkdir(npxDir, { recursive: true });
+        const entrypoint = join(npxDir, 'index.js');
+        await writeFile(entrypoint, '#!/usr/bin/env node\n');
+        expect(currentMcpServerLaunch(process.execPath, entrypoint,
+          { platform, version: '1.2.3' })).toEqual({
+          command,
+          args: ['-y', 'keenetic-noc-mcp@1.2.3']
+        });
+      } finally { await rm(dir, { recursive: true, force: true }); }
+    }
+  );
+
+  it('refuses an ephemeral npx development build that cannot be pinned', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'npm-cache-'));
+    try {
+      const npxDir = join(dir, '_npx', 'temporary');
+      await mkdir(npxDir, { recursive: true });
+      const entrypoint = join(npxDir, 'index.js');
+      await writeFile(entrypoint, '#!/usr/bin/env node\n');
+      expect(() => currentMcpServerLaunch(process.execPath, entrypoint,
+        { version: '0.0.0-dev' })).toThrow(/temporary npx cache/);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['latest', '^1.2.3', 'npm:other-package@1.2.3', 'https://example.test/pkg.tgz'])(
+    'refuses non-exact npx package version %s', async version => {
+      const dir = await mkdtemp(join(tmpdir(), 'npm-cache-'));
+      try {
+        const npxDir = join(dir, '_npx', 'temporary');
+        await mkdir(npxDir, { recursive: true });
+        const entrypoint = join(npxDir, 'index.js');
+        await writeFile(entrypoint, '#!/usr/bin/env node\n');
+        expect(() => currentMcpServerLaunch(process.execPath, entrypoint, { version }))
+          .toThrow(/exact semantic version/);
+      } finally { await rm(dir, { recursive: true, force: true }); }
+    }
+  );
+
+  it('accepts an exact prerelease version for a published npx build', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'npm-cache-'));
+    try {
+      const npxDir = join(dir, '_npx', 'temporary');
+      await mkdir(npxDir, { recursive: true });
+      const entrypoint = join(npxDir, 'index.js');
+      await writeFile(entrypoint, '#!/usr/bin/env node\n');
+      expect(currentMcpServerLaunch(process.execPath, entrypoint,
+        { version: '1.2.3-rc.1+build.5' })).toEqual({
+        command: 'npx',
+        args: ['-y', 'keenetic-noc-mcp@1.2.3-rc.1+build.5']
+      });
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

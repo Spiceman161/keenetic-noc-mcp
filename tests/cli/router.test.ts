@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isWizardAction, runConnectionChecks } from '../../src/cli/router.js';
+import { isWizardAction, runConnectionChecks, runRouterRegistration, type RouterRegistrationDependencies, type Terminal } from '../../src/cli/router.js';
 import { AuthError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import type { RouterProfile } from '../../src/profiles/registry.js';
@@ -92,5 +92,74 @@ describe('router test checks', () => {
     expect(result.overall).toBe('unhealthy');
     expect(result.checks['Authentication']).toContain('credentials rejected');
     expect(result.checks['RCI']).toContain('authentication failed');
+  });
+});
+
+function registrationHarness(answer = 'y', options: {
+  runCode?: number;
+  runError?: Error;
+  saveError?: Error;
+  launchError?: Error;
+} = {}) {
+  const outputs: string[] = [];
+  const ui: Terminal = {
+    ask: vi.fn(async () => answer),
+    close: vi.fn(),
+    out: line => { outputs.push(line); }
+  };
+  const deps: Partial<RouterRegistrationDependencies> = {
+    getProfile: vi.fn(async () => profile('remote')),
+    serverLaunch: vi.fn(() => {
+      if (options.launchError) throw options.launchError;
+      return { command: '/usr/bin/node', args: ['/opt/keenetic noc/dist/index.js'] };
+    }),
+    runRegistration: vi.fn(async () => {
+      if (options.runError) throw options.runError;
+      return options.runCode ?? 0;
+    }),
+    saveRegistration: vi.fn(async () => {
+      if (options.saveError) throw options.saveError;
+    })
+  };
+  return { ui, deps, outputs };
+}
+
+describe('standalone router registration', () => {
+  it('passes an absolute launch argv with spaces as one argument and saves metadata', async () => {
+    const { ui, deps, outputs } = registrationHarness();
+    await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(0);
+    expect(deps.runRegistration).toHaveBeenCalledWith({
+      command: 'codex',
+      args: ['mcp', 'add', 'keenetic_test', '--', '/usr/bin/node',
+        '/opt/keenetic noc/dist/index.js', '--router', 'test', '--read-only']
+    });
+    expect(deps.saveRegistration).toHaveBeenCalledWith('/profiles', 'test', 'codex',
+      'keenetic_test');
+    expect(outputs.join('\n')).not.toContain('keenetic-noc-mcp --router');
+  });
+
+  it('cancels without invoking the client or changing metadata', async () => {
+    const { ui, deps } = registrationHarness('n');
+    await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(1);
+    expect(deps.runRegistration).not.toHaveBeenCalled();
+    expect(deps.saveRegistration).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['launch resolution', { launchError: new Error('missing') }],
+    ['spawn error', { runError: new Error('missing client') }],
+    ['client exit', { runCode: 1 }]
+  ] as const)('keeps the profile metadata unchanged after %s failure', async (_name, options) => {
+    const { ui, deps } = registrationHarness('y', options);
+    await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(1);
+    expect(deps.saveRegistration).not.toHaveBeenCalled();
+  });
+
+  it('reports metadata failure after the external registration succeeds', async () => {
+    const { ui, deps, outputs } = registrationHarness('y',
+      { saveError: new Error('registry unavailable') });
+    await expect(runRouterRegistration('/profiles', 'test', 'claude', ui, deps)).resolves.toBe(1);
+    expect(deps.runRegistration).toHaveBeenCalledOnce();
+    expect(outputs.at(-1)).toContain('metadata could not be updated');
   });
 });

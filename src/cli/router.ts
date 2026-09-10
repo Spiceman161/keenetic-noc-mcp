@@ -1,13 +1,14 @@
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { configDir, migrateLegacyConfigDir } from '../config/discover.js';
 import { createClient, createRemoteClient, type KeeneticClient } from '../router/client.js';
 import { getProfile, readLastTest, readProfiles, removeProfile, removeState, saveLastTest, saveRegistration, setDefaultProfile, type RouterProfile } from '../profiles/registry.js';
 import { createProfileSecretStore, generatePassword, type ProfileSecretBackend } from '../profiles/secrets.js';
 import { runRouterPreflight, type PreflightDependencies, type PreflightReport } from '../router/preflight.js';
-import { runRouterWizard } from './router-wizard.js';
+import { currentMcpServerLaunch, registrationInvocation, registrationPreview, runRouterWizard, type McpServerLaunch, type RegistrationInvocation } from './router-wizard.js';
 import { createPromptAdapter } from './ui/prompts.js';
 
-interface Terminal { ask(question: string): Promise<string>; close(): void; out(line: string): void; }
+export interface Terminal { ask(question: string): Promise<string>; close(): void; out(line: string): void; }
 function terminal(): Terminal {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return { ask: question => rl.question(question).then(value => value.trim()), close: () => rl.close(), out: line => process.stdout.write(`${line}\n`) };
@@ -20,6 +21,59 @@ function profileClient(profile: RouterProfile, password: string): KeeneticClient
     : createClient({ host: profile.endpoint, login: profile.login, password });
 }
 async function confirm(ui: Terminal, prompt: string, defaultYes = true): Promise<boolean> { const answer = (await ui.ask(`${prompt} [${defaultYes ? 'Y/n' : 'y/N'}] `)).toLowerCase(); return answer === '' ? defaultYes : answer === 'y' || answer === 'yes'; }
+
+export interface RouterRegistrationDependencies {
+  getProfile(dir: string, id: string): ReturnType<typeof getProfile>;
+  serverLaunch(): McpServerLaunch;
+  runRegistration(invocation: RegistrationInvocation): Promise<number>;
+  saveRegistration(dir: string, id: string, client: 'codex' | 'claude', instanceName: string): Promise<void>;
+}
+
+const registrationDependencies: RouterRegistrationDependencies = {
+  getProfile,
+  serverLaunch: currentMcpServerLaunch,
+  runRegistration: invocation => new Promise(resolve => {
+    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit' });
+    child.on('close', code => resolve(code ?? 1));
+    child.on('error', () => resolve(1));
+  }),
+  saveRegistration: (dir, id, client, instanceName) =>
+    saveRegistration(dir, id, { client, instanceName })
+};
+
+/** Registers an existing profile without changing it or exposing its secret. */
+export async function runRouterRegistration(
+  dir: string,
+  id: string,
+  client: 'codex' | 'claude',
+  ui: Terminal,
+  overrides: Partial<RouterRegistrationDependencies> = {}
+): Promise<number> {
+  const deps = { ...registrationDependencies, ...overrides };
+  if (!await deps.getProfile(dir, id)) throw new Error(`No profile named "${id}"`);
+  let invocation: RegistrationInvocation;
+  try { invocation = registrationInvocation(client, id, deps.serverLaunch()); }
+  catch {
+    ui.out('✗ Registration launch path could not be resolved; the profile was not changed. Run this command from a durable installation.');
+    return 1;
+  }
+  ui.out(`Registration argv (display only; no secrets):\n  ${registrationPreview(invocation)}`);
+  if (!await confirm(ui, 'Register this MCP?')) return 1;
+  let code = 1;
+  try { code = await deps.runRegistration(invocation); } catch { /* handled below */ }
+  if (code !== 0) {
+    ui.out('✗ Registration failed; the profile was not changed.');
+    return 1;
+  }
+  const instanceName = `keenetic_${id}`;
+  try { await deps.saveRegistration(dir, id, client, instanceName); }
+  catch {
+    ui.out(`! Registered ${instanceName}, but its local profile metadata could not be updated.`);
+    return 1;
+  }
+  ui.out('✓ Registered.');
+  return 0;
+}
 
 async function add(dir: string): Promise<number> {
   requireTty();
@@ -70,7 +124,15 @@ async function test(dir: string, id: string): Promise<number> {
   return result.overall === 'healthy' ? 0 : 1;
 }
 
-async function register(dir: string, id: string, clientArg?: string): Promise<number> { requireTty(); const profile = await getProfile(dir, id); if (!profile) throw new Error(`No profile named "${id}"`); const ui = terminal(); try { const client = (clientArg ?? await ui.ask('Client (codex/claude): ')).toLowerCase(); if (client !== 'codex' && client !== 'claude') throw new Error('Client must be codex or claude'); const instanceName = `keenetic_${id}`; const command = client === 'codex' ? `codex mcp add ${instanceName} -- keenetic-noc-mcp --router ${id} --read-only` : `claude mcp add ${instanceName} -- keenetic-noc-mcp --router ${id} --read-only`; ui.out(`Command preview (no secrets):\n  ${command}`); if (!await confirm(ui, 'Register this MCP?')) return 1; const { spawn } = await import('node:child_process'); const [cmd, ...args] = command.split(' '); const code = await new Promise<number>(resolve => spawn(cmd as string, args, { stdio: 'inherit' }).on('close', value => resolve(value ?? 1)).on('error', () => resolve(1))); if (code !== 0) { ui.out('✗ Registration failed; the profile was not changed.'); return 1; } await saveRegistration(dir, id, { client, instanceName }); ui.out('✓ Registered.'); return 0; } finally { ui.close(); } }
+async function register(dir: string, id: string, clientArg?: string): Promise<number> {
+  requireTty();
+  const ui = terminal();
+  try {
+    const client = (clientArg ?? await ui.ask('Client (codex/claude): ')).toLowerCase();
+    if (client !== 'codex' && client !== 'claude') throw new Error('Client must be codex or claude');
+    return await runRouterRegistration(dir, id, client, ui);
+  } finally { ui.close(); }
+}
 
 async function rotate(dir: string, id: string): Promise<number> { requireTty(); const profile = await getProfile(dir, id); if (!profile) throw new Error(`No profile named "${id}"`); const ui = terminal(); try { const backend: ProfileSecretBackend = profile.secretRef.startsWith('file:') ? 'file' : 'keychain'; const store = await createProfileSecretStore(dir, backend); const old = await store.read(id); if (!old) throw new Error('Profile password is unavailable'); const next = generatePassword(); ui.out(`New password: ${masked(next)}`); await ui.ask('Press Enter to reveal it: '); ui.out(next); ui.out('→ Set this password for the existing router user.'); if (!await confirm(ui, 'Password changed on router?')) return 1; try { await profileClient(profile, next).capabilities(); } catch { try { await profileClient(profile, old).capabilities(); ui.out('✗ New credentials rejected; old credentials still work.'); } catch { ui.out('→ action required: router password state is ambiguous.'); } return 1; } await store.save(id, next); ui.out('✓ Password rotated.'); return 0; } finally { ui.close(); } }
 
