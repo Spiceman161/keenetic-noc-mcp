@@ -41,7 +41,7 @@ function unavailable(
 
 async function probe(reader: ProbeReader, path: string): Promise<ConfigCapabilityProbe> {
   try {
-    const metadata = await reader.probeGet(path);
+    const metadata = await reader.probeGet(path, 256_000);
     if (metadata.httpStatus === 403) return unavailable(metadata, 'capability-denied');
     if (metadata.httpStatus === 404) return unavailable(metadata, 'not-found');
     if (metadata.httpStatus < 200 || metadata.httpStatus >= 300) return unavailable(metadata, 'http-error');

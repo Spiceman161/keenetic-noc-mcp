@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runConnectionChecks } from '../../src/cli/router.js';
-import { AuthError, RemoteCapabilityError } from '../../src/router/errors.js';
+import { isWizardAction, runConnectionChecks } from '../../src/cli/router.js';
+import { AuthError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import type { RouterProfile } from '../../src/profiles/registry.js';
 
@@ -10,7 +10,7 @@ const profile = (mode: 'lan' | 'remote'): RouterProfile => ({
   login: 'agent', secretRef: 'file:test', readOnly: true
 });
 
-function client(options: { baseError?: Error; configError?: Error; dnsError?: Error; startupError?: Error } = {}): KeeneticClient {
+function client(options: { baseError?: Error; diagnosticError?: string; startupAvailable?: boolean; backupError?: Error } = {}): KeeneticClient {
   return {
     capabilities: vi.fn(async () => {
       if (options.baseError) throw options.baseError;
@@ -18,50 +18,68 @@ function client(options: { baseError?: Error; configError?: Error; dnsError?: Er
     }),
     rci: {
       get: vi.fn(async (path: string) => {
-        if (path === 'show/last-change' && options.configError) throw options.configError;
-        if (path === 'show/dns-proxy' && options.dnsError) throw options.dnsError;
+        if (path === options.diagnosticError) throw new Error('unavailable');
         return {};
       }),
       getText: vi.fn(async () => {
-        if (options.startupError) throw options.startupError;
+        if (options.backupError) throw options.backupError;
         return '! sanitized config';
-      })
+      }),
+      probeGet: vi.fn(async (path: string) => ({
+        httpStatus: path === 'more?filename=startup-config' && options.startupAvailable === false ? 404 : 200,
+        contentTypeClass: 'json', shape: 'object', items: 1, bytes: 10,
+        payloadShape: 'object', payloadItems: 1, payloadItemShape: 'object', wrapperDepth: 1
+      }))
     }
   } as unknown as KeeneticClient;
 }
 
+const remoteDeps = { resolveDns: async () => 1, verifyTls: async () => undefined };
+
 describe('router test checks', () => {
-  it('runs independent config, DNS and startup-config reads', async () => {
+  it('keeps both add spellings routed to the wizard', () => {
+    expect(isWizardAction('add')).toBe(true);
+    expect(isWizardAction('init')).toBe(true);
+    expect(isWizardAction('test')).toBe(false);
+  });
+  it('reuses preflight config and diagnostic reads', async () => {
     const instance = client();
     const result = await runConnectionChecks(profile('lan'), instance);
     expect(result.overall).toBe('healthy');
-    expect(instance.rci.get).toHaveBeenCalledWith('show/last-change');
-    expect(instance.rci.get).toHaveBeenCalledWith('show/dns-proxy');
-    expect(instance.rci.getText).toHaveBeenCalledWith('/ci/startup-config.txt');
+    expect(instance.rci.get).toHaveBeenCalledWith('show/system', 256_000);
+    expect(instance.rci.get).toHaveBeenCalledWith('show/internet/status', 256_000);
+    expect(instance.rci.get).toHaveBeenCalledWith('show/dns-proxy', 256_000);
+    expect(instance.rci.probeGet).toHaveBeenCalledWith('show/running-config', 256_000);
+    expect(instance.rci.probeGet).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
   });
 
-  it('treats the known remote /ci denial as a healthy capability limitation', async () => {
-    const result = await runConnectionChecks(profile('remote'), client({
-      startupError: new RemoteCapabilityError('remote denied /ci/')
-    }));
+  it('keeps remote backup capability separate and healthy', async () => {
+    const result = await runConnectionChecks(profile('remote'), client(), remoteDeps);
     expect(result.overall).toBe('healthy');
-    expect(result.checks['Startup config']).toContain('unsupported remotely');
-    expect(result.checks['Backup']).toContain('LAN profile');
+    expect(result.checks['Startup config']).toContain('available through RCI');
+    expect(result.checks['Backup']).toContain('write backup requires a LAN profile');
+    expect(result.checks['Backup']).toContain('read-only use is ready');
   });
 
-  it('continues after an individual read fails and reports degraded', async () => {
-    const instance = client({ dnsError: new Error('DNS unavailable') });
+  it('preserves a degraded exit result when LAN backup is unavailable', async () => {
+    const result = await runConnectionChecks(profile('lan'), client({ backupError: new Error('denied') }));
+    expect(result.overall).toBe('degraded');
+    expect(result.checks['Backup']).toContain('unavailable through /ci/startup-config.txt');
+  });
+
+  it('continues after an optional diagnostic fails and reports degraded', async () => {
+    const instance = client({ diagnosticError: 'show/dns-proxy' });
     const result = await runConnectionChecks(profile('lan'), instance);
     expect(result.overall).toBe('degraded');
-    expect(result.checks['Config read']).toBe('✓');
-    expect(result.checks['DNS']).toContain('failed');
-    expect(instance.rci.getText).toHaveBeenCalled();
+    expect(result.checks['Running config']).toContain('available');
+    expect(result.checks['DNS diagnostic']).toContain('unavailable');
+    expect(instance.rci.probeGet).toHaveBeenCalled();
   });
 
   it('marks dependent checks skipped after authentication fails', async () => {
-    const result = await runConnectionChecks(profile('remote'), client({ baseError: new AuthError('bad credentials') }));
+    const result = await runConnectionChecks(profile('lan'), client({ baseError: new AuthError('bad credentials') }));
     expect(result.overall).toBe('unhealthy');
-    expect(result.checks['Authentication']).toContain('failed');
-    expect(result.checks['DNS']).toContain('skipped');
+    expect(result.checks['Authentication']).toContain('credentials rejected');
+    expect(result.checks['RCI']).toContain('authentication failed');
   });
 });

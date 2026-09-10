@@ -1,7 +1,10 @@
 # Multiple routers with Codex and Claude
 
-One MCP process owns one router profile. Create profiles first, then register a
-separate read-only client instance for each router:
+One MCP process owns one router profile. The guided `router add` wizard can
+register the safely saved profile with Codex, Claude, or both. Registration is
+optional and defaults to neither client. Repeat the wizard for each router, or
+create profiles first and use the standalone command to register a separate
+read-only client instance for each one:
 
 ~~~sh
 keenetic-noc-mcp router add
@@ -15,12 +18,19 @@ Linux (or the platform equivalent). A normal startup migrates the previous
 never merges or overwrites two profile directories. Set `KEENETIC_CONFIG_DIR`
 only when an operator intentionally needs a different location.
 
-Registration previews the client command and requires confirmation. For Codex,
-it uses the supported codex mcp add command to create instances such as
-keenetic_home. The agent configuration contains only the executable and router
-selection, never a password or secret-file path. Existing instance names are
-not overwritten without confirmation. Use --client claude for the equivalent
-Claude registration, or omit the client flag to choose interactively.
+Standalone registration previews the client command and requires confirmation;
+that behavior is unchanged by the wizard. For Codex, it uses the supported
+`codex mcp add` command to create instances such as `keenetic_home`. The agent
+configuration contains only the executable and router selection, never a
+password or secret-file path. Existing instance names are not overwritten
+without confirmation. Use `--client claude` for the equivalent Claude
+registration, or omit the client flag to choose interactively.
+
+Wizard-selected registrations run only after the password has been verified
+and the profile has been persisted. The client command is invoked as an
+argument array, not through a shell command string. A registration failure does
+not roll back the valid profile; the wizard prints a secret-free client command
+that can be retried later.
 
 The resulting configuration is equivalent to:
 

@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { addProfile, readLastTest, readProfiles, resolveProfile, saveLastTest, setDefaultProfile } from '../../src/profiles/registry.js';
-import { createProfileSecretStore, generatePassword } from '../../src/profiles/secrets.js';
+import { createProfileSecretStore, generatePassword, keychainAvailable } from '../../src/profiles/secrets.js';
 
 describe('router profiles', () => {
   it('stores only profile metadata and resolves the default', async () => {
@@ -36,5 +36,16 @@ describe('router profiles', () => {
     expect(await store.read('home')).toBe('not-in-registry');
     expect((await stat(join(dir, 'secrets'))).mode & 0o777).toBe(0o700);
     expect((await stat(join(dir, 'secrets', 'home'))).mode & 0o777).toBe(0o600);
+  });
+
+  it('rejects a keychain probe whose disposable secret cannot be removed', async () => {
+    let saved = '';
+    const store = {
+      save: vi.fn(async (_account: string, secret: string) => { saved = secret; return 'the system keychain'; }),
+      read: vi.fn(async (_account: string) => saved),
+      remove: vi.fn(async () => { throw new Error('cleanup failed'); })
+    };
+    await expect(keychainAvailable(store)).resolves.toBe(false);
+    expect(store.remove).toHaveBeenCalledOnce();
   });
 });

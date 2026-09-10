@@ -76,6 +76,26 @@ describe('Rci.get', () => {
     const rci = new Rci(sessionReturning('==== Table: "nat" ===='));
     await expect(rci.get('show/netfilter')).rejects.toThrow(/not JSON/i);
   });
+
+  it('cancels a chunked response that exceeds the requested bound', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"value":"'));
+        controller.enqueue(new TextEncoder().encode('too large"}'));
+      },
+      cancel() { cancelled = true; }
+    });
+    const rci = new Rci({ request: async () => new Response(body, { headers: { 'content-type': 'application/json' } }) });
+    await expect(rci.get('show/version', 10)).rejects.toMatchObject({ code: 'response-too-large' });
+    expect(cancelled).toBe(true);
+  });
+
+  it('preserves the legacy unbounded default outside explicit preflight reads', async () => {
+    const body = JSON.stringify({ value: 'x'.repeat(1_000_100) });
+    const rci = new Rci(sessionReturning(body));
+    await expect(rci.get<{ value: string }>('show/large')).resolves.toMatchObject({ value: expect.any(String) });
+  });
 });
 
 describe('Rci.getText', () => {
@@ -172,5 +192,10 @@ describe('Rci.probeGet', () => {
       name: 'RciError', code: '123', ident: 'Config'
     });
     await expect(rci.probeGet('show/running-config')).rejects.not.toThrow(/private detail/);
+  });
+
+  it('does not retain an oversized probe payload', async () => {
+    const rci = new Rci(sessionReturning(JSON.stringify(['a'.repeat(200)])));
+    await expect(rci.probeGet('show/running-config', 64)).rejects.toMatchObject({ code: 'response-too-large' });
   });
 });

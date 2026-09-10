@@ -37,12 +37,14 @@ export function generatePassword(): string {
 export async function keychainAvailable(store: SecretStore): Promise<boolean> {
   const probe = `probe:${randomBytes(12).toString('hex')}`;
   const secret = randomBytes(18).toString('base64url');
+  let usable = false;
   try {
     const result = await store.save(probe, secret);
     const value = await store.read(probe);
-    await store.remove(probe);
-    return result === 'the system keychain' && value === secret;
-  } catch { return false; }
+    usable = result === 'the system keychain' && value === secret;
+  } catch { /* unavailable */ }
+  try { await store.remove(probe); } catch { return false; }
+  return usable;
 }
 
 async function isGitWorktree(path: string): Promise<boolean> {

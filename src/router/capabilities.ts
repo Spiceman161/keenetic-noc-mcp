@@ -45,5 +45,5 @@ export function parseCapabilities(version: unknown): Capabilities {
 }
 
 export async function fetchCapabilities(rci: Rci): Promise<Capabilities> {
-  return parseCapabilities(await rci.get('show/version'));
+  return parseCapabilities(await rci.get('show/version', 64_000));
 }

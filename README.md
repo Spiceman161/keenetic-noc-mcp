@@ -43,7 +43,27 @@ After the package is published, the same profile setup can be started with:
 npx -y keenetic-noc-mcp router add
 ~~~
 
-Run the profile wizard in your own terminal. It validates the connection before saving and stores the password in the system keychain when available. Do not paste a password, endpoint credential, or secret-file path into an AI chat.
+Run the English-language profile wizard in your own terminal. Remote KeenDNS is
+selected by default, and LAN connections remain supported. Use the arrow keys
+on choice screens, `Esc` to return to the previous step, and `Ctrl+C` to cancel.
+`router init` is an alias for `router add`.
+
+The wizard derives a profile ID from the router name, creates a dedicated
+account password, and shows the exact Keenetic account and Web Application
+settings to apply. It performs the applicable read-only DNS, TLS,
+authentication, RCI, configuration-capability, and bounded diagnostic checks
+before saving anything. LAN addresses must be bare hostnames or IP addresses;
+URLs, credentials, query strings, fragments, and paths are rejected.
+For the dedicated router user, enable **HTTP Proxy**. For read-only operation,
+also enable **Prohibit saving system settings** (**Запретить сохранять настройки
+системы**). This router permission does not by itself block running changes, so
+wizard-created MCP profiles remain read-only and expose no mutation tools.
+The review contains no password or secret-file path. The password is stored in
+the system keychain when available; using an owner-only file instead requires
+explicit confirmation. After a successful save, the wizard can optionally
+register the profile with Codex, Claude, or both. Neither client is selected by
+default. Do not paste a password, endpoint credential, or secret-file path into
+an AI chat.
 
 For an unattended deployment, configure a single process explicitly:
 
@@ -141,7 +161,26 @@ node dist/index.js router test home
 npx -y keenetic-noc-mcp router add
 ~~~
 
-Запускайте мастер профиля в собственном терминале. Он проверяет соединение до сохранения и при возможности помещает пароль в системное хранилище ключей. Не вставляйте пароль, учётные данные endpoint или путь к файлу секрета в AI-чат.
+Запускайте англоязычный мастер профиля в собственном терминале. По умолчанию
+выбран удалённый KeenDNS, но LAN-подключение также поддерживается. На экранах
+выбора используйте стрелки, `Esc` для возврата к предыдущему шагу и `Ctrl+C`
+для отмены. `router init` является alias для `router add`.
+
+Мастер создаёт ID профиля из имени роутера, генерирует пароль отдельной учётной
+записи и показывает точные параметры учётной записи и Web Application Keenetic.
+До любого сохранения он выполняет применимые read-only проверки DNS, TLS,
+аутентификации, RCI, доступности конфигурации и ограниченный набор диагностик.
+В итоговом экране нет пароля или пути к файлу секрета. При возможности пароль сохраняется
+в системном хранилище ключей; переход к owner-only файлу требует отдельного
+подтверждения. После успешного сохранения мастер может зарегистрировать профиль
+в Codex, Claude или обоих клиентах; по умолчанию не выбран ни один. Не
+вставляйте пароль, учётные данные endpoint или путь к файлу секрета в AI-чат.
+
+Для отдельного пользователя роутера включите право **HTTP Proxy**. Для режима
+только чтения дополнительно включите **Запретить сохранять настройки системы**.
+Этот флаг сам по себе не запрещает менять running configuration, поэтому
+созданный мастером MCP-профиль остается read-only и не публикует инструменты
+изменения.
 
 Для контейнера или другого неинтерактивного запуска укажите настройки одного процесса явно:
 

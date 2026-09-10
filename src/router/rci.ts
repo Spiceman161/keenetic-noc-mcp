@@ -1,6 +1,45 @@
 import { RciError } from './errors.js';
 export interface RciSession { request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response>; }
 
+async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new RciError(`response exceeds ${maxBytes} byte safety limit`, {
+      path: 'response', code: 'response-too-large', ident: 'rci'
+    });
+  }
+  if (!res.body) {
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new RciError(`response exceeds ${maxBytes} byte safety limit`, { path: 'response', code: 'response-too-large', ident: 'rci' });
+    return bytes;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new RciError(`response exceeds ${maxBytes} byte safety limit`, { path: 'response', code: 'response-too-large', ident: 'rci' });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
+async function readResponse(res: Response, maxBytes?: number): Promise<Uint8Array> {
+  return maxBytes === undefined ? new Uint8Array(await res.arrayBuffer()) : readBounded(res, maxBytes);
+}
+
 export interface RciStatus {
   status: string;
   code?: string;
@@ -67,10 +106,10 @@ export function collectStatuses(value: unknown): RciStatus[] {
 export class Rci {
   constructor(private readonly session: RciSession) {}
 
-  async get<T = unknown>(path: string): Promise<T> {
+  async get<T = unknown>(path: string, maxBytes?: number): Promise<T> {
     const clean = path.replace(/^\/+/, '');
     const res = await this.session.request('GET', `/rci/${clean}`);
-    return this.parse<T>(res, clean);
+    return this.parse<T>(res, clean, maxBytes);
   }
 
   async post<T = unknown>(body: unknown): Promise<T> {
@@ -79,22 +118,22 @@ export class Rci {
   }
 
   /** Plain-text endpoints such as /ci/startup-config.txt. */
-  async getText(path: string): Promise<string> {
+  async getText(path: string, maxBytes?: number): Promise<string> {
     const res = await this.session.request('GET', path);
     if (!res.ok) {
       throw new RciError(`HTTP ${res.status}`, { path, code: String(res.status), ident: 'http' });
     }
-    return res.text();
+    return new TextDecoder().decode(await readResponse(res, maxBytes));
   }
 
   /**
    * Reads a GET surface for capability discovery and returns metadata only.
    * The response body is inspected in memory, never returned to the caller.
    */
-  async probeGet(path: string): Promise<RciProbeMetadata> {
+  async probeGet(path: string, maxBytes?: number): Promise<RciProbeMetadata> {
     const clean = path.replace(/^\/+/, '');
     const res = await this.session.request('GET', `/rci/${clean}`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
+    const bytes = await readResponse(res, maxBytes);
     const contentTypeClass = classifyContentType(res.headers.get('content-type'));
     if (!res.ok) {
       return {
@@ -139,7 +178,7 @@ export class Rci {
     };
   }
 
-  private async parse<T>(res: Response, path: string): Promise<T> {
+  private async parse<T>(res: Response, path: string, maxBytes?: number): Promise<T> {
     if (res.status === 404) {
       throw new RciError(`this path does not exist on this firmware`, {
         path,
@@ -147,7 +186,7 @@ export class Rci {
         ident: 'http'
       });
     }
-    const text = await res.text();
+    const text = new TextDecoder().decode(await readResponse(res, maxBytes));
     if (!res.ok) {
       throw new RciError(`HTTP ${res.status}: ${text.slice(0, 200)}`, {
         path,

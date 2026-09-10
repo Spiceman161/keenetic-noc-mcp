@@ -9,11 +9,45 @@ https://rci.example.net/rci/
 ```
 
 Create a dedicated, least-privilege Keenetic user. Do not reuse the
-administrator password. Then run `keenetic-noc-mcp router add` in your own
-terminal, choose remote mode, and enter the endpoint and dedicated login. The
-wizard validates DNS/TLS and the credentials before it offers to save the
-profile. It stores the password in the system keychain where possible; do not
-put credentials in the URL.
+administrator password. Then run `keenetic-noc-mcp router add` (or its
+`router init` alias) in your own terminal. The English-language wizard selects
+remote KeenDNS by default; LAN remains available. It defaults the dedicated
+account name to `mcp_agent`, generates a 24-character password, and reveals that
+password once so that you can create the router account. It then requires you
+to acknowledge these exact Web Application settings before continuing:
+
+- device: **this Keenetic**;
+- local protocol: **HTTP**;
+- TCP port: **79**;
+- **authorized access** enabled;
+- the external client URL uses **HTTPS**.
+
+For the router user's permissions:
+
+- for read and write access, enable **HTTP Proxy**;
+- for read-only operation, enable **HTTP Proxy** and also enable
+  **Prohibit saving system settings** (**Запретить сохранять настройки системы**).
+
+The prohibit-saving permission blocks persistent system saves but is not a
+complete running-configuration write barrier. The A1 wizard therefore still
+creates a read-only MCP profile and registers clients with `--read-only`, so
+mutation tools are not exposed.
+
+The wizard accepts a bare hostname, an HTTPS origin, or an HTTPS URL ending in
+`/rci` or `/rci/`, and normalizes it to the stored `/rci/` form without changing
+the hostname. Keenetic/Netcraze WebUI may copy its public endpoint with an
+`http://` scheme. For known KeenDNS suffixes `*.keenetic.pro` and
+`*.netcraze.club`, the wizard upgrades that explicit scheme to HTTPS.
+Credentials, query strings, fragments, other paths, and HTTP URLs for every
+other host are rejected. The underlying remote URL parser remains strict and
+accepts HTTPS only.
+
+Use the arrow keys on choice screens, `Esc` to return to the previous step, and
+`Ctrl+C` to cancel. The wizard retains valid earlier answers when going back,
+but changing the connection mode, endpoint, login, or generated password makes
+it run the connection checks again. It writes neither the profile nor its
+secret until preflight succeeds and you approve the secret store and final
+secret-free review.
 
 The client waits for the server challenge, prefers Digest, and falls back to
 Basic only if offered. TLS certificate verification is always enabled for RCI
@@ -24,15 +58,33 @@ one authentication handshake. `KEENETIC_TIMEOUT_MS` is the deadline for the
 complete logical remote request, including handshake queueing, retry backoff,
 and every transport attempt; it is not a fresh timeout for each attempt.
 
-Accepted URL spellings end at the origin, `/`, `/rci`, or `/rci/`; all normalize
-to `/rci/` without changing scheme or host. Only HTTPS is accepted remotely.
+During preflight, DNS output is limited to success and address count. TLS uses
+the system trust store and SNI, with certificate verification enabled. A
+read-only `show/version` request verifies authentication and RCI and projects
+only the model and firmware. Running/startup configuration capabilities and
+bounded system, internet-status, and DNS diagnostics are probed independently;
+router or configuration payloads are never printed. Endpoint, TLS,
+authentication, and RCI failures block saving, while unavailable optional
+capabilities are reported as warnings rather than credential failures. RCI
+response reads used by preflight have explicit byte limits; oversized core
+responses block setup and oversized optional diagnostics become warnings.
+
+The password is saved and read back before the profile is added. The system
+keychain is selected automatically when a disposable probe succeeds. Otherwise
+the wizard explains the owner-only file fallback and requires explicit
+confirmation, defaulting to no. If profile persistence fails, the newly saved
+secret is removed.
 
 Run `keenetic-noc-mcp router test <id>` after changes to get a read-only report
 of DNS, TLS, authentication, RCI, router system, configuration-read, and
-startup-backup capability. Each item is probed separately. A remote profile can
-be healthy while `/ci/startup-config.txt` is reported as unsupported remotely;
-backup-before-write then requires a LAN profile. It saves only a redacted
-summary of the result.
+startup-backup capability. LAN profiles probe `/ci/startup-config.txt`
+separately, so an unavailable backup produces a degraded result. A remote profile can
+be healthy while the backup line says that write backup requires LAN. This is
+separate from the successful remote RCI startup-config read: A3 will use the
+live-proven `more?filename=startup-config` surface for read-only configuration
+tools, while the existing mutation guard deliberately continues to require the
+LAN-only `/ci/startup-config.txt` backup. It saves only a redacted summary of
+the result.
 
 The opt-in read-only smoke check uses the default remote profile directly:
 

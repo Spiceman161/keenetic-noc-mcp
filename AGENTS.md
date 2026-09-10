@@ -54,6 +54,44 @@ system, not for greenfield product ideation.
    work is complete. Run live smoke checks only when explicitly authorized, keep
    them read-only, and report sanitized counts and shapes rather than raw data.
 
+## Independent Review-Fix Cycle
+
+Every material feature slice, security-sensitive fix, compatibility change, or
+cross-cutting refactor must complete an independent review-fix cycle before it
+is called complete. Documentation-only typo fixes and equivalent mechanical
+changes may use one proportional review instead.
+
+1. Finish a cohesive implementation and its focused tests first. Record the
+   intended behavior, compatibility surfaces, and known live-evidence limits.
+2. Ask at least two independent reviewers who did not implement the code they
+   review. Use three reviewers when a slice spans security, persistence,
+   networking, CLI contracts, or several subsystems.
+3. Give reviewers distinct, slice-appropriate scopes. Typical scopes are:
+   security and secret handling; state-machine and failure-path correctness;
+   compatibility, tests, documentation, and licensing. Reviewers inspect the
+   complete current diff and do not edit it.
+4. Require findings to include severity, concrete file/line evidence, impact,
+   and a proposed validation. Treat correctness, security, data-loss, contract,
+   and required-test gaps as material findings. Do not dismiss a finding merely
+   because the existing suite passes.
+5. Diagnose and fix confirmed findings one hypothesis at a time. Add a
+   regression test that fails for the reported reason when meaningful, then run
+   the narrowest relevant checks.
+6. Send the updated diff, or the final delta plus enough surrounding context,
+   back to independent reviewers. Explicitly ask them to confirm prior findings
+   are closed and to look for regressions introduced by the fix.
+7. Repeat review -> fix -> focused verification -> re-review until reviewers
+   report no material findings. Resolve low-severity required coverage gaps or
+   document why they are intentionally deferred.
+8. Only after the final review is clean, run fresh `npm run typecheck`,
+   `npm test`, `npm run build`, and `git diff --check`. These commands must run
+   after the last relevant edit; earlier green output is not final evidence.
+
+Implementation delegation is not independent review. An agent that authored a
+subsystem must not be its final reviewer. The completion report must state the
+review scopes, number of review-fix iterations, material findings fixed, final
+review outcome, verification commands, and any untested live paths.
+
 Treat verification output as evidence, not ceremony: never claim a command
 passed unless it was run after the final relevant edit. If a required check
 cannot run, report that limitation explicitly instead of inferring success.
