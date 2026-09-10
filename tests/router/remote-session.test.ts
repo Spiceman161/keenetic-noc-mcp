@@ -67,6 +67,25 @@ describe('remote failure policy', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('distinguishes denial of the candidate RCI startup path from bad credentials', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('', { status: 403 }));
+    const session = new RemoteSession({ ...opts, fetch });
+    await session.request('GET', '/rci/show/version');
+    await expect(
+      session.request('GET', '/rci/more?filename=startup-config')
+    ).rejects.toBeInstanceOf(RemoteCapabilityError);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an initial candidate-path 403 classified as authentication failure', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('', { status: 403 }));
+    await expect(
+      new RemoteSession({ ...opts, fetch }).request('GET', '/rci/more?filename=startup-config')
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+
   it('retries transport errors at most five times', async () => {
     const fetch = vi.fn().mockRejectedValue(new Error('ECONNRESET password=not-a-real-password'));
     const sleep = vi.fn().mockResolvedValue(undefined);

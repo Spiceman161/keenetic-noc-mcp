@@ -70,6 +70,7 @@ export function digestAuthorization(opts: {
 export class RemoteSession {
   private authorization: AuthorizationState | null = null;
   private handshake: Promise<Response | null> | null = null;
+  private rciAccessProven = false;
   constructor(private readonly opts: RemoteSessionOptions) {}
 
   async request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
@@ -179,13 +180,17 @@ export class RemoteSession {
 
   private now(): number { return (this.opts.now ?? Date.now)(); }
   private classify(res: Response, method: string, url: URL): Response {
-    if (res.status === 403 && url.pathname.startsWith('/ci/')) {
+    const candidateStartupPath = url.pathname === '/rci/more' &&
+      url.searchParams.get('filename') === 'startup-config';
+    if (res.status === 403 && (url.pathname.startsWith('/ci/') ||
+        (candidateStartupPath && this.rciAccessProven))) {
       throw new RemoteCapabilityError(
         `[router=${this.opts.routerId} operation=${method} endpoint=${url.hostname} ` +
           `class=remote-capability] The remote proxy denied ${url.pathname} with HTTP 403.`
       );
     }
     if (res.status === 401 || res.status === 403) throw this.authError(`authentication failed with HTTP ${res.status}`, method, url);
+    if (res.ok && url.pathname.startsWith('/rci/') && !candidateStartupPath) this.rciAccessProven = true;
     return res;
   }
   private authError(reason: string, operation: string, url: URL): AuthError {

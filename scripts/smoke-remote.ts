@@ -1,9 +1,9 @@
 import { createRemoteClient } from '../src/router/client.js';
 import { normalizeRemoteUrl } from '../src/config/load.js';
-import { RemoteCapabilityError } from '../src/router/errors.js';
+import { probeConfigCapabilities } from '../src/router/config-capabilities.js';
 import { filterLogEntries, resolveDeviceAliases, unwrapLogEntries } from '../src/tools/logs.js';
 import { loadRemoteSmokeCredentials } from './smoke-credentials.js';
-import { createLogSmokeSummary } from './smoke-summary.js';
+import { createConfigSmokeSummary, createLogSmokeSummary } from './smoke-summary.js';
 
 async function main(): Promise<void> {
   const credentials = await loadRemoteSmokeCredentials(process.argv.slice(2), process.env);
@@ -11,7 +11,10 @@ async function main(): Promise<void> {
     password: credentials.password, routerId: credentials.routerId, timeoutMs: 30_000 });
   const summary: Record<string, unknown> = { source: credentials.source, reads: {}, logs: {} };
   const reads = summary['reads'] as Record<string, string>;
-  for (const path of ['show/version', 'show/system', 'show/interface', 'show/internet/status', 'show/ip/route', 'show/dns-proxy']) {
+  const capabilities = await client.capabilities();
+  reads['show/version'] = 'passed';
+  summary['router'] = { model: capabilities.model, firmware: capabilities.firmware };
+  for (const path of ['show/system', 'show/interface', 'show/internet/status', 'show/ip/route', 'show/dns-proxy']) {
     await client.rci.get(path);
     reads[path] = 'passed';
   }
@@ -46,14 +49,9 @@ async function main(): Promise<void> {
     timeRange: { available: timestamp !== null, matched: timestamp === null ? null : filterLogEntries(entries, { since: timestamp, until: timestamp }).length },
     deviceAlias: { available: device !== null, matched: deviceMatched }
   });
-
-  try {
-    await client.rci.getText('/ci/startup-config.txt');
-    summary['startupConfig'] = 'available';
-  } catch (error) {
-    if (error instanceof RemoteCapabilityError) summary['startupConfig'] = 'unsupported-remotely';
-    else throw error;
-  }
+  const configCapabilities = createConfigSmokeSummary(await probeConfigCapabilities(client.rci));
+  summary['runningConfig'] = configCapabilities.runningConfig;
+  summary['startupConfig'] = configCapabilities.startupConfig;
   process.stderr.write(`${JSON.stringify(summary)}\n`);
 }
 

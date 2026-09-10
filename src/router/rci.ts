@@ -8,6 +8,18 @@ export interface RciStatus {
   message?: string;
 }
 
+export type RciContentTypeClass = 'json' | 'text' | 'binary' | 'unknown';
+export type RciResponseShape = 'array' | 'string' | 'object' | 'unknown';
+
+/** Sanitized response facts safe to retain after discarding a probe body. */
+export interface RciProbeMetadata {
+  httpStatus: number;
+  contentTypeClass: RciContentTypeClass;
+  shape: RciResponseShape;
+  items: number | null;
+  bytes: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -70,6 +82,46 @@ export class Rci {
     return res.text();
   }
 
+  /**
+   * Reads a GET surface for capability discovery and returns metadata only.
+   * The response body is inspected in memory, never returned to the caller.
+   */
+  async probeGet(path: string): Promise<RciProbeMetadata> {
+    const clean = path.replace(/^\/+/, '');
+    const res = await this.session.request('GET', `/rci/${clean}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const contentTypeClass = classifyContentType(res.headers.get('content-type'));
+    if (!res.ok) {
+      return { httpStatus: res.status, contentTypeClass, shape: 'unknown', items: null, bytes: bytes.byteLength };
+    }
+
+    const text = new TextDecoder().decode(bytes);
+    let value: unknown = contentTypeClass === 'json' ? undefined : text;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      // Text and octet-stream config exports are valid; malformed JSON is not.
+    }
+
+    const firstError = collectStatuses(value).find(status => status.status === 'error');
+    if (firstError) {
+      throw new RciError('the router reported an error during the capability probe', {
+        path: clean,
+        code: firstError.code ?? 'unknown',
+        ident: firstError.ident ?? 'unknown'
+      });
+    }
+
+    const shape = responseShape(value);
+    return {
+      httpStatus: res.status,
+      contentTypeClass,
+      shape,
+      items: countItems(value, shape),
+      bytes: bytes.byteLength
+    };
+  }
+
   private async parse<T>(res: Response, path: string): Promise<T> {
     if (res.status === 404) {
       throw new RciError(`this path does not exist on this firmware`, {
@@ -110,4 +162,30 @@ export class Rci {
 
     return parsed as T;
   }
+}
+
+function classifyContentType(value: string | null): RciContentTypeClass {
+  const mime = value?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+  if (mime === 'application/json' || mime.endsWith('+json')) return 'json';
+  if (mime.startsWith('text/')) return 'text';
+  if (mime === 'application/octet-stream' || mime.startsWith('image/') || mime.startsWith('audio/') ||
+      mime.startsWith('video/')) return 'binary';
+  return 'unknown';
+}
+
+function responseShape(value: unknown): RciResponseShape {
+  if (Array.isArray(value)) return 'array';
+  if (typeof value === 'string') return 'string';
+  if (isRecord(value)) return 'object';
+  return 'unknown';
+}
+
+function countItems(value: unknown, shape: RciResponseShape): number | null {
+  if (shape === 'array') return (value as unknown[]).length;
+  if (shape === 'object') return Object.keys(value as Record<string, unknown>).length;
+  if (shape !== 'string') return null;
+  if (value === '') return 0;
+  const lines = (value as string).split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  return lines.length;
 }

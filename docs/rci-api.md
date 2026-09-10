@@ -270,6 +270,22 @@ Both return `application/octet-stream`, about 12 KB on a home router. `POST` to
 these paths returns 405, so there is no upload path here; restoring a
 configuration through RCI was not solved.
 
+### Remote configuration capability probes
+
+The read-only remote smoke test independently probes these RCI GET surfaces and
+discards their bodies after recording only status, content-type class, top-level
+shape, item count, and byte size:
+
+| Path | Status |
+|---|---|
+| `GET /rci/show/running-config` | Expected to return the live CLI configuration as a JSON array; live remote validation is pending. |
+| `GET /rci/more?filename=startup-config` | Candidate saved-configuration path; unverified and not supported by product code unless a live probe proves it. |
+
+An HTTP 403 from the candidate startup path is reported as a remote capability
+denial after normal RCI authentication has succeeded. It does not cause the
+smoke report to retain or print configuration content. Do not infer support for
+the candidate path from unit tests.
+
 ## Paths that do not exist
 
 Do not assume an installed component implies a path of the same name. All GET

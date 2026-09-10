@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createLogSmokeSummary } from '../../scripts/smoke-summary.js';
+import { createConfigSmokeSummary, createLogSmokeSummary } from '../../scripts/smoke-summary.js';
 
 describe('remote smoke summary', () => {
   it('retains only anonymous shapes and counts', () => {
@@ -28,5 +28,30 @@ describe('remote smoke summary', () => {
     expect(summary).toMatchObject({
       timestampShape: { status: 'skipped' }, interfaceFilter: { status: 'skipped' }
     });
+  });
+});
+
+describe('configuration smoke summary', () => {
+  it('reports independent capabilities and whitelists metadata fields', () => {
+    const privateLine = 'private configuration must not escape';
+    const capabilities = {
+      runningConfig: {
+        available: true, transport: 'rci', httpStatus: 200, contentTypeClass: 'json',
+        shape: 'array', items: 12, bytes: 345, reason: null,
+        privateLine
+      },
+      startupConfig: {
+        available: false, transport: 'rci', httpStatus: 403, contentTypeClass: 'unknown',
+        shape: 'unknown', items: null, bytes: null, reason: 'capability-denied',
+        privateLine
+      }
+    } as const;
+    const summary = createConfigSmokeSummary(capabilities);
+
+    expect(summary).toMatchObject({
+      runningConfig: { available: true, shape: 'array', items: 12 },
+      startupConfig: { available: false, httpStatus: 403, reason: 'capability-denied' }
+    });
+    expect(JSON.stringify(summary)).not.toContain(privateLine);
   });
 });

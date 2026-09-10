@@ -5,10 +5,10 @@ import { Session } from '../../src/router/session.js';
 
 // A Response body can only be read once, so each call must get a fresh instance.
 // mockResolvedValue would hand back the same object and the second read fails.
-function sessionReturning(payload: string, status = 200): Session {
+function sessionReturning(payload: string, status = 200, contentType = 'application/json'): Session {
   const session = new Session({ host: '192.0.2.1', login: 'admin', password: 'x' });
   vi.spyOn(session, 'request').mockImplementation(
-    async () => new Response(payload, { status, headers: { 'content-type': 'application/json' } })
+    async () => new Response(payload, { status, headers: { 'content-type': contentType } })
   );
   return session;
 }
@@ -87,5 +87,66 @@ describe('Rci.getText', () => {
   it('throws RciError carrying the HTTP status when the fetch fails', async () => {
     const rci = new Rci(sessionReturning('', 403));
     await expect(rci.getText('/ci/startup-config.txt')).rejects.toThrow(/403/);
+  });
+});
+
+describe('Rci.probeGet', () => {
+  it('retains only response metadata for JSON arrays', async () => {
+    const body = JSON.stringify(['system', 'interface', 'service']);
+    const rci = new Rci(sessionReturning(body));
+
+    await expect(rci.probeGet('show/running-config')).resolves.toEqual({
+      httpStatus: 200,
+      contentTypeClass: 'json',
+      shape: 'array',
+      items: 3,
+      bytes: Buffer.byteLength(body)
+    });
+  });
+
+  it('classifies a text-like response without returning its content', async () => {
+    const body = 'system\ninterface\n';
+    const rci = new Rci(sessionReturning(body, 200, 'text/plain'));
+
+    const result = await rci.probeGet('more?filename=startup-config');
+
+    expect(result).toEqual({
+      httpStatus: 200,
+      contentTypeClass: 'text',
+      shape: 'string',
+      items: 2,
+      bytes: Buffer.byteLength(body)
+    });
+    expect(JSON.stringify(result)).not.toContain('interface');
+  });
+
+  it('classifies malformed JSON as an unexpected shape', async () => {
+    const rci = new Rci(sessionReturning('{not-json'));
+
+    await expect(rci.probeGet('show/running-config')).resolves.toMatchObject({
+      httpStatus: 200, contentTypeClass: 'json', shape: 'unknown', items: null
+    });
+  });
+
+  it('reports HTTP failures without including their response body', async () => {
+    const privateBody = 'private configuration must not escape';
+    const rci = new Rci(sessionReturning(privateBody, 404));
+
+    const result = await rci.probeGet('more?filename=startup-config');
+
+    expect(result).toMatchObject({ httpStatus: 404, shape: 'unknown', bytes: Buffer.byteLength(privateBody) });
+    expect(JSON.stringify(result)).not.toContain(privateBody);
+  });
+
+  it('does not classify an embedded RCI error as an available object', async () => {
+    const body = JSON.stringify({
+      status: [{ status: 'error', code: '123', ident: 'Config', message: 'private detail' }]
+    });
+    const rci = new Rci(sessionReturning(body));
+
+    await expect(rci.probeGet('show/running-config')).rejects.toMatchObject({
+      name: 'RciError', code: '123', ident: 'Config'
+    });
+    await expect(rci.probeGet('show/running-config')).rejects.not.toThrow(/private detail/);
   });
 });

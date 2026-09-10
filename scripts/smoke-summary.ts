@@ -1,4 +1,5 @@
 import type { LogEntry } from '../src/tools/logs.js';
+import type { ConfigCapabilities, ConfigCapabilityProbe } from '../src/router/config-capabilities.js';
 
 interface FilterOutcome {
   available: boolean;
@@ -32,5 +33,26 @@ export function createLogSmokeSummary(
     interfaceFilter: outcome(filters.interface, 'no-candidate'),
     timeRange: outcome(filters.timeRange, 'no-candidate'),
     deviceAlias: outcome(filters.deviceAlias, 'no-candidate')
+  };
+}
+
+function safeConfigProbe(probe: ConfigCapabilityProbe): ConfigCapabilityProbe {
+  return {
+    available: probe.available,
+    transport: probe.transport,
+    httpStatus: probe.httpStatus,
+    contentTypeClass: probe.contentTypeClass,
+    shape: probe.shape,
+    items: probe.items,
+    bytes: probe.bytes,
+    reason: probe.reason
+  };
+}
+
+/** Whitelists anonymous config probe fields at the live-output boundary. */
+export function createConfigSmokeSummary(capabilities: ConfigCapabilities): ConfigCapabilities {
+  return {
+    runningConfig: safeConfigProbe(capabilities.runningConfig),
+    startupConfig: safeConfigProbe(capabilities.startupConfig)
   };
 }
