@@ -45,6 +45,10 @@ function safeConfigProbe(probe: ConfigCapabilityProbe): ConfigCapabilityProbe {
     shape: probe.shape,
     items: probe.items,
     bytes: probe.bytes,
+    payloadShape: probe.payloadShape,
+    payloadItems: probe.payloadItems,
+    payloadItemShape: probe.payloadItemShape,
+    wrapperDepth: probe.wrapperDepth,
     reason: probe.reason
   };
 }

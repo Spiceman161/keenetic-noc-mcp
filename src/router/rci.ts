@@ -10,6 +10,7 @@ export interface RciStatus {
 
 export type RciContentTypeClass = 'json' | 'text' | 'binary' | 'unknown';
 export type RciResponseShape = 'array' | 'string' | 'object' | 'unknown';
+export type RciPayloadItemShape = 'array' | 'string' | 'object' | 'scalar' | 'mixed' | 'empty' | 'unknown';
 
 /** Sanitized response facts safe to retain after discarding a probe body. */
 export interface RciProbeMetadata {
@@ -18,6 +19,10 @@ export interface RciProbeMetadata {
   shape: RciResponseShape;
   items: number | null;
   bytes: number;
+  payloadShape: RciResponseShape;
+  payloadItems: number | null;
+  payloadItemShape: RciPayloadItemShape;
+  wrapperDepth: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -92,7 +97,17 @@ export class Rci {
     const bytes = new Uint8Array(await res.arrayBuffer());
     const contentTypeClass = classifyContentType(res.headers.get('content-type'));
     if (!res.ok) {
-      return { httpStatus: res.status, contentTypeClass, shape: 'unknown', items: null, bytes: bytes.byteLength };
+      return {
+        httpStatus: res.status,
+        contentTypeClass,
+        shape: 'unknown',
+        items: null,
+        bytes: bytes.byteLength,
+        payloadShape: 'unknown',
+        payloadItems: null,
+        payloadItemShape: 'unknown',
+        wrapperDepth: 0
+      };
     }
 
     const text = new TextDecoder().decode(bytes);
@@ -113,12 +128,14 @@ export class Rci {
     }
 
     const shape = responseShape(value);
+    const payload = describePayload(value);
     return {
       httpStatus: res.status,
       contentTypeClass,
       shape,
       items: countItems(value, shape),
-      bytes: bytes.byteLength
+      bytes: bytes.byteLength,
+      ...payload
     };
   }
 
@@ -188,4 +205,33 @@ function countItems(value: unknown, shape: RciResponseShape): number | null {
   const lines = (value as string).split(/\r?\n/);
   if (lines.at(-1) === '') lines.pop();
   return lines.length;
+}
+
+function describePayload(value: unknown): Pick<
+  RciProbeMetadata,
+  'payloadShape' | 'payloadItems' | 'payloadItemShape' | 'wrapperDepth'
+> {
+  let payload = value;
+  let wrapperDepth = 0;
+  while (isRecord(payload) && Object.keys(payload).length === 1 && wrapperDepth < 16) {
+    payload = Object.values(payload)[0];
+    wrapperDepth += 1;
+  }
+  const payloadShape = responseShape(payload);
+  return {
+    payloadShape,
+    payloadItems: countItems(payload, payloadShape),
+    payloadItemShape: arrayItemShape(payload),
+    wrapperDepth
+  };
+}
+
+function arrayItemShape(value: unknown): RciPayloadItemShape {
+  if (!Array.isArray(value)) return 'unknown';
+  if (value.length === 0) return 'empty';
+  const shapes = new Set(value.map(item => {
+    const shape = responseShape(item);
+    return shape === 'unknown' ? 'scalar' : shape;
+  }));
+  return shapes.size === 1 ? [...shapes][0]! : 'mixed';
 }

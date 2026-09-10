@@ -10,6 +10,10 @@ function metadata(overrides: Partial<RciProbeMetadata> = {}): RciProbeMetadata {
     shape: 'array',
     items: 3,
     bytes: 48,
+    payloadShape: 'array',
+    payloadItems: 3,
+    payloadItemShape: 'string',
+    wrapperDepth: 0,
     ...overrides
   };
 }
@@ -19,7 +23,8 @@ describe('configuration capability probes', () => {
     const probeGet = vi.fn()
       .mockResolvedValueOnce(metadata())
       .mockResolvedValueOnce(metadata({
-        contentTypeClass: 'text', shape: 'string', items: 7, bytes: 120
+        contentTypeClass: 'text', shape: 'string', items: 7, bytes: 120,
+        payloadShape: 'string', payloadItems: 7, payloadItemShape: 'unknown'
       }));
 
     const result = await probeConfigCapabilities({ probeGet });
@@ -39,7 +44,8 @@ describe('configuration capability probes', () => {
     const probeGet = vi.fn()
       .mockResolvedValueOnce(metadata())
       .mockResolvedValueOnce(metadata({
-        httpStatus, contentTypeClass: 'unknown', shape: 'unknown', items: null, bytes: 0
+        httpStatus, contentTypeClass: 'unknown', shape: 'unknown', items: null, bytes: 0,
+        payloadShape: 'unknown', payloadItems: null, payloadItemShape: 'unknown'
       }));
 
     const result = await probeConfigCapabilities({ probeGet });
@@ -52,6 +58,10 @@ describe('configuration capability probes', () => {
       shape: 'unknown',
       items: null,
       bytes: 0,
+      payloadShape: 'unknown',
+      payloadItems: null,
+      payloadItemShape: 'unknown',
+      wrapperDepth: 0,
       reason
     });
   });
@@ -76,7 +86,10 @@ describe('configuration capability probes', () => {
 
   it('rejects a successful response with an unexpected scalar shape', async () => {
     const probeGet = vi.fn()
-      .mockResolvedValueOnce(metadata({ shape: 'unknown', items: null, bytes: 4 }))
+      .mockResolvedValueOnce(metadata({
+        shape: 'unknown', items: null, bytes: 4, payloadShape: 'unknown', payloadItems: null,
+        payloadItemShape: 'unknown'
+      }))
       .mockResolvedValueOnce(metadata());
 
     const result = await probeConfigCapabilities({ probeGet });

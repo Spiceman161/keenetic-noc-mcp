@@ -37,19 +37,24 @@ describe('configuration smoke summary', () => {
     const capabilities = {
       runningConfig: {
         available: true, transport: 'rci', httpStatus: 200, contentTypeClass: 'json',
-        shape: 'array', items: 12, bytes: 345, reason: null,
+        shape: 'object', items: 1, bytes: 345, payloadShape: 'array', payloadItems: 12,
+        payloadItemShape: 'string', wrapperDepth: 2, reason: null,
         privateLine
       },
       startupConfig: {
         available: false, transport: 'rci', httpStatus: 403, contentTypeClass: 'unknown',
-        shape: 'unknown', items: null, bytes: null, reason: 'capability-denied',
+        shape: 'unknown', items: null, bytes: null, payloadShape: 'unknown', payloadItems: null,
+        payloadItemShape: 'unknown', wrapperDepth: 0, reason: 'capability-denied',
         privateLine
       }
     } as const;
     const summary = createConfigSmokeSummary(capabilities);
 
     expect(summary).toMatchObject({
-      runningConfig: { available: true, shape: 'array', items: 12 },
+      runningConfig: {
+        available: true, shape: 'object', payloadShape: 'array', payloadItems: 12,
+        payloadItemShape: 'string', wrapperDepth: 2
+      },
       startupConfig: { available: false, httpStatus: 403, reason: 'capability-denied' }
     });
     expect(JSON.stringify(summary)).not.toContain(privateLine);

@@ -100,7 +100,11 @@ describe('Rci.probeGet', () => {
       contentTypeClass: 'json',
       shape: 'array',
       items: 3,
-      bytes: Buffer.byteLength(body)
+      bytes: Buffer.byteLength(body),
+      payloadShape: 'array',
+      payloadItems: 3,
+      payloadItemShape: 'string',
+      wrapperDepth: 0
     });
   });
 
@@ -115,7 +119,11 @@ describe('Rci.probeGet', () => {
       contentTypeClass: 'text',
       shape: 'string',
       items: 2,
-      bytes: Buffer.byteLength(body)
+      bytes: Buffer.byteLength(body),
+      payloadShape: 'string',
+      payloadItems: 2,
+      payloadItemShape: 'unknown',
+      wrapperDepth: 0
     });
     expect(JSON.stringify(result)).not.toContain('interface');
   });
@@ -126,6 +134,22 @@ describe('Rci.probeGet', () => {
     await expect(rci.probeGet('show/running-config')).resolves.toMatchObject({
       httpStatus: 200, contentTypeClass: 'json', shape: 'unknown', items: null
     });
+  });
+
+  it('describes a single-key RCI wrapper without returning wrapper keys or payload', async () => {
+    const privateLine = 'private configuration must not escape';
+    const body = JSON.stringify({ command: { result: [privateLine, 'second line'] } });
+    const rci = new Rci(sessionReturning(body));
+
+    const result = await rci.probeGet('more?filename=startup-config');
+
+    expect(result).toMatchObject({
+      shape: 'object', items: 1, payloadShape: 'array', payloadItems: 2,
+      payloadItemShape: 'string', wrapperDepth: 2
+    });
+    expect(JSON.stringify(result)).not.toContain('command');
+    expect(JSON.stringify(result)).not.toContain('result');
+    expect(JSON.stringify(result)).not.toContain(privateLine);
   });
 
   it('reports HTTP failures without including their response body', async () => {

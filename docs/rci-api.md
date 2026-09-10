@@ -278,13 +278,14 @@ shape, item count, and byte size:
 
 | Path | Status |
 |---|---|
-| `GET /rci/show/running-config` | Expected to return the live CLI configuration as a JSON array; live remote validation is pending. |
-| `GET /rci/more?filename=startup-config` | Candidate saved-configuration path; unverified and not supported by product code unless a live probe proves it. |
+| `GET /rci/show/running-config` | Verified through remote KeenDNS on Viva (KN-1912), KeeneticOS 5.1.3: HTTP 200 JSON, one-key wrapper over an array of 780 strings, 27,503 bytes. |
+| `GET /rci/more?filename=startup-config` | Verified through remote KeenDNS on the same router: HTTP 200 JSON, one-key wrapper over an array of 780 strings, 27,255 bytes. This is sufficient evidence to design remote saved-config support in A3. |
 
 An HTTP 403 from the candidate startup path is reported as a remote capability
 denial after normal RCI authentication has succeeded. It does not cause the
-smoke report to retain or print configuration content. Do not infer support for
-the candidate path from unit tests.
+smoke report to retain or print configuration content. The live measurements
+above were recorded on 2026-09-10; other models and firmware must still be
+capability-probed rather than assumed compatible.
 
 ## Paths that do not exist
 

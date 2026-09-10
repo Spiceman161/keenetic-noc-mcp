@@ -1,5 +1,7 @@
 import { RemoteCapabilityError, RciError } from './errors.js';
-import type { Rci, RciContentTypeClass, RciProbeMetadata, RciResponseShape } from './rci.js';
+import type {
+  Rci, RciContentTypeClass, RciPayloadItemShape, RciProbeMetadata, RciResponseShape
+} from './rci.js';
 
 export type ConfigCapabilityReason =
   | 'capability-denied'
@@ -16,6 +18,10 @@ export interface ConfigCapabilityProbe {
   shape: RciResponseShape;
   items: number | null;
   bytes: number | null;
+  payloadShape: RciResponseShape;
+  payloadItems: number | null;
+  payloadItemShape: RciPayloadItemShape;
+  wrapperDepth: number;
   reason: ConfigCapabilityReason | null;
 }
 
@@ -39,7 +45,7 @@ async function probe(reader: ProbeReader, path: string): Promise<ConfigCapabilit
     if (metadata.httpStatus === 403) return unavailable(metadata, 'capability-denied');
     if (metadata.httpStatus === 404) return unavailable(metadata, 'not-found');
     if (metadata.httpStatus < 200 || metadata.httpStatus >= 300) return unavailable(metadata, 'http-error');
-    if (metadata.shape === 'unknown' || metadata.items === 0) {
+    if (metadata.payloadShape === 'unknown' || metadata.payloadItems === 0) {
       return unavailable(metadata, 'unexpected-shape');
     }
     return { available: true, transport: 'rci', ...metadata, reason: null };
@@ -53,6 +59,10 @@ async function probe(reader: ProbeReader, path: string): Promise<ConfigCapabilit
         shape: 'unknown',
         items: null,
         bytes: null,
+        payloadShape: 'unknown',
+        payloadItems: null,
+        payloadItemShape: 'unknown',
+        wrapperDepth: 0,
         reason: 'capability-denied'
       };
     }
@@ -65,6 +75,10 @@ async function probe(reader: ProbeReader, path: string): Promise<ConfigCapabilit
         shape: 'unknown',
         items: null,
         bytes: null,
+        payloadShape: 'unknown',
+        payloadItems: null,
+        payloadItemShape: 'unknown',
+        wrapperDepth: 0,
         reason: error.code === '404' ? 'not-found' : 'rci-error'
       };
     }
