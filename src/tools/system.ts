@@ -12,18 +12,32 @@ export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
     { title: 'Connection status', description: 'Safely tests RCI reachability and authentication without exposing credentials.', inputSchema: {}, annotations: READ_ONLY },
     guard(async () => {
       const started = performance.now();
-      const caps = await ctx.client.capabilities();
+      const [caps, measured] = await Promise.all([
+        ctx.client.capabilities(),
+        ctx.client.probedCapabilities()
+      ]);
       const endpoint = new URL(ctx.connection?.endpoint ?? 'http://router.invalid/');
       const mode = ctx.connection?.mode ?? 'lan';
-      const startupConfigCapability = mode === 'remote'
+      const startup = measured.config.startup;
+      const backup = measured.config.backup;
+      const startupConfigCapability = startup.state === 'available'
+        ? startup.method
+        : startup.state;
+      const backupPathCapability = mode === 'remote'
         ? 'unsupported-remotely'
-        : ctx.backup.taken() ? 'verified' : 'not-tested';
+        : ctx.backup.taken() || backup.state === 'available'
+          ? 'verified'
+          : backup.state === 'unavailable' ? 'unavailable' : 'not-tested';
+      const backupBeforeWrite = mode === 'remote'
+        ? 'requires-lan-profile'
+        : backup.state === 'available'
+          ? 'available-when-verified'
+          : backup.state;
       return ok({ routerId: ctx.routerId ?? 'home', mode: ctx.connection?.mode ?? 'lan', endpointHostname: endpoint.hostname,
         https: endpoint.protocol === 'https:', tlsVerified: endpoint.protocol === 'https:' ? true : null,
         rciReachable: true, authentication: 'ok', latencyMs: Math.round(performance.now() - started),
         model: caps.model, firmware: caps.firmware, startupConfigCapability,
-        backupPathCapability: startupConfigCapability,
-        backupBeforeWrite: mode === 'remote' ? 'requires-lan-profile' : 'available-when-verified' }, ctx.maxResponseBytes);
+        backupPathCapability, backupBeforeWrite, configCapabilities: measured.config }, ctx.maxResponseBytes);
     })
   );
   server.registerTool(

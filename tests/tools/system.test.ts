@@ -20,13 +20,23 @@ const CAPS = {
   features: new Set(['hwnat'])
 };
 
+const PROBED = {
+  config: {
+    runningCli: { state: 'available' as const, method: 'rci-show' as const, reason: null },
+    runningStructured: { state: 'unknown' as const, method: null, reason: 'not-probed' as const },
+    startup: { state: 'available' as const, method: 'rci-more' as const, reason: null },
+    backup: { state: 'available' as const, method: 'ci-file' as const, reason: null }
+  }
+};
+
 function contextWith(
   get: (path: string) => Promise<unknown>,
   getText: (path: string) => Promise<string> = async () => ''
 ): ToolContext {
   const client = {
     rci: { get, post: vi.fn(), getText: vi.fn(getText) },
-    capabilities: async () => CAPS
+    capabilities: async () => CAPS,
+    probedCapabilities: async () => PROBED
   } as unknown as KeeneticClient;
   return { client, maxResponseBytes: 25_000, readOnly: false, backup: stubBackup() };
 }
@@ -116,23 +126,45 @@ describe('get_system_info', () => {
 });
 
 describe('get_connection_status', () => {
-  it('reports the remote startup-config limitation without probing /ci', async () => {
+  it('reports measured remote startup config while preserving LAN-only backup policy', async () => {
     const ctx = contextWith(async () => ({}));
     ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
     const { handlers } = capture(ctx);
     const payload = JSON.parse(textOf(await handlers['get_connection_status']!({})));
-    expect(payload.startupConfigCapability).toBe('unsupported-remotely');
+    expect(payload.startupConfigCapability).toBe('rci-more');
     expect(payload.backupPathCapability).toBe('unsupported-remotely');
     expect(payload.backupBeforeWrite).toBe('requires-lan-profile');
+    expect(payload.configCapabilities.startup).toEqual({
+      state: 'available', method: 'rci-more', reason: null
+    });
     expect(ctx.client.rci.getText).not.toHaveBeenCalled();
   });
 
-  it('leaves LAN startup-config capability unverified until a backup is taken', async () => {
+  it('reports a metadata-verified LAN backup path', async () => {
     const ctx = contextWith(async () => ({}));
     ctx.connection = { mode: 'lan', endpoint: 'http://192.0.2.1/rci/' };
     const payload = JSON.parse(textOf(await capture(ctx).handlers['get_connection_status']!({})));
-    expect(payload.startupConfigCapability).toBe('not-tested');
+    expect(payload.startupConfigCapability).toBe('rci-more');
+    expect(payload.backupPathCapability).toBe('verified');
     expect(payload.backupBeforeWrite).toBe('available-when-verified');
+  });
+
+  it('keeps unavailable startup and backup states distinct from unknown', async () => {
+    const ctx = contextWith(async () => ({}));
+    ctx.connection = { mode: 'lan', endpoint: 'http://192.0.2.1/rci/' };
+    ctx.client.probedCapabilities = async () => ({
+      config: {
+        runningCli: { state: 'available', method: 'rci-show', reason: null },
+        runningStructured: { state: 'unknown', method: null, reason: 'not-probed' },
+        startup: { state: 'unavailable', method: null, reason: 'denied' },
+        backup: { state: 'unavailable', method: null, reason: 'not-found' }
+      }
+    });
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_connection_status']!({})));
+    expect(payload.startupConfigCapability).toBe('unavailable');
+    expect(payload.backupPathCapability).toBe('unavailable');
+    expect(payload.backupBeforeWrite).toBe('unavailable');
+    expect(payload.configCapabilities.startup.reason).toBe('denied');
   });
 });
 

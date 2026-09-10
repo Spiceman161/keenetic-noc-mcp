@@ -22,6 +22,7 @@ function client(options: {
   diagnosticFailure?: string;
   model?: string;
   firmware?: string;
+  operationalError?: Error;
 } = {}): KeeneticClient {
   return {
     capabilities: vi.fn(async () => {
@@ -33,6 +34,21 @@ function client(options: {
         components: new Set<string>(),
         features: new Set<string>()
       };
+    }),
+    probedCapabilities: vi.fn(async () => {
+      if (options.operationalError) throw options.operationalError;
+      return ({
+      config: {
+        runningCli: { state: 'available', method: 'rci-show', reason: null },
+        runningStructured: { state: 'unknown', method: null, reason: 'not-probed' },
+        startup: options.startupAvailable === false
+          ? { state: 'unavailable', method: null, reason: 'not-found' }
+          : { state: 'available', method: 'rci-more', reason: null },
+        backup: options.startupAvailable === false
+          ? { state: 'unavailable', method: null, reason: 'not-found' }
+          : { state: 'available', method: 'ci-file', reason: null }
+      }
+      });
     }),
     rci: {
       get: vi.fn(async (path: string) => {
@@ -79,7 +95,7 @@ describe('router onboarding preflight', () => {
     expect(verifyTls).not.toHaveBeenCalled();
     expect(instance.capabilities).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('192.0.2.55');
-    expect(JSON.stringify(result)).not.toContain('raw-secret');
+    expect(JSON.stringify(result.checks)).not.toContain('raw-secret');
   });
 
   it('rejects a non-HTTPS endpoint before network access', async () => {
@@ -128,7 +144,7 @@ describe('router onboarding preflight', () => {
     const result = await runRouterPreflight(lan, instance);
 
     expect(result).toMatchObject({ ready: true, model: 'Keenetic Test raw-secret', firmware: '5.1.3' });
-    expect(result.checks['Running config']?.status).toBe('pass');
+    expect(result.checks['Running config']).toEqual({ status: 'pass', detail: 'available through rci-show' });
     expect(result.checks['Startup config']?.status).toBe('warning');
     expect(result.checks['System diagnostic']?.status).toBe('pass');
     expect(result.checks['Internet diagnostic']?.status).toBe('warning');
@@ -138,6 +154,7 @@ describe('router onboarding preflight', () => {
     expect(instance.rci.get).toHaveBeenCalledWith('show/internet/status', 256_000);
     expect(instance.rci.get).toHaveBeenCalledWith('show/dns-proxy', 256_000);
     expect(JSON.stringify(result.checks)).not.toContain('privateConfiguration');
+    expect(instance.rci.getText).not.toHaveBeenCalled();
   });
 
   it('keeps remote backup readiness separate from RCI startup reads', async () => {
@@ -148,6 +165,15 @@ describe('router onboarding preflight', () => {
       status: 'skipped',
       detail: 'write backup requires a LAN profile for /ci/startup-config.txt; read-only use is ready'
     });
+  });
+
+  it('reports an operational authentication failure without exposing its message', async () => {
+    const result = await runRouterPreflight(lan, client({
+      operationalError: new AuthError('password raw-secret rejected')
+    }));
+    expect(result.ready).toBe(true);
+    expect(result.checks['Running config']?.detail).toBe('capability probe authentication failed');
+    expect(JSON.stringify(result.checks)).not.toContain('raw-secret');
   });
 
   it('sanitizes and bounds router-controlled terminal fields', async () => {

@@ -30,6 +30,11 @@ the scalar fields `timestamp`, `ident`, `level`, `label`, and `line`. Missing
 metadata is `null`. Interface filtering checks structured `ident` and `label`
 before falling back to the rendered line for older firmware responses.
 
-`get_connection_status` reports `startupConfigCapability`. Remote profiles use
-`unsupported-remotely` without probing `/ci/` and report that
-backup-before-write requires a LAN profile.
+`get_connection_status` reports measured configuration access in
+`configCapabilities`. `runningCli`, `startup`, and `backup` carry independent
+`state`, `method`, and `reason` values; `runningStructured` remains
+`unknown/not-probed` until an explicit configuration read in A3. The legacy
+`startupConfigCapability`, `backupPathCapability`, and `backupBeforeWrite`
+fields remain present. A remote profile can report startup access through
+`rci-more` while still reporting that backup-before-write requires a LAN
+profile; remote status checks never probe `/ci/`.

@@ -18,6 +18,14 @@ mode sends requests to a normalized `https://.../rci/` URL and responds to
 Digest or Basic challenges without putting credentials in URLs. Normal traffic
 always uses Node's default TLS verification.
 
+Static hardware/software capabilities come from `show/version`. Operational
+configuration capabilities are measured separately with bounded, metadata-only
+reads and cached only for the lifetime of the client. Concurrent first callers
+share the same probe. Authentication and transport failures are never cached,
+and every probe still passes through normal session re-authentication. The
+cache contains only state, access method, and safe reason enums - never
+configuration content or router error text.
+
 Read tools project large, unstable RCI trees into bounded stable results. Raw GET
 is a bounded escape hatch. Mutations use a common safety service and are never
 saved implicitly:
@@ -30,6 +38,10 @@ guard -> startup-config backup once -> apply -> read back -> verify -> audit
 read startup configuration blocks the first real mutation unless the operator
 explicitly enables the documented override. Concurrent first writes share the
 same backup promise.
+
+Read access to startup configuration and write-backup readiness are separate.
+Remote RCI may expose saved configuration through `rci-more`, but the mutation
+guard continues to require the LAN `/ci/startup-config.txt` backup path.
 
 ## Error boundary
 

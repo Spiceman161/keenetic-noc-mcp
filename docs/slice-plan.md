@@ -372,7 +372,9 @@ Keep instructions consistent with `fqdn-updater` where both projects configure t
 
 ## Slice A2 - Dynamic router capability model
 
-**Progress:** Planned; not started.
+**Progress:** Implemented in the current working diff. The independent
+capability-model, cache/auth/concurrency, and MCP contract/security reviewers
+report no remaining material findings after one review-fix iteration.
 
 ### Goal
 

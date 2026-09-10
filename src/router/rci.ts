@@ -133,6 +133,21 @@ export class Rci {
   async probeGet(path: string, maxBytes?: number): Promise<RciProbeMetadata> {
     const clean = path.replace(/^\/+/, '');
     const res = await this.session.request('GET', `/rci/${clean}`);
+    return this.probeResponse(res, clean, maxBytes);
+  }
+
+  /** Metadata-only probe for the one auxiliary file used by the safety model. */
+  async probeStartupFile(maxBytes?: number): Promise<RciProbeMetadata> {
+    const path = '/ci/startup-config.txt';
+    const res = await this.session.request('GET', path);
+    return this.probeResponse(res, path, maxBytes);
+  }
+
+  private async probeResponse(
+    res: Response,
+    path: string,
+    maxBytes?: number
+  ): Promise<RciProbeMetadata> {
     const bytes = await readResponse(res, maxBytes);
     const contentTypeClass = classifyContentType(res.headers.get('content-type'));
     if (!res.ok) {
@@ -160,7 +175,7 @@ export class Rci {
     const firstError = collectStatuses(value).find(status => status.status === 'error');
     if (firstError) {
       throw new RciError('the router reported an error during the capability probe', {
-        path: clean,
+        path,
         code: firstError.code ?? 'unknown',
         ident: firstError.ident ?? 'unknown'
       });

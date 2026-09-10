@@ -287,6 +287,14 @@ smoke report to retain or print configuration content. The live measurements
 above were recorded on 2026-09-10; other models and firmware must still be
 capability-probed rather than assumed compatible.
 
+Runtime capability discovery checks these endpoints with a 256 KB ceiling,
+uses response shape and counts for validation, then retains only state, access
+method, and safe reason codes. It does not infer support from LAN/remote mode. LAN additionally probes
+`/ci/startup-config.txt` for startup-read fallback and backup readiness; remote
+clients never probe that auxiliary path. The full structured `GET /rci/` is not
+used as a background capability probe because it contains the complete running
+configuration.
+
 ## Paths that do not exist
 
 Do not assume an installed component implies a path of the same name. All GET

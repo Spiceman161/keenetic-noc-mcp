@@ -86,6 +86,12 @@ tools, while the existing mutation guard deliberately continues to require the
 LAN-only `/ci/startup-config.txt` backup. It saves only a redacted summary of
 the result.
 
+The running MCP process exposes the same measurements through
+`get_connection_status`. Operational capability results are cached only for
+that client session; they are not written into the router profile or last-test
+state. A failed authentication or transport probe is retried on the next call.
+Remote checks probe normal RCI paths only and never request `/ci/`.
+
 The opt-in read-only smoke check uses the default remote profile directly:
 
 ```sh

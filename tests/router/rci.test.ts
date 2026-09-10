@@ -199,3 +199,21 @@ describe('Rci.probeGet', () => {
     await expect(rci.probeGet('show/running-config', 64)).rejects.toMatchObject({ code: 'response-too-large' });
   });
 });
+
+describe('Rci.probeStartupFile', () => {
+  it('uses the absolute CI path and returns metadata without file content', async () => {
+    const privateLine = 'private startup configuration';
+    const session = sessionReturning(`${privateLine}\n`, 200, 'text/plain');
+    const request = vi.mocked(session.request);
+    const result = await new Rci(session).probeStartupFile(256_000);
+
+    expect(request).toHaveBeenCalledWith('GET', '/ci/startup-config.txt');
+    expect(result).toMatchObject({ shape: 'string', payloadShape: 'string', items: 1 });
+    expect(JSON.stringify(result)).not.toContain(privateLine);
+  });
+
+  it('applies the response byte ceiling', async () => {
+    const rci = new Rci(sessionReturning('x'.repeat(100), 200, 'text/plain'));
+    await expect(rci.probeStartupFile(20)).rejects.toMatchObject({ code: 'response-too-large' });
+  });
+});

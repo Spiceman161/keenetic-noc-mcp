@@ -2,9 +2,8 @@ import { lookup } from 'node:dns/promises';
 import { connect } from 'node:tls';
 import type { RouterProfile } from '../profiles/registry.js';
 import type { KeeneticClient } from './client.js';
-import { probeConfigCapabilities } from './config-capabilities.js';
+import type { CapabilityAccess, ProbedCapabilities } from './config-capabilities.js';
 import { AuthError, RciError, TransportError } from './errors.js';
-import { STARTUP_CONFIG } from './config-state.js';
 
 export interface PreflightCheck {
   status: 'pass' | 'warning' | 'fail' | 'skipped';
@@ -76,6 +75,18 @@ function safeTerminalField(value: string): string {
   const withoutAnsi = withoutOsc.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
   const singleLine = withoutAnsi.replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim();
   return Array.from(singleLine).slice(0, 120).join('');
+}
+
+function capabilityCheck(value: CapabilityAccess<string>, surface?: string): PreflightCheck {
+  if (value.state === 'available') return pass(`available through ${value.method}`);
+  return warning(`${surface ? `${surface} ` : ''}${value.state}: ${value.reason ?? 'unspecified'}`);
+}
+
+function probeFailureDetail(error: unknown): string {
+  if (error instanceof AuthError) return 'capability probe authentication failed';
+  if (error instanceof TransportError) return 'capability probe transport failed';
+  if (error instanceof RciError) return 'capability probe RCI failure';
+  return 'capability probe failed';
 }
 
 /**
@@ -160,31 +171,31 @@ export async function runRouterPreflight(
     return { ready: false, checks };
   }
 
-  const [config, system, internet, dns, backup] = await Promise.all([
-    probeConfigCapabilities(client.rci).catch(() => null),
+  const [configResult, system, internet, dns] = await Promise.all([
+    client.probedCapabilities().catch((error: unknown) => error),
     diagnostic(client, 'show/system'),
     diagnostic(client, 'show/internet/status'),
-    diagnostic(client, 'show/dns-proxy'),
-    profile.mode === 'lan'
-      ? client.rci.getText(STARTUP_CONFIG, 256_000).then(() => pass('available through /ci/startup-config.txt')).catch(() => warning('unavailable through /ci/startup-config.txt'))
-      : Promise.resolve(skipped('write backup requires a LAN profile for /ci/startup-config.txt; read-only use is ready'))
+    diagnostic(client, 'show/dns-proxy')
   ]);
 
-  if (config) {
-    checks['Running config'] = config.runningConfig.available
-      ? pass('available through RCI')
-      : warning('unavailable through RCI');
-    checks['Startup config'] = config.startupConfig.available
-      ? pass('available through RCI')
-      : warning('unavailable through RCI');
+  if (typeof configResult === 'object' && configResult !== null && 'config' in configResult) {
+    const capabilities = configResult as ProbedCapabilities;
+    checks['Running config'] = capabilityCheck(capabilities.config.runningCli);
+    checks['Startup config'] = capabilityCheck(capabilities.config.startup);
+    checks['Backup'] = profile.mode === 'remote'
+      ? skipped('write backup requires a LAN profile for /ci/startup-config.txt; read-only use is ready')
+      : capabilityCheck(capabilities.config.backup, '/ci/startup-config.txt');
   } else {
-    checks['Running config'] = warning('capability probe failed');
-    checks['Startup config'] = warning('capability probe failed');
+    const detail = probeFailureDetail(configResult);
+    checks['Running config'] = warning(detail);
+    checks['Startup config'] = warning(detail);
+    checks['Backup'] = profile.mode === 'remote'
+      ? skipped('write backup requires a LAN profile for /ci/startup-config.txt; read-only use is ready')
+      : warning(detail);
   }
   checks['System diagnostic'] = system;
   checks['Internet diagnostic'] = internet;
   checks['DNS diagnostic'] = dns;
-  checks['Backup'] = backup;
 
   return { ready: true, ...(model ? { model } : {}), ...(firmware ? { firmware } : {}), checks };
 }

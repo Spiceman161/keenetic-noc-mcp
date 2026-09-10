@@ -59,7 +59,11 @@ function createUnconfiguredClient(): KeeneticClient {
     );
   };
   const rci = new Rci({ request: async () => unavailable() });
-  return { rci, capabilities: async () => unavailable() };
+  return {
+    rci,
+    capabilities: async () => unavailable(),
+    probedCapabilities: async () => unavailable()
+  };
 }
 
 function unconfiguredContext(): ToolContext {
