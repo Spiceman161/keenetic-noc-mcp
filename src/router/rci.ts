@@ -4,6 +4,11 @@ export interface RciSession { request(method: 'GET' | 'POST', path: string, body
 async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
+    if (res.body) {
+      const reader = res.body.getReader();
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
     throw new RciError(`response exceeds ${maxBytes} byte safety limit`, {
       path: 'response', code: 'response-too-large', ident: 'rci'
     });
@@ -64,6 +69,11 @@ export interface RciProbeMetadata {
   wrapperDepth: number;
 }
 
+export interface BoundedRciValue<T = unknown> {
+  value: T;
+  bytes: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -110,6 +120,40 @@ export class Rci {
     const clean = path.replace(/^\/+/, '');
     const res = await this.session.request('GET', `/rci/${clean}`);
     return this.parse<T>(res, clean, maxBytes);
+  }
+
+  /**
+   * Reads configuration JSON without ever copying response content into an
+   * error. Configuration can contain credentials even when an HTTP request
+   * fails, so the generic diagnostic parser is deliberately not used here.
+   */
+  async getConfig<T = unknown>(path: string, maxBytes: number): Promise<BoundedRciValue<T>> {
+    const clean = path.replace(/^\/+/, '');
+    const displayPath = clean === '' ? '/' : clean;
+    const res = await this.session.request('GET', `/rci/${clean}`);
+    const bytes = await readResponse(res, maxBytes);
+    if (!res.ok) {
+      throw new RciError(`HTTP ${res.status} while reading configuration`, {
+        path: displayPath, code: String(res.status), ident: 'http'
+      });
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      throw new RciError('the configuration response is not valid JSON', {
+        path: displayPath, code: 'parse', ident: 'rci'
+      });
+    }
+    const firstError = collectStatuses(value).find(status => status.status === 'error');
+    if (firstError) {
+      throw new RciError('the router reported an error while reading configuration', {
+        path: displayPath,
+        code: 'router-error',
+        ident: 'rci'
+      });
+    }
+    return { value: value as T, bytes: bytes.byteLength };
   }
 
   async post<T = unknown>(body: unknown): Promise<T> {

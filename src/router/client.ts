@@ -13,12 +13,17 @@ export interface KeeneticClient {
   readonly rci: Rci;
   capabilities(): Promise<Capabilities>;
   probedCapabilities(): Promise<ProbedCapabilities>;
+  /** Records only a successful measured read, never configuration content. */
+  markRunningStructured?(method: 'rci-branch' | 'rci-root'): void;
 }
 
 function clientFor(rci: Rci, mode: 'lan' | 'remote'): KeeneticClient {
   // Cached as a promise, not a value, so concurrent first callers share one fetch.
   let pending: Promise<Capabilities> | null = null;
   let probedPending: Promise<ProbedCapabilities> | null = null;
+  let runningStructured: ProbedCapabilities['config']['runningStructured'] = {
+    state: 'unknown', method: null, reason: 'not-probed'
+  };
 
   return {
     rci,
@@ -35,6 +40,7 @@ function clientFor(rci: Rci, mode: 'lan' | 'remote'): KeeneticClient {
         // candidate startup path depends on a prior successful RCI request.
         await this.capabilities();
         const result = await probeOperationalCapabilities(rci, mode);
+        result.config.runningStructured = runningStructured;
         if (hasRecoverableCapabilityFailure(result)) probedPending = null;
         return result;
       })().catch(error => {
@@ -42,6 +48,11 @@ function clientFor(rci: Rci, mode: 'lan' | 'remote'): KeeneticClient {
         throw error;
       });
       return probedPending;
+    },
+    markRunningStructured(method): void {
+      runningStructured = { state: 'available', method, reason: null };
+      void probedPending?.then(result => { result.config.runningStructured = runningStructured; })
+        .catch(() => undefined);
     }
   };
 }

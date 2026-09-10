@@ -34,6 +34,12 @@ saved implicitly:
 guard -> startup-config backup once -> apply -> read back -> verify -> audit
 ```
 
+Configuration reads use a separate 256 KB input-bounded reader whose errors
+never contain response bodies. CLI secrets are redacted before sectioning,
+filtering, or literal search, and complete configuration documents are never
+cached or audited. Running and startup source selection follows the measured
+session capability; remote startup reads do not broaden LAN-only write backup.
+
 `save_config` is the sole tool that persists running configuration. Failure to
 read startup configuration blocks the first real mutation unless the operator
 explicitly enables the documented override. Concurrent first writes share the

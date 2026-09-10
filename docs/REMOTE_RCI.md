@@ -80,9 +80,9 @@ of DNS, TLS, authentication, RCI, router system, configuration-read, and
 startup-backup capability. LAN profiles probe `/ci/startup-config.txt`
 separately, so an unavailable backup produces a degraded result. A remote profile can
 be healthy while the backup line says that write backup requires LAN. This is
-separate from the successful remote RCI startup-config read: A3 will use the
-live-proven `more?filename=startup-config` surface for read-only configuration
-tools, while the existing mutation guard deliberately continues to require the
+separate from the successful remote RCI startup-config read: the read-only
+configuration tools use the live-proven `more?filename=startup-config` surface,
+while the existing mutation guard deliberately continues to require the
 LAN-only `/ci/startup-config.txt` backup. It saves only a redacted summary of
 the result.
 

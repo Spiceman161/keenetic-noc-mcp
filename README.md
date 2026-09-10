@@ -15,7 +15,7 @@ It is intended for operators who want useful network automation without handing 
 
 ### What it provides
 
-- Safe, bounded diagnostics for system state, internet, Wi-Fi, interfaces, routes, devices, DNS, VPN, segments, and logs.
+- Safe, bounded diagnostics for system state, internet, Wi-Fi, interfaces, routes, devices, DNS, VPN, segments, logs, and redacted running/startup configuration.
 - Named router profiles for LAN and remote HTTPS RCI access; one MCP process serves one selected profile.
 - Remote transport with HTTPS-only endpoints, normal TLS certificate verification, and challenge-driven Digest or Basic authentication.
 - Read-only mode that omits mutation tools entirely.
@@ -133,7 +133,7 @@ Keenetic NOC MCP - ориентированный на безопасность 
 
 ### Возможности
 
-- Безопасная диагностика с ограничением размера ответов: система, интернет, Wi-Fi, интерфейсы, маршруты, устройства, DNS, VPN, сегменты и журналы.
+- Безопасная диагностика с ограничением размера ответов: система, интернет, Wi-Fi, интерфейсы, маршруты, устройства, DNS, VPN, сегменты, журналы и отредактированная текущая/сохранённая конфигурация.
 - Именованные профили роутеров для LAN и удалённого HTTPS RCI; один процесс MCP обслуживает один выбранный профиль.
 - Удалённое подключение только по HTTPS, с обычной проверкой TLS-сертификата и аутентификацией Digest или Basic по запросу сервера.
 - Режим только для чтения, в котором инструменты изменения вообще не регистрируются.

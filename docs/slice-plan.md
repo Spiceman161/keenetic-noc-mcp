@@ -447,7 +447,7 @@ The exact type may differ, but capability values must explain the proven access 
 
 ## Slice A3 - Safe configuration read tools
 
-**Progress:** Planned; gated on A2.
+**Progress:** Implemented; local verification and independent review completed.
 
 ### Goal
 

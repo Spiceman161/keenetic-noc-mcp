@@ -110,6 +110,47 @@ describe('Rci.getText', () => {
   });
 });
 
+describe('Rci.getConfig', () => {
+  it('returns bounded JSON and its byte count', async () => {
+    const body = JSON.stringify({ result: ['system'] });
+    const rci = new Rci(sessionReturning(body));
+    await expect(rci.getConfig('show/running-config', 1024)).resolves.toEqual({
+      value: { result: ['system'] }, bytes: Buffer.byteLength(body)
+    });
+  });
+
+  it('never includes an HTTP or RCI configuration body in errors', async () => {
+    const secret = 'user agent password do-not-leak';
+    const http = new Rci(sessionReturning(secret, 500));
+    await expect(http.getConfig('show/running-config', 1024)).rejects.not.toThrow(secret);
+    const embedded = new Rci(sessionReturning(JSON.stringify({ status: [{ status: 'error',
+      code: secret, ident: secret, message: secret }] })));
+    await expect(embedded.getConfig('show/running-config', 1024)).rejects.not.toThrow(secret);
+  });
+
+  it('cancels a body rejected by its declared content length', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{}')); },
+      cancel() { cancelled = true; }
+    });
+    const rci = new Rci({ request: async () => new Response(body, {
+      headers: { 'content-type': 'application/json', 'content-length': '1000' }
+    }) });
+    await expect(rci.getConfig('show/running-config', 20)).rejects.toMatchObject({
+      code: 'response-too-large'
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('applies the input byte ceiling', async () => {
+    const rci = new Rci(sessionReturning(JSON.stringify(['x'.repeat(100)])));
+    await expect(rci.getConfig('show/running-config', 20)).rejects.toMatchObject({
+      code: 'response-too-large'
+    });
+  });
+});
+
 describe('Rci.probeGet', () => {
   it('retains only response metadata for JSON arrays', async () => {
     const body = JSON.stringify(['system', 'interface', 'service']);

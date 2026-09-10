@@ -17,6 +17,9 @@ const READ_TOOLS = [
   'get_dns_status',
   'get_logs',
   'get_logs_by_device',
+  'get_running_config',
+  'get_startup_config',
+  'search_config',
   'get_system_info',
   'get_wifi_status',
   'get_vpn',
@@ -104,6 +107,18 @@ describe('assembled server over MCP', () => {
       'body must carry type information, or a client cannot tell what to send'
     ).toBeDefined();
   });
+
+  it('advertises narrow configuration schemas', async () => {
+    const client = await connectedClient();
+    const { tools } = await client.listTools();
+    const running = tools.find(tool => tool.name === 'get_running_config')?.inputSchema;
+    const startup = tools.find(tool => tool.name === 'get_startup_config')?.inputSchema;
+    const search = tools.find(tool => tool.name === 'search_config')?.inputSchema;
+    expect(running?.required).toContain('section');
+    expect((running?.properties as any)?.format?.default).toBe('cli');
+    expect((startup?.properties as any)?.format?.const).toBe('cli');
+    expect(search?.required).toEqual(expect.arrayContaining(['source', 'query']));
+  });
 });
 
 describe('read-only mode', () => {
@@ -144,6 +159,14 @@ describe('write mode', () => {
       const tool = tools.find(t => t.name === name);
       expect(tool?.annotations?.readOnlyHint, `${name} must not be read-only`).toBe(false);
       expect(tool?.annotations?.destructiveHint, `${name} must be destructive`).toBe(true);
+    }
+  });
+
+  it('keeps configuration readers annotated read-only in write mode', async () => {
+    const client = await connectedClient(false);
+    const { tools } = await client.listTools();
+    for (const name of ['get_running_config', 'get_startup_config', 'search_config']) {
+      expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
     }
   });
 });

@@ -52,7 +52,7 @@ export interface CapabilityAccess<M extends string> {
 export interface ProbedCapabilities {
   config: {
     runningCli: CapabilityAccess<'rci-show'>;
-    runningStructured: CapabilityAccess<'rci-root'>;
+    runningStructured: CapabilityAccess<'rci-branch' | 'rci-root'>;
     startup: CapabilityAccess<'rci-more' | 'ci-file'>;
     backup: CapabilityAccess<'ci-file'>;
   };

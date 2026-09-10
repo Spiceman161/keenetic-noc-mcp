@@ -27,7 +27,8 @@ const CONFIG = configText(STALE_CHECKSUM);
  * is what a real 5.1.1 router reports even while a change sits unsaved. A save
  * check that believes that flag passes this harness while doing nothing.
  */
-function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
+function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvailable?: boolean;
+  maxResponseBytes?: number; configLines?: string[] } = {}) {
   const posts: unknown[] = [];
   const events: string[] = [];
   let savedChecksum = STALE_CHECKSUM;
@@ -40,6 +41,23 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
     'fail-safe': { unsaved: false, rollback: false, 'time-left': 0 }
   }));
   const getText = vi.fn(async () => configText(savedChecksum));
+  const configLines = opts.configLines ?? [
+    'system',
+    '    hostname safe-router',
+    'user agent',
+    '    password do-not-leak',
+    'dns-proxy',
+    '    enabled',
+    'interface WifiMaster0/AccessPoint0',
+    '    ssid Example',
+    'interface Wireguard1',
+    '    wireguard private-key private-material'
+  ];
+  const getConfig = vi.fn(async (path: string) => ({
+    value: path === '' ? { system: { hostname: 'safe-router' } } :
+      path === 'system' ? { hostname: 'safe-router' } : { result: configLines },
+    bytes: 100
+  }));
   const post = vi.fn(async (body: unknown) => {
     events.push('post');
     posts.push(body);
@@ -51,8 +69,17 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
   });
 
   const client = {
-    rci: { get, post, getText },
-    capabilities: vi.fn()
+    rci: { get, post, getText, getConfig },
+    capabilities: vi.fn(),
+    probedCapabilities: vi.fn(async () => ({ config: {
+      runningCli: { state: 'available', method: 'rci-show', reason: null },
+      runningStructured: { state: 'unknown', method: null, reason: 'not-probed' },
+      startup: opts.startupAvailable === false
+        ? { state: 'unavailable', method: null, reason: 'not-found' }
+        : { state: 'available', method: 'rci-more', reason: null },
+      backup: { state: 'available', method: 'ci-file', reason: null }
+    } })),
+    markRunningStructured: vi.fn()
   } as unknown as KeeneticClient;
 
   const backup = stubBackup();
@@ -60,9 +87,10 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
   backup.ensure = vi.fn(async () => { events.push('backup'); return ensure(); });
   const ctx: ToolContext = {
     client,
-    maxResponseBytes: 25_000,
+    maxResponseBytes: opts.maxResponseBytes ?? 25_000,
     readOnly: opts.readOnly === true,
-    backup
+    backup,
+    audit: { write: vi.fn(async () => undefined) }
   };
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const handlers: Record<string, Handler> = {};
@@ -76,12 +104,94 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
   }) as never);
 
   registerConfigTools(server, ctx);
-  return { handlers, posts, get, getText, backup, events };
+  return { handlers, posts, get, getText, getConfig, backup, events, audit: ctx.audit! };
 }
 
 function payload(result: ToolResult): any {
   return JSON.parse(result.content.map(p => p.text).join(''));
 }
+
+describe('configuration read tools', () => {
+  it('registers all reads in read-only mode and redacts before returning CLI lines', async () => {
+    const { handlers } = harness({ readOnly: true });
+    expect(Object.keys(handlers)).toEqual(expect.arrayContaining([
+      'get_running_config', 'get_startup_config', 'search_config'
+    ]));
+    const out = payload(await handlers['get_running_config']!({ section: 'users' }));
+    expect(JSON.stringify(out)).not.toContain('do-not-leak');
+    expect(out.lines).toEqual(['user agent', '    password [REDACTED]']);
+  });
+
+  it('requires an explicit high limit for all without reading configuration', async () => {
+    const { handlers, getConfig } = harness();
+    const result = await handlers['get_running_config']!({ section: 'all' });
+    expect(result.isError).toBe(true);
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  it('uses the measured startup RCI source and never substitutes running', async () => {
+    const { handlers, getConfig } = harness();
+    const out = payload(await handlers['get_startup_config']!({ section: 'system' }));
+    expect(out.source).toBe('startup');
+    expect(out.method).toBe('rci-more');
+    expect(getConfig).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
+  });
+
+  it('returns a normal capability envelope when startup is unavailable', async () => {
+    const { handlers, getConfig, getText } = harness({ startupAvailable: false });
+    const out = payload(await handlers['get_startup_config']!({ section: 'system' }));
+    expect(out).toMatchObject({ available: false, state: 'unavailable', reason: 'not-found' });
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(getText).not.toHaveBeenCalled();
+  });
+
+  it('supports structured allowlist reads and rejects heuristic sections', async () => {
+    const { handlers, getConfig } = harness();
+    const out = payload(await handlers['get_running_config']!({ section: 'system', format: 'structured' }));
+    expect(out.method).toBe('rci-branch');
+    expect(out.data.system).toEqual({ hostname: 'safe-router' });
+    expect(getConfig).toHaveBeenCalledWith('system', 256_000);
+    const rejected = await handlers['get_running_config']!({ section: 'vpn', format: 'structured' });
+    expect(rejected.isError).toBe(true);
+  });
+
+  it('searches normalized text without echoing the query', async () => {
+    const { handlers } = harness();
+    const out = payload(await handlers['search_config']!({ source: 'running', query: 'SAFE-ROUTER',
+      section: 'all', limit: 50, context: 2 }));
+    expect(out.totalMatches).toBe(1);
+    expect(JSON.stringify(out)).not.toContain('SAFE-ROUTER');
+  });
+
+  it('applies normalized CLI filters and reports limit counts', async () => {
+    const { handlers } = harness({ configLines: ['system', '    description Café  Router',
+      '    hostname Café Router'] });
+    const out = payload(await handlers['get_running_config']!({ section: 'system',
+      filter: 'CAFE\u0301 ROUTER', limit: 1 }));
+    expect(out).toMatchObject({ shown: 1, total: 2, truncated: true });
+  });
+
+  it('does not write configuration reads to the mutation audit', async () => {
+    const { handlers, audit } = harness();
+    await handlers['get_running_config']!({ section: 'system' });
+    await handlers['get_startup_config']!({ section: 'system' });
+    await handlers['search_config']!({ source: 'running', query: 'system', section: 'all',
+      limit: 50, context: 2 });
+    expect(audit.write).not.toHaveBeenCalled();
+  });
+
+  it('reports only matches present after response-byte truncation', async () => {
+    const lines = Array.from({ length: 30 }, (_, index) => `match-${index} ${'x'.repeat(100)}`);
+    const { handlers } = harness({ maxResponseBytes: 500, configLines: lines });
+    const out = payload(await handlers['search_config']!({ source: 'running', query: 'match',
+      section: 'all', limit: 30, context: 0 }));
+    const actuallyShown = out.groups.flatMap((group: any) => group.lines)
+      .filter((line: any) => line.match).length;
+    expect(out.shownMatches).toBe(actuallyShown);
+    expect(out.totalMatches).toBe(30);
+    expect(out.truncated).toBe(true);
+  });
+});
 
 describe('save_config', () => {
   it('sends the save command and confirms afterwards', async () => {

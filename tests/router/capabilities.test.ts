@@ -76,6 +76,27 @@ describe('client capability caching', () => {
     expect(probeFile).toHaveBeenCalledTimes(1);
   });
 
+  it('records a successful structured read without retaining its content', async () => {
+    const client = createClient({ host: '192.0.2.1', login: 'admin', password: 'x' });
+    vi.spyOn(client.rci, 'get').mockResolvedValue(VERSION);
+    vi.spyOn(client.rci, 'probeGet').mockResolvedValue({
+      httpStatus: 200, contentTypeClass: 'json', shape: 'array', items: 1, bytes: 10,
+      payloadShape: 'array', payloadItems: 1, payloadItemShape: 'string', wrapperDepth: 0
+    });
+    vi.spyOn(client.rci, 'probeStartupFile').mockResolvedValue({
+      httpStatus: 200, contentTypeClass: 'text', shape: 'string', items: 1, bytes: 10,
+      payloadShape: 'string', payloadItems: 1, payloadItemShape: 'unknown', wrapperDepth: 0
+    });
+    const before = await client.probedCapabilities();
+    expect(before.config.runningStructured.reason).toBe('not-probed');
+    client.markRunningStructured?.('rci-branch');
+    const after = await client.probedCapabilities();
+    expect(after.config.runningStructured).toEqual({
+      state: 'available', method: 'rci-branch', reason: null
+    });
+    expect(JSON.stringify(after)).not.toContain('password');
+  });
+
   it('retries operational probes after an unexpected response', async () => {
     const client = createClient({ host: '192.0.2.1', login: 'admin', password: 'x' });
     vi.spyOn(client.rci, 'get').mockResolvedValue(VERSION);

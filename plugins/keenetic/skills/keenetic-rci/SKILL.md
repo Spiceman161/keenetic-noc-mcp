@@ -29,10 +29,11 @@ configuration as valid CLI, so it will tell you the exact syntax of anything it
 is already doing:
 
 ```
-rci_call { "method": "GET", "path": "show/running-config" }
+get_running_config { "section": "all", "limit": 200 }
 ```
 
-Read the lines around whatever you want to change. A host with a routing policy
+Prefer a narrower section or `search_config` when the target is known. Read the
+lines around whatever you want to change. A host with a routing policy
 appears as `host <mac> policy Policy0`, which maps to
 `{"ip":{"hotspot":{"host":{"mac":"...","policy":"Policy0"}}}}`. Guessing field
 names instead produces silent no-ops, described below.
