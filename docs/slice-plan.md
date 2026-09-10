@@ -538,7 +538,13 @@ Requirements:
 
 ## Slice A4 - Configuration diff and unsaved-change explanation
 
-**Progress:** Planned; gated on A3.
+**Progress:** Implemented. The independent diff-correctness,
+sensitive-output, and compatibility/performance reviewers report no remaining
+material findings after one review-fix iteration. Final automated verification
+passes. An authorized read-only remote smoke check on Viva (KN-1912),
+KeeneticOS 5.1.3, confirmed that the running and startup RCI sources remained
+available with the expected bounded array-of-CLI-lines shape. The smoke harness
+does not invoke `get_config_diff`, so the live diff path remains untested.
 
 ### Goal
 

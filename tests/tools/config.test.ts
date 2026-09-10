@@ -28,18 +28,24 @@ const CONFIG = configText(STALE_CHECKSUM);
  * check that believes that flag passes this harness while doing nothing.
  */
 function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvailable?: boolean;
-  maxResponseBytes?: number; configLines?: string[] } = {}) {
+  runningAvailable?: boolean; maxResponseBytes?: number; configLines?: string[];
+  runningLines?: string[]; startupLines?: string[]; changeDuringDiff?: boolean } = {}) {
   const posts: unknown[] = [];
   const events: string[] = [];
   let savedChecksum = STALE_CHECKSUM;
   let lastChangedAt = 'Fri, 7 Aug 2026 01:20:36 GMT';
 
-  const get = vi.fn(async () => ({
-    date: lastChangedAt,
-    user: 'admin',
-    checksum: RUNNING_CHECKSUM,
-    'fail-safe': { unsaved: false, rollback: false, 'time-left': 0 }
-  }));
+  let lastChangeReads = 0;
+  const get = vi.fn(async () => {
+    lastChangeReads += 1;
+    const moved = opts.changeDuringDiff === true && lastChangeReads > 1;
+    return {
+      date: moved ? 'Fri, 7 Aug 2026 01:20:40 GMT' : lastChangedAt,
+      user: 'admin',
+      checksum: moved ? STALE_CHECKSUM : RUNNING_CHECKSUM,
+      'fail-safe': { unsaved: false, rollback: false, 'time-left': 0 }
+    };
+  });
   const getText = vi.fn(async () => configText(savedChecksum));
   const configLines = opts.configLines ?? [
     'system',
@@ -53,9 +59,12 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvai
     'interface Wireguard1',
     '    wireguard private-key private-material'
   ];
+  const runningLines = opts.runningLines ?? configLines;
+  const startupLines = opts.startupLines ?? configLines;
   const getConfig = vi.fn(async (path: string) => ({
     value: path === '' ? { system: { hostname: 'safe-router' } } :
-      path === 'system' ? { hostname: 'safe-router' } : { result: configLines },
+      path === 'system' ? { hostname: 'safe-router' } :
+        { result: path === 'more?filename=startup-config' ? startupLines : runningLines },
     bytes: 100
   }));
   const post = vi.fn(async (body: unknown) => {
@@ -72,7 +81,9 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvai
     rci: { get, post, getText, getConfig },
     capabilities: vi.fn(),
     probedCapabilities: vi.fn(async () => ({ config: {
-      runningCli: { state: 'available', method: 'rci-show', reason: null },
+      runningCli: opts.runningAvailable === false
+        ? { state: 'unavailable', method: null, reason: 'not-found' }
+        : { state: 'available', method: 'rci-show', reason: null },
       runningStructured: { state: 'unknown', method: null, reason: 'not-probed' },
       startup: opts.startupAvailable === false
         ? { state: 'unavailable', method: null, reason: 'not-found' }
@@ -94,17 +105,20 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvai
   };
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const handlers: Record<string, Handler> = {};
+  const registrations: Record<string, any> = {};
   vi.spyOn(server, 'registerTool').mockImplementation(((
     name: string,
-    _c: unknown,
+    config: unknown,
     handler: Handler
   ) => {
     handlers[name] = handler;
+    registrations[name] = config;
     return {} as never;
   }) as never);
 
   registerConfigTools(server, ctx);
-  return { handlers, posts, get, getText, getConfig, backup, events, audit: ctx.audit! };
+  return { handlers, registrations, posts, get, getText, getConfig, backup, events,
+    audit: ctx.audit! };
 }
 
 function payload(result: ToolResult): any {
@@ -115,7 +129,7 @@ describe('configuration read tools', () => {
   it('registers all reads in read-only mode and redacts before returning CLI lines', async () => {
     const { handlers } = harness({ readOnly: true });
     expect(Object.keys(handlers)).toEqual(expect.arrayContaining([
-      'get_running_config', 'get_startup_config', 'search_config'
+      'get_running_config', 'get_startup_config', 'search_config', 'get_config_diff'
     ]));
     const out = payload(await handlers['get_running_config']!({ section: 'users' }));
     expect(JSON.stringify(out)).not.toContain('do-not-leak');
@@ -190,6 +204,62 @@ describe('configuration read tools', () => {
     expect(out.shownMatches).toBe(actuallyShown);
     expect(out.totalMatches).toBe(30);
     expect(out.truncated).toBe(true);
+  });
+
+  it('summarizes configuration changes without returning diff lines by default', async () => {
+    const { handlers } = harness({
+      startupLines: ['! $$$ Md5 checksum: 0f9e8d7c6b5a49382716f5e4d3c2b1a0',
+        'dns-proxy', '    cache-size 128'],
+      runningLines: ['! $$$ Md5 checksum: a1b2c3d4e5f60718293a4b5c6d7e8f90',
+        'dns-proxy', '    cache-size 256']
+    });
+    const out = payload(await handlers['get_config_diff']!({ include_diff: false, limit: 200 }));
+    expect(out).toMatchObject({ comparable: true, unsavedChanges: true,
+      runningMethod: 'rci-show', startupMethod: 'rci-more', changedSections: ['dns'],
+      added: 1, removed: 1, diffIncluded: false,
+      lastChange: { at: 'Fri, 7 Aug 2026 01:20:36 GMT', by: 'admin', via: null } });
+    expect(out.diff).toBeUndefined();
+  });
+
+  it('returns a bounded redacted textual diff only when requested', async () => {
+    const { handlers } = harness({ maxResponseBytes: 700,
+      startupLines: ['user agent', '    password first-secret',
+        ...Array.from({ length: 20 }, (_, index) => `    description old-${index}`)],
+      runningLines: ['user agent', '    password second-secret',
+        ...Array.from({ length: 20 }, (_, index) => `    description new-${index}`)] });
+    const out = payload(await handlers['get_config_diff']!({ include_diff: true, limit: 20 }));
+    expect(out).toMatchObject({ comparable: true, diffIncluded: true, total: 42,
+      truncated: true, redactedChanges: 1 });
+    expect(out.shownAdded + out.shownRemoved).toBe(out.shown);
+    expect(JSON.stringify(out)).not.toMatch(/first-secret|second-secret/);
+  });
+
+  it('returns a capability result without reading either config when startup is unavailable', async () => {
+    const { handlers, getConfig, get } = harness({ startupAvailable: false });
+    const out = payload(await handlers['get_config_diff']!({ include_diff: false, limit: 200 }));
+    expect(out).toEqual({ comparable: false, unsavedChanges: null,
+      reason: { source: 'startup', state: 'unavailable', reason: 'not-found' },
+      diffIncluded: false });
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('keeps the diff tool read-only and out of mutation audit', async () => {
+    const { handlers, registrations, audit } = harness();
+    await handlers['get_config_diff']!({ include_diff: false, limit: 200 });
+    expect(registrations['get_config_diff'].annotations.readOnlyHint).toBe(true);
+    expect(audit.write).not.toHaveBeenCalled();
+  });
+
+  it('refuses a diff when configuration changes between the bracketing reads', async () => {
+    const { handlers, get } = harness({ changeDuringDiff: true,
+      startupLines: ['system', '    hostname old'],
+      runningLines: ['system', '    hostname new'] });
+    const out = payload(await handlers['get_config_diff']!({ include_diff: true, limit: 200 }));
+    expect(out).toEqual({ comparable: false, unsavedChanges: null,
+      reason: 'configuration-changed-during-read', diffIncluded: false });
+    expect(out.diff).toBeUndefined();
+    expect(get).toHaveBeenCalledTimes(2);
   });
 });
 

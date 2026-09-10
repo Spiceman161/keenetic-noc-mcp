@@ -17,6 +17,7 @@ const READ_TOOLS = [
   'get_dns_status',
   'get_logs',
   'get_logs_by_device',
+  'get_config_diff',
   'get_running_config',
   'get_startup_config',
   'search_config',
@@ -114,10 +115,14 @@ describe('assembled server over MCP', () => {
     const running = tools.find(tool => tool.name === 'get_running_config')?.inputSchema;
     const startup = tools.find(tool => tool.name === 'get_startup_config')?.inputSchema;
     const search = tools.find(tool => tool.name === 'search_config')?.inputSchema;
+    const diff = tools.find(tool => tool.name === 'get_config_diff')?.inputSchema;
     expect(running?.required).toContain('section');
     expect((running?.properties as any)?.format?.default).toBe('cli');
     expect((startup?.properties as any)?.format?.const).toBe('cli');
     expect(search?.required).toEqual(expect.arrayContaining(['source', 'query']));
+    expect((diff?.properties as any)?.include_diff?.default).toBe(false);
+    expect((diff?.properties as any)?.limit).toMatchObject({ default: 200, minimum: 1,
+      maximum: 1000 });
   });
 });
 
@@ -165,7 +170,8 @@ describe('write mode', () => {
   it('keeps configuration readers annotated read-only in write mode', async () => {
     const client = await connectedClient(false);
     const { tools } = await client.listTools();
-    for (const name of ['get_running_config', 'get_startup_config', 'search_config']) {
+    for (const name of ['get_running_config', 'get_startup_config', 'search_config',
+      'get_config_diff']) {
       expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
     }
   });

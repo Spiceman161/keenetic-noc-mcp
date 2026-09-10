@@ -40,6 +40,14 @@ filtering, or literal search, and complete configuration documents are never
 cached or audited. Running and startup source selection follows the measured
 session capability; remote startup reads do not broaden LAN-only write backup.
 
+Configuration diffing compares transient fingerprints of order-sensitive CLI
+lines and renders only separately redacted lines. Only the generated saved MD5
+header is ignored. A 10,000-line preprocessing ceiling and fixed LCS matrix
+budget bound CPU and memory; the tool returns an explicit comparison-limit
+result instead of approximate counts. Reads are bracketed by `show/last-change`
+and discarded if the configuration moves during comparison. `get_config_state`
+remains separate and does not invoke the diff path.
+
 `save_config` is the sole tool that persists running configuration. Failure to
 read startup configuration blocks the first real mutation unless the operator
 explicitly enables the documented override. Concurrent first writes share the

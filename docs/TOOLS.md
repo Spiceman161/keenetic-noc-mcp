@@ -1,7 +1,7 @@
 # Tools
 
 Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
-`get_running_config`, `get_startup_config`, `search_config`,
+`get_running_config`, `get_startup_config`, `search_config`, `get_config_diff`,
 `get_internet_status`, `list_interfaces`, `get_interface`, `list_routes`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
@@ -64,3 +64,20 @@ Search defaults to `section=all`, `limit=50` matches, and two context lines.
 `totalMatches` counts every match before limits, while `shownMatches` counts
 only matching lines actually retained in the returned groups. `shown` and
 `total` describe context groups rather than matches.
+
+`get_config_diff` compares startup CLI configuration with running CLI
+configuration. It defaults to a complete semantic summary without returning
+configuration lines. Set `include_diff=true` to include up to `limit` changed
+lines (`200` by default, maximum `1000`), still capped by the global response
+budget. `added` and `removed` count the complete diff; `shownAdded`,
+`shownRemoved`, and `shown` describe only retained output.
+
+The comparison preserves CLI ordering, whitespace, comments, and case. It
+ignores only the measured generated MD5 checksum header. Secret-only changes
+are counted while all returned lines remain redacted. If either source is
+unavailable, the tool returns `comparable=false` with the measured source,
+state, and reason. It never substitutes running configuration for startup.
+Inputs over 10,000 lines or the comparison work budget return
+`comparison-limit-exceeded`. If the router configuration changes while both
+documents are being read, the result is discarded with
+`configuration-changed-during-read`; callers should retry.

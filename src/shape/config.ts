@@ -1,4 +1,5 @@
 export type ConfigSection = 'dns' | 'interfaces' | 'routing' | 'wifi' | 'vpn' | 'users' | 'system' | 'all';
+export type ClassifiedConfigSection = Exclude<ConfigSection, 'all'> | 'other';
 
 export interface NumberedConfigLine {
   lineNumber: number;
@@ -41,6 +42,18 @@ function blockMatches(block: readonly NumberedConfigLine[], section: ConfigSecti
       return /^interface\b/.test(opening) &&
         /(wireguard|ipsec|openvpn|l2tp|pptp|sstp|openconnect|vpn)/i.test(content);
   }
+}
+
+/** Assigns one stable owner to a CLI block for summaries such as config diffs. */
+export function classifyConfigBlock(
+  block: readonly NumberedConfigLine[]
+): ClassifiedConfigSection {
+  // Interface blocks can also be Wi-Fi or VPN. Prefer the more useful,
+  // specific category while keeping broad section filtering unchanged.
+  for (const section of ['vpn', 'wifi', 'system', 'users', 'dns', 'routing', 'interfaces'] as const) {
+    if (blockMatches(block, section)) return section;
+  }
+  return 'other';
 }
 
 export function selectConfigSection(

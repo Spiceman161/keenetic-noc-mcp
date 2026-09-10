@@ -128,6 +128,10 @@ which interface, and whether there are unsaved changes. If `unsavedChanges` is
 true, a reboot returns the router to its last saved state, which is the fastest
 way back if a recent change is the cause.
 
+Use `get_config_diff` next for a bounded summary of which configuration
+sections and lines differ. Start with its default summary-only call; request
+`include_diff=true` only when the actual redacted changed lines are needed.
+
 ## Before changing anything
 
 Read [keenetic-safe-changes](../keenetic-safe-changes/SKILL.md). Diagnosis is

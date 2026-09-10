@@ -259,6 +259,12 @@ the startup configuration only if the management session **loses connectivity**.
 It protects against locking yourself out. It does not protect against a change
 that is wrong but still leaves the router reachable.
 
+`get_config_diff` performs the more expensive content comparison only when
+explicitly called. Startup is treated as the old state and running as the new
+state. CLI order, whitespace, case, empty lines, and ordinary comments remain
+significant; only the generated `! $$$ Md5 checksum: ...` header is ignored.
+No broader normalization has been justified by live evidence.
+
 ## Configuration files
 
 | Path | Contents |

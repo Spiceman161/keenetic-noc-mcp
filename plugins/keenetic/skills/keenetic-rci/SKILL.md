@@ -38,6 +38,10 @@ appears as `host <mac> policy Policy0`, which maps to
 `{"ip":{"hotspot":{"host":{"mac":"...","policy":"Policy0"}}}}`. Guessing field
 names instead produces silent no-ops, described below.
 
+When `get_config_state` reports unsaved changes, call `get_config_diff` for a
+summary. Add `{"include_diff":true}` only when redacted changed lines are
+needed; the summary is the safer default.
+
 ## Deleting something: `no` goes beside the arguments
 
 The negation is not a wrapper key. The router shows an already-negated line as

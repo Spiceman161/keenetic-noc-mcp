@@ -27,6 +27,10 @@ import {
   selectConfigSection,
   type ConfigSection
 } from '../shape/config.js';
+import {
+  boundedConfigDiffEnvelope,
+  diffConfigLines
+} from '../shape/config-diff.js';
 import { READ_ONLY } from './registry.js';
 
 const sectionSchema = z.enum(['dns', 'interfaces', 'routing', 'wifi', 'vpn', 'users', 'system', 'all']);
@@ -47,6 +51,18 @@ function unavailableEnvelope(
 ): Record<string, unknown> {
   return { source, format, section, available: false, state: read.state,
     method: read.method, reason: read.reason };
+}
+
+function unavailableDiffEnvelope(
+  source: ConfigSource,
+  read: { state: string; reason: unknown }
+): Record<string, unknown> {
+  return {
+    comparable: false,
+    unsavedChanges: null,
+    reason: { source, state: read.state, reason: read.reason },
+    diffIncluded: false
+  };
 }
 
 async function getConfig(
@@ -123,6 +139,64 @@ function registerConfigReadTools(server: McpServer, ctx: ToolContext): void {
     payload['shownMatches'] = returnedGroups.flatMap(group => group.lines)
       .filter(line => line.match).length;
     return ok(payload, ctx.maxResponseBytes);
+  }));
+
+  server.registerTool('get_config_diff', {
+    title: 'Explain unsaved configuration changes',
+    description: 'Compares running and startup CLI configuration and returns a bounded, secret-redacted summary with an optional textual diff.',
+    inputSchema: {
+      include_diff: z.boolean().optional().default(false)
+        .describe('Include bounded redacted added and removed lines; the default returns summary counts only.'),
+      limit: z.number().int().min(1).max(1000).optional().default(200)
+        .describe('Maximum changed lines to include when include_diff is true.')
+    },
+    annotations: READ_ONLY
+  }, guard(async ({ include_diff, limit }) => {
+    const capabilities = await ctx.client.probedCapabilities();
+    const startupAccess = capabilities.config.startup;
+    if (startupAccess.state === 'unavailable') {
+      return ok(unavailableDiffEnvelope('startup', startupAccess), ctx.maxResponseBytes);
+    }
+    const runningAccess = capabilities.config.runningCli;
+    if (runningAccess.state === 'unavailable') {
+      return ok(unavailableDiffEnvelope('running', runningAccess), ctx.maxResponseBytes);
+    }
+
+    const before = await readLastChange(ctx.client.rci);
+    const [running, startup] = await Promise.all([
+      readCliConfig(ctx.client, 'running'),
+      readCliConfig(ctx.client, 'startup')
+    ]);
+    const lastChange = await readLastChange(ctx.client.rci);
+    if (lastChangeMoved(before, lastChange)) {
+      return ok({ comparable: false, unsavedChanges: null,
+        reason: 'configuration-changed-during-read', diffIncluded: false },
+      ctx.maxResponseBytes);
+    }
+    if (!startup.available) return ok(unavailableDiffEnvelope('startup', startup), ctx.maxResponseBytes);
+    if (!running.available) return ok(unavailableDiffEnvelope('running', running), ctx.maxResponseBytes);
+
+    const compared = diffConfigLines(startup.lines, running.lines, redactConfigLines);
+    if (!compared.comparable) {
+      return ok({ comparable: false, unsavedChanges: null, reason: compared.reason,
+        requiredCells: compared.requiredCells, maxCells: compared.maxCells,
+        inputLines: compared.inputLines, maxLines: compared.maxLines,
+        diffIncluded: false }, ctx.maxResponseBytes);
+    }
+    const base = {
+      comparable: true,
+      unsavedChanges: compared.unsavedChanges,
+      runningMethod: running.method,
+      startupMethod: startup.method,
+      changedSections: compared.changedSections,
+      added: compared.added,
+      removed: compared.removed,
+      redactedChanges: compared.redactedChanges,
+      lastChange: { at: lastChange.date, by: lastChange.user, via: lastChange.agent }
+    };
+    if (!include_diff) return ok({ ...base, diffIncluded: false }, ctx.maxResponseBytes);
+    return ok(boundedConfigDiffEnvelope(base, compared.operations, limit,
+      ctx.maxResponseBytes), ctx.maxResponseBytes);
   }));
 }
 
