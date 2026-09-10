@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -57,6 +57,16 @@ describe('createBackupGuard', () => {
     expect(result.bytes).toBe(CONFIG.length);
     expect(result.path).toContain('192.0.2.1');
     await expect(readFile(result.path, 'utf8')).resolves.toBe(CONFIG);
+    expect((await stat(result.path)).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, 'backups'))).mode & 0o777).toBe(0o700);
+  });
+
+  it('confines malformed router ids to the backup directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kn-'));
+    vi.stubEnv('KEENETIC_STATE_DIR', dir);
+    const result = await createBackupGuard(rciReturning(CONFIG), '../../../../tmp/leak', CLOCK).ensure();
+    expect(result.path.startsWith(join(dir, 'backups') + '/')).toBe(true);
+    expect(result.path).not.toContain('../');
   });
 
   it('fetches once however many times it is asked', async () => {

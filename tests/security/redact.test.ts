@@ -8,4 +8,10 @@ describe('redaction', () => {
     expect(input.password).toBe('hunter2');
   });
   it('redacts labelled values in errors', () => expect(redactText('password=oops token:abc')).toBe('password=[REDACTED] token=[REDACTED]'));
+  it('redacts common Wi-Fi secret keys and quoted text values', () => {
+    expect(redact({ key: 'short', passphrase: 'two words', 'wpa-psk': '12345678' })).toEqual({
+      key: '[REDACTED]', passphrase: '[REDACTED]', 'wpa-psk': '[REDACTED]'
+    });
+    expect(redactText('passphrase="two words" key=short')).toBe('passphrase=[REDACTED] key=[REDACTED]');
+  });
 });

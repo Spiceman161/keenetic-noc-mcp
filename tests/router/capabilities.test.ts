@@ -43,6 +43,16 @@ describe('client capability caching', () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect(a).toBe(b);
   });
+
+  it('retries after a transient capability failure instead of caching rejection', async () => {
+    const client = createClient({ host: '192.0.2.1', login: 'admin', password: 'x' });
+    const spy = vi.spyOn(client.rci, 'get')
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce(VERSION);
+    await expect(client.capabilities()).rejects.toThrow('temporary');
+    await expect(client.capabilities()).resolves.toMatchObject({ firmware: '5.1.3' });
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('loadConfig', () => {

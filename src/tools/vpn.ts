@@ -33,10 +33,10 @@ async function all(ctx: ToolContext): Promise<Array<Record<string, unknown>>> {
 }
 
 export function registerVpnTools(server: McpServer, ctx: ToolContext): void {
-  server.registerTool('list_vpn', { title: 'List VPN interfaces', description: 'Compact status for VPN interfaces and WireGuard peers. Secrets are always redacted.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok({ vpn: await all(ctx) })));
+  server.registerTool('list_vpn', { title: 'List VPN interfaces', description: 'Compact status for VPN interfaces and WireGuard peers. Secrets are always redacted.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok({ vpn: await all(ctx) }, ctx.maxResponseBytes)));
   server.registerTool('get_vpn', { title: 'Get one VPN interface', description: 'Detailed projected state and protocol-specific runtime fields for one named VPN interface.', inputSchema: { name: z.string() }, annotations: READ_ONLY }, guard(async ({ name }) => {
     const found = (await all(ctx)).find(item => item['name'] === name);
     if (!found) throw new Error(`VPN interface "${name}" was not found. Call list_vpn.`);
-    return ok(found);
+    return ok(found, ctx.maxResponseBytes);
   }));
 }

@@ -1,4 +1,4 @@
-const SENSITIVE_KEY = /^(authorization|cookie|password|passwd|private[-_]?key|preshared[-_]?key|psk|token|secret)$/i;
+const SENSITIVE_KEY = /^(authorization|cookie|password|passwd|passphrase|private[-_]?key|preshared[-_]?key|wpa[-_]?psk|psk|token|secret|key)$/i;
 const LONG_KEY = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g;
 
 export function redact<T>(value: T): T {
@@ -6,7 +6,7 @@ export function redact<T>(value: T): T {
   const visit = (node: unknown): unknown => {
     if (typeof node === 'string') {
       return node
-        .replace(/\b(authorization|cookie|password|passwd|psk|token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+        .replace(/\b(authorization|cookie|password|passwd|passphrase|wpa[-_]?psk|psk|token|secret|key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=[REDACTED]')
         .replace(LONG_KEY, '[REDACTED_KEY]');
     }
     if (!node || typeof node !== 'object') return node;

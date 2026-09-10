@@ -1,4 +1,5 @@
-import { writeFile } from 'node:fs/promises';
+import { chmod, writeFile } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import {
@@ -8,7 +9,7 @@ import {
   STARTUP_CONFIG,
   type LastChange
 } from '../router/config-state.js';
-import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
+import { fail, guard, ok, type ToolContext, type ToolResult } from './registry.js';
 import { GuardError } from '../router/errors.js';
 
 /**
@@ -38,36 +39,41 @@ async function waitForSaved(
 }
 
 export function registerConfigTools(server: McpServer, ctx: ToolContext): void {
+  if (ctx.readOnly) return;
+
   server.registerTool(
     'backup_config',
     {
       title: 'Download a configuration backup',
       description:
-        'Saves the router startup configuration to a local file. Take one before any ' +
-        'sequence of changes so there is a known-good state to return to. Reading the ' +
-        'configuration changes nothing on the router.',
+        'Writes the router startup configuration to a new owner-only local file. Existing ' +
+        'files are never overwritten. Preview the destination before confirming the write.',
       inputSchema: {
-        path: z.string().describe('Absolute path of the local file to write.')
+        path: z.string().describe('Absolute path of the new local file to create.'),
+        dry_run: z.boolean().optional().default(true),
+        confirm: z.boolean().optional().default(false)
       },
-      annotations: READ_ONLY
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
     },
-    guard(async ({ path }): Promise<ToolResult> => {
+    guard(async ({ path, dry_run, confirm }): Promise<ToolResult> => {
+      if (!isAbsolute(path)) return fail(new Error('Backup destination must be an absolute path.'));
+      if (dry_run !== false) return ok({ dryRun: true, path, effect: 'create owner-only startup-config backup; existing files are refused' }, ctx.maxResponseBytes);
+      if (!confirm) throw new GuardError('Writing a local backup requires confirm=true together with dry_run=false.');
       const text = await ctx.client.rci.getText(STARTUP_CONFIG);
       try {
-        await writeFile(path, text, 'utf8');
+        await writeFile(path, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        await chmod(path, 0o600);
       } catch (error) {
         return fail(
           new Error(
-            `Could not write "${path}": ${(error as Error).message} ` +
-              'Give an absolute path in a directory that exists.'
+            `Could not create "${path}": ${(error as Error).message} ` +
+              'Give an unused absolute path in a directory that exists.'
           )
         );
       }
-      return ok({ path, bytes: Buffer.byteLength(text, 'utf8') });
+      return ok({ path, bytes: Buffer.byteLength(text, 'utf8') }, ctx.maxResponseBytes);
     })
   );
-
-  if (ctx.readOnly) return;
 
   server.registerTool(
     'save_config',
@@ -83,15 +89,16 @@ export function registerConfigTools(server: McpServer, ctx: ToolContext): void {
     guard(async ({ dry_run, confirm }): Promise<ToolResult> => {
       const planned = { system: { configuration: { save: {} } } };
       const base = { tool: 'save_config', dryRun: dry_run, confirmed: confirm, risk: 'high', target: 'startup configuration', planned };
-      if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequest: planned, expectedVerification: 'saved checksum equals running checksum', risk: 'high' }); }
+      if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequest: planned, expectedVerification: 'saved checksum equals running checksum', risk: 'high' }, ctx.maxResponseBytes); }
       if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real save requires confirm=true.'); }
       // Taken before the command so the poll can tell the router has acted.
       const before = await readLastChange(ctx.client.rci);
       try {
+        const snapshot = await ctx.backup.ensure();
         await ctx.client.rci.post(planned);
         if (!(await waitForSaved(ctx, before))) throw new Error('The save command was accepted but the router still reports unsaved changes. Call get_config_state before retrying.');
         await ctx.audit?.write({ ...base, before, verified: true, saved: true, success: true });
-        return ok({ saved: true, note: 'The running configuration is now the startup configuration.' });
+        return ok({ saved: true, backup: snapshot.path, note: 'The running configuration is now the startup configuration.' }, ctx.maxResponseBytes);
       } catch (error) {
         await ctx.audit?.write({ ...base, before, verified: false, saved: false, success: false, error: (error as Error).message });
         throw error;

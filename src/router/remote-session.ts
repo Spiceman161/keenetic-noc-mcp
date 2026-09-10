@@ -17,6 +17,14 @@ type AuthorizationState =
 const hash = (algorithm: string, value: string): string =>
   createHash(algorithm.replace('-sess', '').toLowerCase()).update(value).digest('hex');
 
+function retryable(method: string, body: unknown): boolean {
+  if (method === 'GET') return true;
+  if (method !== 'POST' || !body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const entries = Object.entries(body as Record<string, unknown>);
+  return entries.length === 1 && entries[0]?.[0] === 'show' &&
+    typeof entries[0][1] === 'object' && entries[0][1] !== null;
+}
+
 export function parseChallenges(header: string): Challenge[] {
   const starts = [...header.matchAll(/(?:^|,\s*)(Digest|Basic)\s+/gi)];
   return starts.map((match, index) => {
@@ -115,7 +123,9 @@ export class RemoteSession {
   }
 
   private async send(method: string, url: URL, body: unknown, deadline: number, authenticate = true): Promise<Response> {
-    const attempts = this.opts.attempts ?? 5;
+    // A failed transport does not tell us whether the router applied a POST.
+    // Retry only GET and the known read-only `show` dispatcher form.
+    const attempts = retryable(method, body) ? this.opts.attempts ?? 5 : 1;
     const authorization = authenticate ? this.authorizationHeader(method, url) : null;
     for (let attempt = 1; ; attempt++) {
       const remaining = deadline - this.now();

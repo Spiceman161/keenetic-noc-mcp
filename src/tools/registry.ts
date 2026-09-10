@@ -1,7 +1,6 @@
 import { KeeneticError } from '../router/errors.js';
 import type { BackupGuard } from '../router/backup.js';
 import type { KeeneticClient } from '../router/client.js';
-import { capText } from '../shape/budget.js';
 import { redact, redactText } from '../security/redact.js';
 import type { AuditWriter } from '../security/audit.js';
 
@@ -33,8 +32,16 @@ export interface ToolResult {
 /** `maxBytes` caps the serialised payload; omit it for responses already shaped. */
 export function ok(payload: unknown, maxBytes?: number): ToolResult {
   const text = JSON.stringify(redact(payload), null, 2);
+  if (maxBytes !== undefined && Buffer.byteLength(text, 'utf8') > maxBytes) {
+    const envelope = JSON.stringify({
+      truncated: true,
+      originalBytes: Buffer.byteLength(text, 'utf8'),
+      note: 'Response exceeded the configured byte ceiling. Narrow the query.'
+    });
+    return { content: [{ type: 'text', text: Buffer.byteLength(envelope, 'utf8') <= maxBytes ? envelope : maxBytes >= 4 ? 'null' : '0' }] };
+  }
   return {
-    content: [{ type: 'text', text: maxBytes === undefined ? text : capText(text, maxBytes) }]
+    content: [{ type: 'text', text }]
   };
 }
 

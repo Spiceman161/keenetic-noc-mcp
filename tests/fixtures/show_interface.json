@@ -340,7 +340,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::52ff:20ff:fee5:af57",
+          "address": "2001:db8::1",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -385,7 +385,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::50ff:20ff:fee5:af56",
+          "address": "2001:db8::2",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -433,7 +433,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::52ff:20ff:fee5:af58",
+          "address": "2001:db8::3",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -539,7 +539,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::52ff:20ff:fee5:af57",
+          "address": "2001:db8::1",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -589,7 +589,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::50ff:20ff:fe95:af57",
+          "address": "2001:db8::4",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -915,7 +915,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::52ff:20ff:fee5:af59",
+          "address": "2001:db8::5",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -965,7 +965,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::50ff:20ff:fe95:af59",
+          "address": "2001:db8::6",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -1254,13 +1254,13 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fd7a:54ca:d135:0:52ff:20ff:fee5:af57",
+          "address": "2001:db8::7",
           "prefix-length": 64,
           "proto": "SLAAC",
           "valid-lifetime": "infinite"
         },
         {
-          "address": "fe80::52ff:20ff:fee5:af57",
+          "address": "2001:db8::1",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -1324,7 +1324,7 @@
     "ipv6": {
       "addresses": [
         {
-          "address": "fe80::50ff:20ff:fee5:af56",
+          "address": "2001:db8::2",
           "prefix-length": 64,
           "proto": "KERNEL",
           "valid-lifetime": "infinite"
@@ -1398,7 +1398,7 @@
           "remote-port": 45026,
           "via": "GigabitEthernet1",
           "local-endpoint-address": "192.0.2.1",
-          "remote-endpoint-address": "138.199.156.105",
+          "remote-endpoint-address": "198.51.100.1",
           "rxbytes": 11192521912,
           "txbytes": 2320138310,
           "last-handshake": 21,
@@ -1457,7 +1457,7 @@
           "remote-port": 30498,
           "via": "GigabitEthernet1",
           "local-endpoint-address": "192.0.2.1",
-          "remote-endpoint-address": "91.134.243.184",
+          "remote-endpoint-address": "198.51.100.2",
           "rxbytes": 2466864,
           "txbytes": 3638425,
           "last-handshake": 6,

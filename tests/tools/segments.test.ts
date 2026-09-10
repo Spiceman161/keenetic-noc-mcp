@@ -148,7 +148,7 @@ describe('create_segment', () => {
   it('trunks the VLAN over every port and reports the change as unsaved', async () => {
     const { handlers, post, ctx } = harness({ appearsOn: BECOMES_A_SEGMENT });
 
-    const body = payload(await handlers['create_segment']!({ name: 'iot' }));
+    const body = payload(await handlers['create_segment']!({ name: 'iot', dry_run: false, confirm: true }));
 
     expect(body['uiVisible']).toBe(true);
     expect(body['saved'], 'no write tool ever saves').toBe(false);
@@ -164,7 +164,7 @@ describe('create_segment', () => {
 
   it('sends the DHCP pool as JSON, because parse rejects it', async () => {
     const { handlers, post } = harness({ appearsOn: BECOMES_A_SEGMENT });
-    await handlers['create_segment']!({ name: 'iot' });
+    await handlers['create_segment']!({ name: 'iot', dry_run: false, confirm: true });
 
     const sent = post.mock.calls
       .map(([body]) => body as { ip?: { dhcp?: { pool?: Record<string, unknown> } } })
@@ -178,7 +178,7 @@ describe('create_segment', () => {
 
   it('refuses an ssid without a psk instead of building half a network', async () => {
     const { handlers, post } = harness();
-    const result = await handlers['create_segment']!({ name: 'iot', ssid: 'somewhere' });
+    const result = await handlers['create_segment']!({ name: 'iot', ssid: 'somewhere', dry_run: false, confirm: true });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/ssid and psk go together/i);
@@ -192,7 +192,7 @@ describe('create_segment', () => {
       paths: { 'show/rc/ip/dhcp': { pool: {} }, 'show/rc/ip/policy': {}, 'show/rc/mws/wlan': {} }
     });
 
-    const result = await handlers['create_segment']!({ name: 'iot' });
+    const result = await handlers['create_segment']!({ name: 'iot', dry_run: false, confirm: true });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/no switch ports/i);
@@ -201,7 +201,7 @@ describe('create_segment', () => {
 
   it('refuses a subnet that is already routed', async () => {
     const { handlers, post } = harness();
-    const result = await handlers['create_segment']!({ name: 'iot', subnet: 1 });
+    const result = await handlers['create_segment']!({ name: 'iot', subnet: 1, dry_run: false, confirm: true });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/192\.168\.1\.0\/24 is already in use/);
@@ -212,7 +212,7 @@ describe('create_segment', () => {
 describe('delete_segment', () => {
   it('refuses the home segment', async () => {
     const { handlers, post } = harness();
-    const result = await handlers['delete_segment']!({ bridge: 'Bridge0' });
+    const result = await handlers['delete_segment']!({ bridge: 'Bridge0', dry_run: false, confirm: true });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/home segment/i);
@@ -221,7 +221,7 @@ describe('delete_segment', () => {
 
   it('refuses a bridge that is not there', async () => {
     const { handlers } = harness();
-    const result = await handlers['delete_segment']!({ bridge: 'Bridge9' });
+    const result = await handlers['delete_segment']!({ bridge: 'Bridge9', dry_run: false, confirm: true });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/no Bridge9/);
@@ -240,7 +240,7 @@ describe('delete_segment', () => {
       }
     });
 
-    const body = payload(await handlers['delete_segment']!({ bridge: 'Bridge1' }));
+    const body = payload(await handlers['delete_segment']!({ bridge: 'Bridge1', dry_run: false, confirm: true }));
 
     expect((body['applied'] as Record<string, unknown>)['removed']).toBe('Bridge1');
     expect(body['saved']).toBe(false);
@@ -257,7 +257,7 @@ describe('delete_segment', () => {
 
   it('reports a failure when the bridge is still there afterwards', async () => {
     const { handlers } = harness({ paths: { 'show/rc/interface/Bridge1': BUILT } });
-    const result = await handlers['delete_segment']!({ bridge: 'Bridge1' });
+    const result = await handlers['delete_segment']!({ bridge: 'Bridge1', dry_run: false, confirm: true });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/still exists/);

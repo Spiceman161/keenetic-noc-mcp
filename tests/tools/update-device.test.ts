@@ -64,7 +64,7 @@ function payload(result: ToolResult): any {
 describe('update_device', () => {
   it('sends deny to the ip/hotspot branch and reports it unsaved', async () => {
     const { handlers, posts } = harness({ access: 'deny', deny: true });
-    const out = payload(await handlers['update_device']!({ mac: MAC, access: 'deny' }));
+    const out = payload(await handlers['update_device']!({ mac: MAC, access: 'deny', dry_run: false, confirm: true }));
 
     expect(posts).toContainEqual({ ip: { hotspot: { host: { mac: MAC, deny: true } } } });
     expect(out.saved).toBe(false);
@@ -74,7 +74,7 @@ describe('update_device', () => {
 
   it('sends name to the known branch, not to ip/hotspot', async () => {
     const { handlers, posts } = harness({}, { name: 'new-name' });
-    const result = await handlers['update_device']!({ mac: MAC, name: 'new-name' });
+    const result = await handlers['update_device']!({ mac: MAC, name: 'new-name', dry_run: false, confirm: true });
     expect(result.isError).toBeUndefined();
     expect(posts).toContainEqual({ known: { host: { mac: MAC, name: 'new-name' } } });
   });
@@ -82,28 +82,28 @@ describe('update_device', () => {
   it('verifies a rename through the operational view, since known/host omits the name', async () => {
     // showHost left empty: the rename did not take effect operationally.
     const { handlers } = harness({}, {});
-    const result = await handlers['update_device']!({ mac: MAC, name: 'new-name' });
+    const result = await handlers['update_device']!({ mac: MAC, name: 'new-name', dry_run: false, confirm: true });
     expect(result.isError).toBe(true);
     expect(result.content.map(p => p.text).join('')).toMatch(/name=new-name did not take effect/);
   });
 
   it('takes a backup before applying anything', async () => {
     const { handlers, backup } = harness({ access: 'permit', permit: true });
-    const out = payload(await handlers['update_device']!({ mac: MAC, access: 'permit' }));
+    const out = payload(await handlers['update_device']!({ mac: MAC, access: 'permit', dry_run: false, confirm: true }));
     expect(backup.ensure).toHaveBeenCalledOnce();
     expect(out.backup).toBe('/tmp/backup.txt');
   });
 
   it('fails when the read-back does not show the requested change', async () => {
     const { handlers } = harness({ access: 'permit', permit: true });
-    const result = await handlers['update_device']!({ mac: MAC, access: 'deny' });
+    const result = await handlers['update_device']!({ mac: MAC, access: 'deny', dry_run: false, confirm: true });
     expect(result.isError).toBe(true);
     expect(result.content.map(p => p.text).join('')).toMatch(/did not take effect/i);
   });
 
   it('applies name before access so the host is registered first', async () => {
     const { handlers, posts } = harness({ access: 'deny', deny: true }, { name: 'n' });
-    await handlers['update_device']!({ mac: MAC, name: 'n', access: 'deny' });
+    await handlers['update_device']!({ mac: MAC, name: 'n', access: 'deny', dry_run: false, confirm: true });
     const knownIndex = posts.findIndex(p => JSON.stringify(p).includes('known'));
     const hotspotIndex = posts.findIndex(p => JSON.stringify(p).includes('hotspot'));
     expect(knownIndex).toBeGreaterThanOrEqual(0);
@@ -122,7 +122,9 @@ describe('update_device', () => {
       mac: MAC,
       policy: 'Policy0',
       schedule: 'schedule0',
-      priority: 5
+      priority: 5,
+      dry_run: false,
+      confirm: true
     });
     expect(posts).toContainEqual({ ip: { hotspot: { host: { mac: MAC, policy: 'Policy0' } } } });
     expect(posts).toContainEqual({ ip: { hotspot: { host: { mac: MAC, schedule: 'schedule0' } } } });
@@ -131,7 +133,7 @@ describe('update_device', () => {
 
   it('matches the host case-insensitively on read-back', async () => {
     const { handlers } = harness({ access: 'deny', deny: true });
-    const result = await handlers['update_device']!({ mac: MAC.toUpperCase(), access: 'deny' });
+    const result = await handlers['update_device']!({ mac: MAC.toUpperCase(), access: 'deny', dry_run: false, confirm: true });
     expect(result.isError).toBeUndefined();
   });
 
@@ -139,5 +141,13 @@ describe('update_device', () => {
     const { handlers } = harness({});
     const result = await handlers['update_device']!({ mac: MAC });
     expect(result.isError).toBe(true);
+  });
+
+  it('defaults to a zero-mutation preview', async () => {
+    const { handlers, posts, backup } = harness({ access: 'deny' });
+    const out = payload(await handlers['update_device']!({ mac: MAC, access: 'deny' }));
+    expect(out.dryRun).toBe(true);
+    expect(posts).toHaveLength(0);
+    expect(backup.ensure).not.toHaveBeenCalled();
   });
 });

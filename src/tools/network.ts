@@ -29,7 +29,7 @@ export function registerNetworkTools(server: McpServer, ctx: ToolContext): void 
         gatewayAccessible: s['gateway-accessible'] === true,
         dnsAccessible: s['dns-accessible'] === true,
         captiveAccessible: s['captive-accessible'] === true
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 
@@ -62,7 +62,7 @@ export function registerNetworkTools(server: McpServer, ctx: ToolContext): void 
         shown: capped.shown,
         total: capped.total,
         ...(capped.note ? { note: capped.note } : {})
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 
@@ -91,7 +91,7 @@ export function registerNetworkTools(server: McpServer, ctx: ToolContext): void 
           interfaces
         };
       });
-      return ok({ policies });
+      return ok({ policies }, ctx.maxResponseBytes);
     })
   );
 
@@ -151,7 +151,7 @@ export function registerNetworkTools(server: McpServer, ctx: ToolContext): void 
           };
         });
 
-      return ok({ bands, totalClients: stations.length });
+      return ok({ bands, totalClients: stations.length }, ctx.maxResponseBytes);
     })
   );
 }

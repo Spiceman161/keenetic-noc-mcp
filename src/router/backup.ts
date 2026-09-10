@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join, posix, win32 } from 'node:path';
 import { STARTUP_CONFIG } from './config-state.js';
 import type { Rci } from './rci.js';
@@ -43,12 +43,17 @@ export function createBackupGuard(rci: Rci, host: string, now: () => Date): Back
     // reboot would return to.
     const text = await rci.getText(STARTUP_CONFIG);
     const dir = join(stateDir(process.platform, process.env), 'backups');
-    await mkdir(dir, { recursive: true });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700);
 
     const createdAt = now().toISOString();
     const stamp = createdAt.replace(/[:.]/g, '-');
-    const path = join(dir, `${host}-${stamp}.txt`);
-    await writeFile(path, text, 'utf8');
+    // routerId is operator-controlled for environment-based launches. Keep it
+    // a filename component even if a malformed value contains path separators.
+    const safeHost = host.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'router';
+    const path = join(dir, `${safeHost}-${stamp}.txt`);
+    await writeFile(path, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await chmod(path, 0o600);
 
     done = { path, bytes: Buffer.byteLength(text, 'utf8'), createdAt };
     return done;

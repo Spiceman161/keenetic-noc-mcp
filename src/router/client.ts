@@ -17,7 +17,10 @@ export function createClient(opts: SessionOptions): KeeneticClient {
   return {
     rci,
     capabilities(): Promise<Capabilities> {
-      pending ??= fetchCapabilities(rci);
+      pending ??= fetchCapabilities(rci).catch(error => {
+        pending = null;
+        throw error;
+      });
       return pending;
     }
   };
@@ -26,5 +29,11 @@ export function createClient(opts: SessionOptions): KeeneticClient {
 export function createRemoteClient(opts: RemoteSessionOptions): KeeneticClient {
   const rci = new Rci(new RemoteSession(opts));
   let pending: Promise<Capabilities> | null = null;
-  return { rci, capabilities() { pending ??= fetchCapabilities(rci); return pending; } };
+  return { rci, capabilities() {
+    pending ??= fetchCapabilities(rci).catch(error => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  } };
 }

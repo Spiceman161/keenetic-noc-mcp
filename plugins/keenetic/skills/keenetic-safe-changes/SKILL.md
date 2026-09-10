@@ -40,8 +40,9 @@ Before the first change of a session, the startup configuration is downloaded to
 a local file. The path is in every write response. Mention it to the user the
 first time something is changed, so they know a way back exists.
 
-`backup_config` takes one on demand, which is worth doing before a sequence of
-related changes.
+In writable mode, `backup_config` takes one on demand after a preview and
+explicit confirmation. It creates an owner-only file and refuses an existing
+destination.
 
 ## Order matters for devices
 

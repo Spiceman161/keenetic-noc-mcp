@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -29,6 +29,7 @@ const CONFIG = configText(STALE_CHECKSUM);
  */
 function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
   const posts: unknown[] = [];
+  const events: string[] = [];
   let savedChecksum = STALE_CHECKSUM;
   let lastChangedAt = 'Fri, 7 Aug 2026 01:20:36 GMT';
 
@@ -40,6 +41,7 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
   }));
   const getText = vi.fn(async () => configText(savedChecksum));
   const post = vi.fn(async (body: unknown) => {
+    events.push('post');
     posts.push(body);
     // The router records the save either way; whether flash caught up is what
     // separates a real save from one that never landed.
@@ -53,11 +55,14 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
     capabilities: vi.fn()
   } as unknown as KeeneticClient;
 
+  const backup = stubBackup();
+  const ensure = backup.ensure;
+  backup.ensure = vi.fn(async () => { events.push('backup'); return ensure(); });
   const ctx: ToolContext = {
     client,
     maxResponseBytes: 25_000,
     readOnly: opts.readOnly === true,
-    backup: stubBackup()
+    backup
   };
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const handlers: Record<string, Handler> = {};
@@ -71,7 +76,7 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean } = {}) {
   }) as never);
 
   registerConfigTools(server, ctx);
-  return { handlers, posts, get, getText };
+  return { handlers, posts, get, getText, backup, events };
 }
 
 function payload(result: ToolResult): any {
@@ -80,10 +85,13 @@ function payload(result: ToolResult): any {
 
 describe('save_config', () => {
   it('sends the save command and confirms afterwards', async () => {
-    const { handlers, posts } = harness();
+    const { handlers, posts, backup, events } = harness();
     const out = payload(await handlers['save_config']!({ dry_run: false, confirm: true }));
+    expect(events.slice(0, 2)).toEqual(['backup', 'post']);
+    expect(backup.ensure).toHaveBeenCalledOnce();
     expect(posts).toContainEqual({ system: { configuration: { save: {} } } });
     expect(out.saved).toBe(true);
+    expect(out.backup).toBeTruthy();
   });
 
   it('fails when the router still reports unsaved changes', async () => {
@@ -115,26 +123,47 @@ describe('save_config', () => {
 });
 
 describe('backup_config', () => {
+  it('defaults to a zero-write preview', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kn-'));
+    const target = join(dir, 'out.txt');
+    const { handlers, getText } = harness();
+    const out = payload(await handlers['backup_config']!({ path: target }));
+    expect(out.dryRun).toBe(true);
+    expect(getText).not.toHaveBeenCalled();
+    await expect(readFile(target, 'utf8')).rejects.toThrow();
+  });
+
   it('writes the startup config to the requested path', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-'));
     const target = join(dir, 'out.txt');
     const { handlers } = harness();
-    const out = payload(await handlers['backup_config']!({ path: target }));
+    const out = payload(await handlers['backup_config']!({ path: target, dry_run: false, confirm: true }));
 
     expect(out.path).toBe(target);
     expect(out.bytes).toBe(CONFIG.length);
     await expect(readFile(target, 'utf8')).resolves.toBe(CONFIG);
+    expect((await stat(target)).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses to overwrite an existing file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kn-'));
+    const target = join(dir, 'out.txt');
+    await writeFile(target, 'keep me');
+    const { handlers } = harness();
+    const result = await handlers['backup_config']!({ path: target, dry_run: false, confirm: true });
+    expect(result.isError).toBe(true);
+    await expect(readFile(target, 'utf8')).resolves.toBe('keep me');
   });
 
   it('reports a usable error when the directory does not exist', async () => {
     const { handlers } = harness();
-    const result = await handlers['backup_config']!({ path: '/nope/missing/out.txt' });
+    const result = await handlers['backup_config']!({ path: '/nope/missing/out.txt', dry_run: false, confirm: true });
     expect(result.isError).toBe(true);
     expect(result.content.map(p => p.text).join('')).toMatch(/absolute path/i);
   });
 
-  it('stays available in read-only mode, since reading changes nothing', () => {
+  it('is absent in read-only mode because it writes the local filesystem', () => {
     const { handlers } = harness({ readOnly: true });
-    expect(handlers['backup_config']).toBeDefined();
+    expect(handlers['backup_config']).toBeUndefined();
   });
 });

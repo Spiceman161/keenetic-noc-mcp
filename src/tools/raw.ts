@@ -29,7 +29,7 @@ function decodeBody(body: RawBody): Decoded {
     return {
       ok: false,
       message:
-        `The body is a string that is not JSON: ${body.slice(0, 60)}. Send the command as ` +
+        'The body is a string that is not JSON (invalid syntax). Send the command as ' +
         'JSON, for example {"show": {"version": {}}}.'
     };
   }
@@ -118,7 +118,7 @@ export function registerRawTool(server: McpServer, ctx: ToolContext): void {
         if (!decoded.ok) return fail(new Error(decoded.message));
         payload = decoded.body;
         if (unsafeRaw(payload)) return fail(new Error('Raw POST refused: payload touches an auth, crypto, security, user, or HTTP proxy branch.'));
-        if (dry_run !== false) return ok({ dryRun: true, plannedRciRequest: payload, risk: 'high', expectedVerification: 'manual narrow GET read-back required' });
+        if (dry_run !== false) return ok({ dryRun: true, plannedRciRequest: payload, risk: 'high', expectedVerification: 'manual narrow GET read-back required' }, ctx.maxResponseBytes);
         if (!confirm) return fail(new Error('Raw POST requires confirm=true together with dry_run=false.'));
         await ctx.backup.ensure();
       }

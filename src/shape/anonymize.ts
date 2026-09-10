@@ -1,5 +1,9 @@
+import { isIP } from 'node:net';
+
 const MAC_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
-const PRIVATE_IPV4_RE = /^(10|127|192\.168|172\.(1[6-9]|2\d|3[01]))\./;
+const MAC_TOKEN_RE = /\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b/gi;
+const IPV4_TOKEN_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+const IPV6_TOKEN_RE = /[0-9a-f:]{2,}/gi;
 
 /** Keys whose values are replaced wholesale, because they are secrets. */
 const SECRET_KEYS = new Set(['public-key', 'private-key', 'preshared-key', 'psk', 'password', 'key']);
@@ -39,7 +43,7 @@ function fakeMac(real: string): string {
 function fakeIp(real: string): string {
   const existing = ipMap.get(real);
   if (existing) return existing;
-  const fake = `192.0.2.${ipMap.size + 1}`;
+  const fake = isIP(real) === 6 ? `2001:db8::${ipMap.size + 1}` : `192.0.2.${ipMap.size + 1}`;
   ipMap.set(real, fake);
   return fake;
 }
@@ -57,15 +61,18 @@ function fakeLabel(kind: string, real: string): string {
   return fake;
 }
 
-function anonymizeString(value: string): string {
+function anonymizeString(value: string, key?: string): string {
   if (MAC_RE.test(value)) return fakeMac(value.toLowerCase());
-  if (PRIVATE_IPV4_RE.test(value)) return fakeIp(value);
-  return value;
+  if (key === 'version' || key === 'title' || key === 'mask' || key === 'netmask') return value;
+  return value
+    .replace(MAC_TOKEN_RE, token => fakeMac(token.toLowerCase()))
+    .replace(IPV4_TOKEN_RE, token => isIP(token) === 4 ? fakeIp(token) : token)
+    .replace(IPV6_TOKEN_RE, token => isIP(token) === 6 ? fakeIp(token.toLowerCase()) : token);
 }
 
-export function anonymize(value: unknown): unknown {
-  if (typeof value === 'string') return anonymizeString(value);
-  if (Array.isArray(value)) return value.map(item => anonymize(item));
+export function anonymize(value: unknown, key?: string): unknown {
+  if (typeof value === 'string') return anonymizeString(value, key);
+  if (Array.isArray(value)) return value.map(item => anonymize(item, key));
   if (typeof value !== 'object' || value === null) return value;
 
   const out: Record<string, unknown> = {};
@@ -79,7 +86,7 @@ export function anonymize(value: unknown): unknown {
       out[key] = fakeLabel(labelKind, child);
       continue;
     }
-    out[key] = anonymize(child);
+    out[key] = anonymize(child, key);
   }
   return out;
 }

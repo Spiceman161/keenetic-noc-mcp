@@ -16,5 +16,5 @@ export function projectDns(raw: unknown): Record<string, unknown> {
     errors: proxy['error'] ?? proxy['errors'] ?? [] };
 }
 export function registerDnsTools(server: McpServer, ctx: ToolContext): void {
-  server.registerTool('get_dns_status', { title: 'DNS proxy status', description: 'Compact DNS proxy state, upstream resolvers, encrypted-DNS metadata, static host count, and relevant errors.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok(projectDns(await ctx.client.rci.get('show/dns-proxy')))));
+  server.registerTool('get_dns_status', { title: 'DNS proxy status', description: 'Compact DNS proxy state, upstream resolvers, encrypted-DNS metadata, static host count, and relevant errors.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok(projectDns(await ctx.client.rci.get('show/dns-proxy')), ctx.maxResponseBytes)));
 }

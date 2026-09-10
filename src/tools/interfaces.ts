@@ -91,7 +91,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
         shown: capped.shown,
         total: capped.total,
         ...(capped.note ? { note: capped.note } : {})
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 
@@ -109,7 +109,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
     },
     guard(async ({ name }): Promise<ToolResult> => {
       try {
-        return ok(await readInterface(ctx, name));
+        return ok(await readInterface(ctx, name), ctx.maxResponseBytes);
       } catch (error) {
         return fail(
           new Error(
@@ -147,7 +147,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
           : { interface: { [name]: { up: { no: true } } } };
       const base = { tool: 'set_interface_state', dryRun: dry_run, confirmed: confirm, risk: state === 'down' ? 'high' : 'medium', target: name, planned: body };
       if (ctx.protectedInterfaces?.has(name)) { await ctx.audit?.write({ ...base, success: false, error: 'protected interface' }); throw new GuardError(`Interface "${name}" is protected.`); }
-      if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true, verified: false }); return ok({ dryRun: true, target: name, plannedRciRequest: body, expectedVerification: `state=${state}`, risk: base.risk }); }
+      if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true, verified: false }); return ok({ dryRun: true, target: name, plannedRciRequest: body, expectedVerification: `state=${state}`, risk: base.risk }, ctx.maxResponseBytes); }
       if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real mutation requires confirm=true.'); }
       try {
         const before = await readInterface(ctx, name);
@@ -155,7 +155,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
         const snapshot = await ctx.backup.ensure();
         const after = await verifiedWrite({ apply: () => ctx.client.rci.post(body), readBack: () => readInterface(ctx, name), check: r => r['state'] === state, what: `${name} state=${state}` });
         await ctx.audit?.write({ ...base, before, after, verified: true, saved: false, backupPath: snapshot.path, success: true });
-        return ok(describeWrite({ interface: name, state }, snapshot.path));
+        return ok(describeWrite({ interface: name, state }, snapshot.path), ctx.maxResponseBytes);
       } catch (error) { await ctx.audit?.write({ ...base, verified: false, success: false, error: (error as Error).message }); throw error; }
     })
   );
@@ -168,7 +168,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
     const planned = [{ interface: { [name]: { up: { no: true } } } }, { interface: { [name]: { up: true } } }];
     const base = { tool: 'restart_interface', dryRun: dry_run, confirmed: confirm, risk: 'high', target: name, planned };
     if (ctx.protectedInterfaces?.has(name)) { await ctx.audit?.write({ ...base, success: false, error: 'protected interface' }); throw new GuardError(`Interface "${name}" is protected.`); }
-    if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequests: planned, expectedVerification: 'down then final state up', risk: 'high' }); }
+    if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequests: planned, expectedVerification: 'down then final state up', risk: 'high' }, ctx.maxResponseBytes); }
     if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real mutation requires confirm=true.'); }
     let backupPath: string | null = null;
     try { const before = await readInterface(ctx, name);
@@ -177,7 +177,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
       await ctx.client.rci.post(planned[0]); if ((await readInterface(ctx, name))['state'] !== 'down') throw new VerificationError(`${name} did not go down.`);
       await new Promise(resolve => setTimeout(resolve, 500)); await ctx.client.rci.post(planned[1]); const after = await readInterface(ctx, name);
       if (after['state'] !== 'up') throw new VerificationError(`${name} did not return up.`);
-      await ctx.audit?.write({ ...base, after, verified: true, saved: false, backupPath, success: true }); return ok(describeWrite({ interface: name, action: 'restart' }, backupPath));
+      await ctx.audit?.write({ ...base, after, verified: true, saved: false, backupPath, success: true }); return ok(describeWrite({ interface: name, action: 'restart' }, backupPath), ctx.maxResponseBytes);
     } catch (error) { await ctx.audit?.write({ ...base, success: false, error: (error as Error).message, backupPath }); throw error; }
   }));
 }

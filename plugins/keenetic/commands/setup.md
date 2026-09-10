@@ -26,8 +26,8 @@ keenetic-noc-mcp router test <profile-id>
 keenetic-noc-mcp router register <profile-id>
 ```
 
-`router test` is read-only and reports connection, authentication, RCI, router,
-internet, config-read, and backup capability. `router register` previews and
+`router test` is read-only and reports authentication, RCI, router, DNS,
+config-read, and backup capability. `router register` previews and
 confirms the Codex or Claude registration, without placing a secret in agent
 configuration.
 

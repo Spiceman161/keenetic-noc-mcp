@@ -12,17 +12,17 @@ function byteLength(value: unknown): number {
 
 /**
  * Trims a list to the item limit, then shrinks further until it fits the byte
- * ceiling. At least one item is always returned, even if that single item is
- * over budget - returning nothing would be less useful than returning too much.
+ * ceiling. A single over-sized item is omitted: the configured ceiling is a
+ * security boundary, not a best-effort target.
  */
 export function capList<T>(items: readonly T[], limit: number, maxBytes: number): CappedList<T> {
   const total = items.length;
   let kept = items.slice(0, Math.max(0, limit));
 
-  while (kept.length > 1 && byteLength(kept) > maxBytes) {
+  while (kept.length > 0 && byteLength(kept) > maxBytes) {
     // Halve rather than step down one at a time: a 455-row NAT table would
     // otherwise re-serialise hundreds of times.
-    kept = kept.slice(0, Math.max(1, Math.floor(kept.length / 2)));
+    kept = kept.slice(0, Math.floor(kept.length / 2));
   }
 
   const truncated = kept.length < total || (kept.length > 0 && byteLength(kept) > maxBytes);
@@ -43,6 +43,10 @@ export function capList<T>(items: readonly T[], limit: number, maxBytes: number)
 
 export function capText(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  const head = text.slice(0, maxBytes);
-  return `${head}\n\n[truncated: ${text.length} characters total, showing the first ${head.length}]`;
+  const suffix = '\n\n[truncated]';
+  const suffixBytes = Buffer.byteLength(suffix, 'utf8');
+  if (maxBytes <= suffixBytes) return Buffer.from(text).subarray(0, maxBytes).toString('utf8').replace(/\uFFFD$/u, '');
+  let head = Buffer.from(text).subarray(0, maxBytes - suffixBytes).toString('utf8').replace(/\uFFFD$/u, '');
+  while (Buffer.byteLength(`${head}${suffix}`, 'utf8') > maxBytes) head = head.slice(0, -1);
+  return `${head}${suffix}`;
 }

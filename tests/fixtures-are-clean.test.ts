@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = new URL('../', import.meta.url);
@@ -55,6 +56,18 @@ function offendingMacs(text: string): string[] {
   return [...new Set(found.map(mac => mac.toLowerCase()))].filter(mac => !ALLOWED_MACS.has(mac));
 }
 
+function capturedAddresses(value: unknown, key?: string): string[] {
+  if (Array.isArray(value)) return value.flatMap(item => capturedAddresses(item, key));
+  if (value && typeof value === 'object') return Object.entries(value as Record<string, unknown>)
+    .flatMap(([childKey, child]) => capturedAddresses(child, childKey));
+  if (typeof value !== 'string' || ['mask', 'netmask', 'version', 'title'].includes(key ?? '')) return [];
+  const candidate = value.split('/')[0] ?? value;
+  if (!isIP(candidate) || candidate === '0.0.0.0') return [];
+  if (candidate.startsWith('192.0.2.') || candidate.startsWith('198.51.100.') ||
+      candidate.startsWith('203.0.113.') || candidate.toLowerCase().startsWith('2001:db8:')) return [];
+  return [candidate];
+}
+
 // Addresses and keys have shapes, so they can be detected. Device names and
 // SSIDs do not: listing the real ones here would publish exactly what this file
 // exists to keep out. Those are caught by reading a diff before pushing it.
@@ -77,6 +90,7 @@ describe('the repository contains no real network data', () => {
       // rejected where captured router data lives.
       if (name.startsWith('tests/fixtures/')) {
         expect(BASE64_KEY.test(text), `${name} contains key-like material`).toBe(false);
+        expect(capturedAddresses(JSON.parse(text)), `${name} contains captured IP addresses`).toEqual([]);
       }
     }
   });

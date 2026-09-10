@@ -109,9 +109,13 @@ async function main(): Promise<void> {
     // undefined for an optional property.
     const stored: StoredCredentials = {};
     const routerFlag = process.argv.indexOf('--router');
+    if (routerFlag !== -1 && !process.argv[routerFlag + 1]) throw new Error('--router requires a profile ID');
     const requestedRouter = routerFlag === -1 ? process.env['KEENETIC_ROUTER_ID'] : process.argv[routerFlag + 1];
     const hasExplicitEnvironment = Boolean(process.env['KEENETIC_URL'] || process.env['KEENETIC_HOST'] || process.env['KEENETIC_PASSWORD'] || process.env['KEENETIC_PASSWORD_FILE']);
     const profile = hasExplicitEnvironment ? null : await resolveProfile(dir, requestedRouter);
+    if (!hasExplicitEnvironment && requestedRouter && !profile) {
+      throw new Error(`No profile named "${requestedRouter}"`);
+    }
     if (profile) {
       const profileStore = await createProfileSecretStore(dir, profile.secretRef.startsWith('file:') ? 'file' : 'keychain');
       const secret = await profileStore.read(profile.id);

@@ -33,6 +33,17 @@ describe('anonymize', () => {
     expect(out.ip).toMatch(/^192\.0\.2\.\d+$/);
   });
 
+  it('rewrites public IPv4, IPv6 and address tokens embedded in text', () => {
+    const out = anonymize({ endpoint: '198.18.0.1', ipv6: 'fe80::1234', line: 'peer aa:bb:cc:dd:ee:ff at 8.8.8.8' });
+    const text = JSON.stringify(out);
+    expect(text).not.toContain('198.18.0.1');
+    expect(text).not.toContain('fe80::1234');
+    expect(text).not.toContain('aa:bb:cc:dd:ee:ff');
+    expect(text).not.toContain('8.8.8.8');
+    expect(text).toContain('192.0.2.');
+    expect(text).toContain('2001:db8::');
+  });
+
   it('redacts anything that looks like key material', () => {
     const out = anonymize({ wireguard: { 'public-key': 'EXAMPLEKEYFORTESTSONLYEXAMPLEKEYFORTESTS01=' } }) as {
       wireguard: Record<string, string>;

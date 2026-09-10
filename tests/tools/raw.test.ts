@@ -126,7 +126,9 @@ describe('rci_call', () => {
     const { handlers } = harness(false, big);
     const tight = text(await handlers['rci_call']!({ method: 'GET', path: 'p', max_bytes: 200 }));
     const wide = text(await handlers['rci_call']!({ method: 'GET', path: 'p', max_bytes: 999_999 }));
-    expect(tight.length).toBeLessThan(wide.length);
-    expect(wide.length).toBeLessThan(4_000);
+    expect(Buffer.byteLength(tight, 'utf8')).toBeLessThanOrEqual(200);
+    expect(Buffer.byteLength(wide, 'utf8')).toBeLessThanOrEqual(2_000);
+    expect(JSON.parse(tight)).toMatchObject({ truncated: true });
+    expect(JSON.parse(wide)).toMatchObject({ truncated: true });
   });
 });

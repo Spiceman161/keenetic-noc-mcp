@@ -6,10 +6,8 @@ import type { ToolContext } from '../src/tools/registry.js';
 import type { KeeneticClient } from '../src/router/client.js';
 import { stubBackup } from './helpers/backup.js';
 
-// backup_config is here because downloading the configuration changes nothing,
-// so it stays available even when writing is disabled.
+// Local filesystem writes count as writes even when the router is unchanged.
 const READ_TOOLS = [
-  'backup_config',
   'rci_call',
   'get_config_state',
   'get_connection_status',
@@ -30,6 +28,7 @@ const READ_TOOLS = [
 ];
 
 const WRITE_TOOLS = [
+  'backup_config',
   'set_interface_state',
   'restart_interface',
   'save_config',
@@ -130,6 +129,12 @@ describe('write mode', () => {
     for (const name of WRITE_TOOLS) {
       expect(tools.map(t => t.name)).toContain(name);
     }
+  });
+
+  it('advertises exactly the documented read and write tools', async () => {
+    const client = await connectedClient(false);
+    const { tools } = await client.listTools();
+    expect(tools.map(tool => tool.name).sort()).toEqual([...READ_TOOLS, ...WRITE_TOOLS].sort());
   });
 
   it('marks every write tool destructive rather than read-only', async () => {

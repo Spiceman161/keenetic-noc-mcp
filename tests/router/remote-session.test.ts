@@ -75,6 +75,16 @@ describe('remote failure policy', () => {
     expect(sleep).toHaveBeenCalledTimes(4);
   });
 
+  it('does not retry a mutating POST after an ambiguous transport failure', async () => {
+    const fetch = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    await expect(new RemoteSession({ ...opts, fetch, sleep }).request(
+      'POST', '/rci/', { system: { configuration: { save: {} } } }
+    )).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it('uses one deadline for attempts and retry backoff', async () => {
     let now = 0;
     const fetch = vi.fn().mockRejectedValue(new Error('ECONNRESET'));

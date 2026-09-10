@@ -46,7 +46,7 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
           usedSubnets: inventory.subnets.map(octet => `192.168.${octet}.0/24`),
           usedPolicies: inventory.policies
         }
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 
@@ -91,7 +91,9 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
         policy_description: z
           .string()
           .optional()
-          .describe('Description for the created policy.')
+          .describe('Description for the created policy.'),
+        dry_run: z.boolean().optional().default(true),
+        confirm: z.boolean().optional().default(false)
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
     },
@@ -102,13 +104,19 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
         psk,
         subnet,
         permit_interfaces,
-        policy_description
+        policy_description,
+        dry_run,
+        confirm
       }): Promise<ToolResult> => {
         if ((ssid === undefined) !== (psk === undefined)) {
           return fail(
             new ValidationError('ssid and psk go together: give both, or neither for a wired segment.')
           );
         }
+
+        if (dry_run !== false) return ok({ dryRun: true, planned: { name, wifi: ssid ?? null,
+          subnet: subnet ?? 'auto', permitInterfaces: permit_interfaces ?? [] }, risk: 'high' }, ctx.maxResponseBytes);
+        if (!confirm) return fail(new ValidationError('Real mutation requires confirm=true together with dry_run=false.'));
 
         const snapshot = await ctx.backup.ensure();
         const inventory = await readInventory(ctx.client.rci);
@@ -154,7 +162,7 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
           uiVisible: created.state.uiVisible,
           include: created.state.include,
           verifiedBy: `iseg.vlan=${created.state.vlanId}, iseg.vlan-port=${created.state.vlanPorts}`
-        });
+        }, ctx.maxResponseBytes);
       }
     )
   );
@@ -169,11 +177,13 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
         'port. Removing the bridge alone leaves the VLAN trunked over the whole switch. ' +
         'Devices on the segment lose their connection. Refuses the home segment.',
       inputSchema: {
-        bridge: z.string().describe('Segment to remove, for example Bridge2.')
+        bridge: z.string().describe('Segment to remove, for example Bridge2.'),
+        dry_run: z.boolean().optional().default(true),
+        confirm: z.boolean().optional().default(false)
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
     },
-    guard(async ({ bridge }): Promise<ToolResult> => {
+    guard(async ({ bridge, dry_run, confirm }): Promise<ToolResult> => {
       if (bridge === HOME_BRIDGE) {
         return fail(
           new ValidationError(
@@ -182,6 +192,9 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
           )
         );
       }
+
+      if (dry_run !== false) return ok({ dryRun: true, planned: { remove: bridge }, risk: 'high' }, ctx.maxResponseBytes);
+      if (!confirm) return fail(new ValidationError('Real mutation requires confirm=true together with dry_run=false.'));
 
       const state = await readSegment(ctx.client.rci, bridge);
       if (state === null) {
@@ -224,7 +237,7 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
           'Any routing policy the segment used was left in place, because policies are ' +
           'shared; remove it separately if nothing else uses it.',
         ...(failed.length === 0 ? {} : { notRemoved: failed })
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 }

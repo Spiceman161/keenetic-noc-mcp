@@ -107,7 +107,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
         shown: capped.shown,
         total: capped.total,
         ...(capped.note ? { note: capped.note } : {})
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 
@@ -164,7 +164,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
           )
         );
       }
-      return ok(match);
+      return ok(match, ctx.maxResponseBytes);
     })
   );
 
@@ -185,11 +185,13 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
         access: z.enum(['permit', 'deny']).optional().describe('Allow or block internet access.'),
         policy: z.string().optional().describe('Policy name from list_policies.'),
         schedule: z.string().optional().describe('Schedule name.'),
-        priority: z.number().int().min(0).max(7).optional().describe('Traffic priority, 0 to 7.')
+        priority: z.number().int().min(0).max(7).optional().describe('Traffic priority, 0 to 7.'),
+        dry_run: z.boolean().optional().default(true),
+        confirm: z.boolean().optional().default(false)
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
     },
-    guard(async ({ mac, name, access, policy, schedule, priority }): Promise<ToolResult> => {
+    guard(async ({ mac, name, access, policy, schedule, priority, dry_run, confirm }): Promise<ToolResult> => {
       if (
         name === undefined &&
         access === undefined &&
@@ -203,6 +205,12 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
           )
         );
       }
+
+      const planned = { mac, ...(name === undefined ? {} : { name }), ...(access === undefined ? {} : { access }),
+        ...(policy === undefined ? {} : { policy }), ...(schedule === undefined ? {} : { schedule }),
+        ...(priority === undefined ? {} : { priority }) };
+      if (dry_run !== false) return ok({ dryRun: true, planned, risk: 'high' }, ctx.maxResponseBytes);
+      if (!confirm) return fail(new Error('Real mutation requires confirm=true together with dry_run=false.'));
 
       const snapshot = await ctx.backup.ensure();
       const applied: Record<string, unknown> = {};
@@ -248,7 +256,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
         applied[field] = value;
       }
 
-      return ok(describeWrite(applied, snapshot.path));
+      return ok(describeWrite(applied, snapshot.path), ctx.maxResponseBytes);
     })
   );
 }

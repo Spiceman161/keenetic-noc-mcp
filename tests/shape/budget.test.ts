@@ -33,9 +33,9 @@ describe('capList', () => {
     expect(out.note).toMatch(/narrow/i);
   });
 
-  it('returns at least one item even when that item alone exceeds the ceiling', () => {
+  it('omits a single item when it alone exceeds the hard ceiling', () => {
     const out = capList([{ pad: 'x'.repeat(10_000) }], 50, 100);
-    expect(out.items).toHaveLength(1);
+    expect(out.items).toHaveLength(0);
     expect(out.truncated).toBe(true);
   });
 
@@ -53,6 +53,12 @@ describe('capText', () => {
   it('truncates long text and says how much was dropped', () => {
     const out = capText('y'.repeat(5_000), 500);
     expect(out.length).toBeLessThan(1_000);
-    expect(out).toContain('5000');
+    expect(out).toContain('truncated');
+  });
+
+  it('never exceeds the byte ceiling for multibyte text', () => {
+    const out = capText('😀'.repeat(500), 101);
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(101);
+    expect(out).not.toContain('\uFFFD');
   });
 });

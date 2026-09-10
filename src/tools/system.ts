@@ -23,7 +23,7 @@ export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
         rciReachable: true, authentication: 'ok', latencyMs: Math.round(performance.now() - started),
         model: caps.model, firmware: caps.firmware, startupConfigCapability,
         backupPathCapability: startupConfigCapability,
-        backupBeforeWrite: mode === 'remote' ? 'requires-lan-profile' : 'available-when-verified' });
+        backupBeforeWrite: mode === 'remote' ? 'requires-lan-profile' : 'available-when-verified' }, ctx.maxResponseBytes);
     })
   );
   server.registerTool(
@@ -57,7 +57,7 @@ export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
         connectionsFree: s['connfree'] ?? null,
         components: [...caps.components].sort(),
         features: [...caps.features].sort()
-      });
+      }, ctx.maxResponseBytes);
     })
   );
 
@@ -73,6 +73,6 @@ export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => ok(await readConfigState(ctx.client.rci)))
+    guard(async () => ok(await readConfigState(ctx.client.rci), ctx.maxResponseBytes))
   );
 }
