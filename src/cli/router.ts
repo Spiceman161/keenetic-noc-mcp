@@ -5,6 +5,8 @@ import { createKeychainStore, spawnRunner } from '../config/secrets.js';
 import { normalizeRemoteUrl } from '../config/load.js';
 import { addProfile, getProfile, readLastTest, readProfiles, removeProfile, removeState, saveLastTest, saveRegistration, setDefaultProfile, type RouterProfile } from '../profiles/registry.js';
 import { createProfileSecretStore, generatePassword, keychainAvailable, type ProfileSecretBackend } from '../profiles/secrets.js';
+import { AuthError, RemoteCapabilityError } from '../router/errors.js';
+import { STARTUP_CONFIG } from '../router/config-state.js';
 
 interface Terminal { ask(question: string): Promise<string>; close(): void; out(line: string): void; }
 function terminal(): Terminal {
@@ -56,7 +58,79 @@ async function add(dir: string): Promise<number> {
 
 async function show(dir: string, id: string): Promise<number> { const profile = await getProfile(dir, id); if (!profile) throw new Error(`No profile named "${id}"`); const registry = await readProfiles(dir); const state = await readLastTest(dir, id); const regs = registry.registrations?.[id] ?? []; console.log(`Profile: ${profile.id}\nName: ${profile.name}\nMode: ${profile.mode}\nEndpoint: ${profile.endpoint}\nLogin: ${profile.login}\nSecret backend: ${profile.secretRef.startsWith('keychain:') ? 'keychain' : 'file'}\nDefault: ${profile.default ? 'yes' : 'no'}\nMCP mode: ${profile.readOnly ? 'read-only' : 'read-write'}\n\nLast test:\n  ${state ? `${state.at} - ${state.overall}` : 'not run'}\n\nRegistrations:\n  Codex: ${regs.find(r => r.client === 'codex')?.instanceName ?? 'not registered'}\n  Claude: ${regs.find(r => r.client === 'claude')?.instanceName ?? 'not registered'}`); return 0; }
 async function list(dir: string): Promise<number> { const profiles = (await readProfiles(dir)).profiles; if (!profiles.length) { console.log('No router profiles. Run "keenetic-noc-mcp router add".'); return 0; } for (const p of profiles) console.log(`${p.id}${p.default ? ' (default)' : ''}\t${p.name}\t${p.mode}\t${p.endpoint}`); return 0; }
-async function test(dir: string, id: string): Promise<number> { const profile = await getProfile(dir, id); if (!profile) throw new Error(`No profile named "${id}"`); const backend: ProfileSecretBackend = profile.secretRef.startsWith('file:') ? 'file' : 'keychain'; const password = await (await createProfileSecretStore(dir, backend)).read(id); if (!password) throw new Error('Profile password is unavailable'); const checks: Record<string, string> = {}; try { const client = profileClient(profile, password); const caps = await client.capabilities(); checks['Authentication'] = '✓'; checks['RCI'] = '✓'; checks['System'] = `✓ ${caps.model}`; checks['Config read'] = '✓'; checks['DNS'] = profile.mode === 'remote' ? '✓' : '- not applicable'; checks['TLS'] = profile.mode === 'remote' ? '✓ valid certificate' : '- not applicable'; const overall = 'healthy' as const; await saveLastTest(dir, id, { at: new Date().toISOString(), overall, checks }); console.log(`Connection test: ${id}\n\n${Object.entries(checks).map(([k,v]) => `${k.padEnd(16)} ${v}`).join('\n')}\n\nOverall: ${overall}`); return 0; } catch (error) { checks['Authentication'] = '✗ failed'; await saveLastTest(dir, id, { at: new Date().toISOString(), overall: 'unhealthy', checks }); console.log(`Connection test: ${id}\n\nAuthentication  ✗ failed\nRCI             → skipped\n\nOverall: unhealthy`); return 1; } }
+
+export interface ConnectionTestResult {
+  overall: 'healthy' | 'degraded' | 'unhealthy';
+  checks: Record<string, string>;
+}
+
+/** Runs real, read-only probes without retaining response bodies or private values. */
+export async function runConnectionChecks(profile: RouterProfile, client: KeeneticClient): Promise<ConnectionTestResult> {
+  const checks: Record<string, string> = {};
+  try {
+    const caps = await client.capabilities();
+    checks['Authentication'] = '✓';
+    checks['RCI'] = '✓';
+    checks['System'] = caps.model ? `✓ ${caps.model}` : '✓';
+    checks['TLS'] = profile.mode === 'remote' ? '✓ valid certificate' : '- not applicable';
+  } catch (error) {
+    checks['Authentication'] = error instanceof AuthError ? '✗ failed' : '? not established';
+    checks['RCI'] = '✗ failed';
+    checks['System'] = '→ skipped';
+    checks['Config read'] = '→ skipped';
+    checks['DNS'] = '→ skipped';
+    checks['Startup config'] = '→ skipped';
+    checks['Backup'] = '→ skipped';
+    checks['TLS'] = profile.mode === 'remote' ? '? not established' : '- not applicable';
+    return { overall: 'unhealthy', checks };
+  }
+
+  let degraded = false;
+  try {
+    await client.rci.get('show/last-change');
+    checks['Config read'] = '✓';
+  } catch {
+    checks['Config read'] = '✗ failed';
+    degraded = true;
+  }
+
+  try {
+    await client.rci.get('show/dns-proxy');
+    checks['DNS'] = '✓';
+  } catch {
+    checks['DNS'] = '✗ failed';
+    degraded = true;
+  }
+
+  try {
+    await client.rci.getText(STARTUP_CONFIG);
+    checks['Startup config'] = '✓ available';
+    checks['Backup'] = '✓ ready';
+  } catch (error) {
+    if (profile.mode === 'remote' && error instanceof RemoteCapabilityError) {
+      checks['Startup config'] = '- unsupported remotely';
+      checks['Backup'] = '- requires LAN profile';
+    } else {
+      checks['Startup config'] = '✗ failed';
+      checks['Backup'] = '✗ unavailable';
+      degraded = true;
+    }
+  }
+
+  return { overall: degraded ? 'degraded' : 'healthy', checks };
+}
+
+async function test(dir: string, id: string): Promise<number> {
+  const profile = await getProfile(dir, id);
+  if (!profile) throw new Error(`No profile named "${id}"`);
+  const backend: ProfileSecretBackend = profile.secretRef.startsWith('file:') ? 'file' : 'keychain';
+  const password = await (await createProfileSecretStore(dir, backend)).read(id);
+  if (!password) throw new Error('Profile password is unavailable');
+  const result = await runConnectionChecks(profile, profileClient(profile, password));
+  await saveLastTest(dir, id, { at: new Date().toISOString(), ...result });
+  console.log(`Connection test: ${id}\n\n${Object.entries(result.checks).map(([key, value]) => `${key.padEnd(16)} ${value}`).join('\n')}\n\nOverall: ${result.overall}`);
+  return result.overall === 'healthy' ? 0 : 1;
+}
 
 async function register(dir: string, id: string, clientArg?: string): Promise<number> { requireTty(); const profile = await getProfile(dir, id); if (!profile) throw new Error(`No profile named "${id}"`); const ui = terminal(); try { const client = (clientArg ?? await ui.ask('Client (codex/claude): ')).toLowerCase(); if (client !== 'codex' && client !== 'claude') throw new Error('Client must be codex or claude'); const instanceName = `keenetic_${id}`; const command = client === 'codex' ? `codex mcp add ${instanceName} -- keenetic-noc-mcp --router ${id} --read-only` : `claude mcp add ${instanceName} -- keenetic-noc-mcp --router ${id} --read-only`; ui.out(`Command preview (no secrets):\n  ${command}`); if (!await confirm(ui, 'Register this MCP?')) return 1; const { spawn } = await import('node:child_process'); const [cmd, ...args] = command.split(' '); const code = await new Promise<number>(resolve => spawn(cmd as string, args, { stdio: 'inherit' }).on('close', value => resolve(value ?? 1)).on('error', () => resolve(1))); if (code !== 0) { ui.out('✗ Registration failed; the profile was not changed.'); return 1; } await saveRegistration(dir, id, { client, instanceName }); ui.out('✓ Registered.'); return 0; } finally { ui.close(); } }
 

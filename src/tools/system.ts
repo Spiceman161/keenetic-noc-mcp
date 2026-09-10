@@ -14,10 +14,16 @@ export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
       const started = performance.now();
       const caps = await ctx.client.capabilities();
       const endpoint = new URL(ctx.connection?.endpoint ?? 'http://router.invalid/');
+      const mode = ctx.connection?.mode ?? 'lan';
+      const startupConfigCapability = mode === 'remote'
+        ? 'unsupported-remotely'
+        : ctx.backup.taken() ? 'verified' : 'not-tested';
       return ok({ routerId: ctx.routerId ?? 'home', mode: ctx.connection?.mode ?? 'lan', endpointHostname: endpoint.hostname,
         https: endpoint.protocol === 'https:', tlsVerified: endpoint.protocol === 'https:' ? true : null,
         rciReachable: true, authentication: 'ok', latencyMs: Math.round(performance.now() - started),
-        model: caps.model, firmware: caps.firmware, backupPathCapability: ctx.backup.taken() ? 'verified' : 'not-tested' });
+        model: caps.model, firmware: caps.firmware, startupConfigCapability,
+        backupPathCapability: startupConfigCapability,
+        backupBeforeWrite: mode === 'remote' ? 'requires-lan-profile' : 'available-when-verified' });
     })
   );
   server.registerTool(

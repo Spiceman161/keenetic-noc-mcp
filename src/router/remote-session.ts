@@ -6,9 +6,14 @@ export interface RemoteSessionOptions {
   endpoint: string; login: string; password: string; routerId: string;
   timeoutMs?: number; attempts?: number; fetch?: typeof globalThis.fetch;
   sleep?: (ms: number) => Promise<void>; random?: () => number;
+  now?: () => number;
 }
 
 type Challenge = { scheme: string; params: Record<string, string> };
+type AuthorizationState =
+  | { kind: 'none' }
+  | { kind: 'basic' }
+  | { kind: 'digest'; challenge: Challenge; cnonce: string; nonceCount: number };
 const hash = (algorithm: string, value: string): string =>
   createHash(algorithm.replace('-sess', '').toLowerCase()).update(value).digest('hex');
 
@@ -55,42 +60,114 @@ export function digestAuthorization(opts: {
 }
 
 export class RemoteSession {
-  private authorization: string | null = null;
+  private authorization: AuthorizationState | null = null;
+  private handshake: Promise<Response | null> | null = null;
   constructor(private readonly opts: RemoteSessionOptions) {}
 
   async request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
     const base = new URL(this.opts.endpoint);
     const url = path === '/rci/' ? base : new URL(path, base.origin);
-    let response = await this.send(method, url, body);
-    if (response.status !== 401) return this.classify(response, method, url);
-    const offered = parseChallenges(response.headers.get('www-authenticate') ?? '');
-    const digest = offered.find(c => c.scheme === 'digest');
-    const basic = offered.find(c => c.scheme === 'basic');
-    if (digest) this.authorization = digestAuthorization({ challenge: digest, username: this.opts.login,
-      password: this.opts.password, method, uri: `${url.pathname}${url.search}` });
-    else if (basic) this.authorization = `Basic ${Buffer.from(`${this.opts.login}:${this.opts.password}`).toString('base64')}`;
-    else throw this.authError('HTTP 401 without a supported Digest or Basic challenge', method, url);
-    response = await this.send(method, url, body);
+    const deadline = this.now() + (this.opts.timeoutMs ?? 10_000);
+
+    if (this.authorization === null) {
+      const existing = this.handshake;
+      if (existing) {
+        await this.withinDeadline(existing, deadline, method, url);
+      } else {
+        const handshake = this.discoverAuthorization(method, url, body, deadline);
+        this.handshake = handshake;
+        try {
+          const direct = await this.withinDeadline(handshake, deadline, method, url);
+          if (direct) return this.classify(direct, method, url);
+        } finally {
+          if (this.handshake === handshake) this.handshake = null;
+        }
+      }
+    }
+
+    let response = await this.send(method, url, body, deadline);
+    if (response.status === 401) {
+      this.acceptChallenge(response, method, url);
+      response = await this.send(method, url, body, deadline);
+    }
     return this.classify(response, method, url);
   }
 
-  private async send(method: string, url: URL, body?: unknown): Promise<Response> {
+  private async discoverAuthorization(method: string, url: URL, body: unknown, deadline: number): Promise<Response | null> {
+    const response = await this.send(method, url, body, deadline, false);
+    if (response.status !== 401) {
+      this.authorization = { kind: 'none' };
+      return response;
+    }
+    this.acceptChallenge(response, method, url);
+    return null;
+  }
+
+  private acceptChallenge(response: Response, method: string, url: URL): void {
+    const offered = parseChallenges(response.headers.get('www-authenticate') ?? '');
+    const digest = offered.find(c => c.scheme === 'digest');
+    const basic = offered.find(c => c.scheme === 'basic');
+    if (digest) this.authorization = {
+      kind: 'digest', challenge: digest, cnonce: randomBytes(12).toString('hex'), nonceCount: 0
+    };
+    else if (basic) this.authorization = { kind: 'basic' };
+    else throw this.authError('HTTP 401 without a supported Digest or Basic challenge', method, url);
+  }
+
+  private async send(method: string, url: URL, body: unknown, deadline: number, authenticate = true): Promise<Response> {
     const attempts = this.opts.attempts ?? 5;
+    const authorization = authenticate ? this.authorizationHeader(method, url) : null;
     for (let attempt = 1; ; attempt++) {
+      const remaining = deadline - this.now();
+      if (remaining <= 0) throw this.transportError('request deadline exceeded', method, url);
       const headers: Record<string, string> = { accept: 'application/json' };
-      if (this.authorization) headers['authorization'] = this.authorization;
+      if (authorization) headers['authorization'] = authorization;
       if (body !== undefined) headers['content-type'] = 'application/json';
       try {
         return await (this.opts.fetch ?? fetch)(url, { method, headers,
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(this.opts.timeoutMs ?? 10_000), redirect: 'manual' });
+          signal: AbortSignal.timeout(Math.max(1, Math.ceil(remaining))), redirect: 'manual' });
       } catch (cause) {
+        if (deadline <= this.now()) throw this.transportError('request deadline exceeded', method, url);
         if (attempt >= attempts) throw this.transportError(`failed after ${attempts} attempts: ${redactText((cause as Error).message)}`, method, url);
         const base = 1000 * 2 ** (attempt - 1);
-        await (this.opts.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(base * (1 + (this.opts.random ?? Math.random)() * 0.25));
+        const delay = base * (1 + (this.opts.random ?? Math.random)() * 0.25);
+        const left = deadline - this.now();
+        if (delay >= left) throw this.transportError('request deadline exceeded during retry backoff', method, url);
+        await (this.opts.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(delay);
       }
     }
   }
+
+  private authorizationHeader(method: string, url: URL): string | null {
+    const state = this.authorization;
+    if (state === null || state.kind === 'none') return null;
+    if (state.kind === 'basic') return `Basic ${Buffer.from(`${this.opts.login}:${this.opts.password}`).toString('base64')}`;
+    state.nonceCount += 1;
+    return digestAuthorization({ challenge: state.challenge, username: this.opts.login,
+      password: this.opts.password, method, uri: `${url.pathname}${url.search}`,
+      cnonce: state.cnonce, nonceCount: state.nonceCount });
+  }
+
+  private async withinDeadline<T>(promise: Promise<T>, deadline: number, method: string, url: URL): Promise<T> {
+    const remaining = deadline - this.now();
+    if (remaining <= 0) throw this.transportError('request deadline exceeded while waiting for authentication', method, url);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_resolve, reject) => {
+          timer = setTimeout(() => reject(this.transportError(
+            'request deadline exceeded while waiting for authentication', method, url
+          )), remaining);
+        })
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private now(): number { return (this.opts.now ?? Date.now)(); }
   private classify(res: Response, method: string, url: URL): Response {
     if (res.status === 403 && url.pathname.startsWith('/ci/')) {
       throw new RemoteCapabilityError(

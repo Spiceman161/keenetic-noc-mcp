@@ -23,6 +23,28 @@ describe('remote Digest authentication', () => {
     expect(fetch.mock.calls[1]![1].headers.authorization).toBe(`Basic ${Buffer.from('agent:not-a-real-password').toString('base64')}`);
   });
 
+  it('queues concurrent first requests behind one Digest challenge', async () => {
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => challenge)
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+    const session = new RemoteSession({ ...opts, fetch });
+
+    const first = session.request('GET', '/rci/show/version');
+    const second = session.request('GET', '/rci/show/system');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5'
+    } }));
+    await Promise.all([first, second]);
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch.mock.calls.slice(1).every(call => call[1].headers.authorization.startsWith('Digest '))).toBe(true);
+    expect(fetch.mock.calls[1]![1].headers.authorization).toContain('uri="/rci/show/version"');
+    expect(fetch.mock.calls[2]![1].headers.authorization).toContain('uri="/rci/show/system"');
+  });
+
   it('matches the RFC 2617 MD5 example', () => {
     const challenge = parseChallenges('Digest realm="testrealm@host.com", qop="auth", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41"')[0]!;
     const value = digestAuthorization({ challenge, username: 'Mufasa', password: 'Circle Of Life', method: 'GET', uri: '/dir/index.html', cnonce: '0a4f113b', nonceCount: 1 });
@@ -51,5 +73,16 @@ describe('remote failure policy', () => {
     await expect(new RemoteSession({ ...opts, fetch, sleep, random: () => 0 }).request('GET', '/rci/show/version')).rejects.toBeInstanceOf(TransportError);
     expect(fetch).toHaveBeenCalledTimes(5);
     expect(sleep).toHaveBeenCalledTimes(4);
+  });
+
+  it('uses one deadline for attempts and retry backoff', async () => {
+    let now = 0;
+    const fetch = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+    await expect(new RemoteSession({
+      ...opts, fetch, sleep, random: () => 0, timeoutMs: 1_500, now: () => now
+    }).request('GET', '/rci/show/version')).rejects.toThrow(/deadline/i);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
   });
 });

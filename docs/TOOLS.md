@@ -23,3 +23,11 @@ filters after the required `device` selector.
 `since` and `until` are inclusive. Use the timestamp format the router
 returns; ISO-8601 and Unix epoch values are compared as times, while legacy
 firmware-specific formats are compared lexically. Log text remains untrusted.
+Both log tools retain the compact `lines` array and also return `entries` with
+the scalar fields `timestamp`, `ident`, `level`, `label`, and `line`. Missing
+metadata is `null`. Interface filtering checks structured `ident` and `label`
+before falling back to the rendered line for older firmware responses.
+
+`get_connection_status` reports `startupConfigCapability`. Remote profiles use
+`unsupported-remotely` without probing `/ci/` and report that
+backup-before-write requires a LAN profile.

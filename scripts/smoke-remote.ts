@@ -1,15 +1,63 @@
 import { createRemoteClient } from '../src/router/client.js';
 import { normalizeRemoteUrl } from '../src/config/load.js';
+import { RemoteCapabilityError } from '../src/router/errors.js';
+import { filterLogEntries, resolveDeviceAliases, unwrapLogEntries } from '../src/tools/logs.js';
+import { loadRemoteSmokeCredentials } from './smoke-credentials.js';
+import { createLogSmokeSummary } from './smoke-summary.js';
 
-const endpoint = process.env['KEENETIC_TEST_URL'];
-const login = process.env['KEENETIC_TEST_USER'];
-const password = process.env['KEENETIC_TEST_PASSWORD'];
-if (!endpoint || !login || !password) throw new Error('Set KEENETIC_TEST_URL, KEENETIC_TEST_USER and KEENETIC_TEST_PASSWORD.');
-const client = createRemoteClient({ endpoint: normalizeRemoteUrl(endpoint), login, password, routerId: 'smoke', timeoutMs: 30_000 });
-for (const path of ['show/version','show/system','show/interface','show/internet/status','show/ip/route','show/dns-proxy']) {
-  await client.rci.get(path); process.stderr.write(`ok ${path}\n`);
+async function main(): Promise<void> {
+  const credentials = await loadRemoteSmokeCredentials(process.argv.slice(2), process.env);
+  const client = createRemoteClient({ endpoint: normalizeRemoteUrl(credentials.endpoint), login: credentials.login,
+    password: credentials.password, routerId: credentials.routerId, timeoutMs: 30_000 });
+  const summary: Record<string, unknown> = { source: credentials.source, reads: {}, logs: {} };
+  const reads = summary['reads'] as Record<string, string>;
+  for (const path of ['show/version', 'show/system', 'show/interface', 'show/internet/status', 'show/ip/route', 'show/dns-proxy']) {
+    await client.rci.get(path);
+    reads[path] = 'passed';
+  }
+
+  function records(value: unknown): Array<Record<string, unknown>> {
+    if (Array.isArray(value)) return value.flatMap(records);
+    if (!value || typeof value !== 'object') return [];
+    const item = value as Record<string, unknown>;
+    return [item, ...Object.values(item).flatMap(records)];
+  }
+  function scalar(record: Record<string, unknown>, keys: readonly string[]): string | null {
+    for (const key of keys) if (typeof record[key] === 'string' && record[key]) return record[key] as string;
+    return null;
+  }
+
+  const rawLogs = await client.rci.post({ show: { log: {} } });
+  const entries = unwrapLogEntries(rawLogs);
+  const interfaceRaw = await client.rci.get('show/interface');
+  const interfaceName = records(interfaceRaw).map(item => scalar(item, ['name', 'interface', 'id'])).find(Boolean) ?? null;
+  const timestamp = entries.find(entry => entry.timestamp !== null)?.timestamp ?? null;
+  const hotspotRaw = await client.rci.get('show/ip/hotspot');
+  const hotspotRoot = hotspotRaw && typeof hotspotRaw === 'object' ? hotspotRaw as Record<string, unknown> : {};
+  const device = records(hotspotRoot['host']).map(item => scalar(item, ['name', 'hostname', 'mac', 'ip'])).find(Boolean) ?? null;
+  let deviceMatched: number | null = null;
+  if (device !== null) {
+    const aliases = await resolveDeviceAliases(client.rci, device);
+    deviceMatched = filterLogEntries(entries, { aliases }).length;
+  }
+
+  summary['logs'] = createLogSmokeSummary(entries, {
+    interface: { available: interfaceName !== null, matched: interfaceName === null ? null : filterLogEntries(entries, { interface: interfaceName }).length },
+    timeRange: { available: timestamp !== null, matched: timestamp === null ? null : filterLogEntries(entries, { since: timestamp, until: timestamp }).length },
+    deviceAlias: { available: device !== null, matched: deviceMatched }
+  });
+
+  try {
+    await client.rci.getText('/ci/startup-config.txt');
+    summary['startupConfig'] = 'available';
+  } catch (error) {
+    if (error instanceof RemoteCapabilityError) summary['startupConfig'] = 'unsupported-remotely';
+    else throw error;
+  }
+  process.stderr.write(`${JSON.stringify(summary)}\n`);
 }
-try { await client.rci.post({ show: { log: {} } }); process.stderr.write('ok show log (read-only POST)\n'); }
-catch (error) { process.stderr.write(`unsupported show log: ${(error as Error).message}\n`); process.exitCode = 2; }
-try { await client.rci.getText('/ci/startup-config.txt'); process.stderr.write('ok /ci/startup-config.txt\n'); }
-catch (error) { process.stderr.write(`unsupported /ci/startup-config.txt: ${(error as Error).message}\n`); process.exitCode = 2; }
+
+void main().catch(error => {
+  process.stderr.write(`${JSON.stringify({ status: 'failed', errorClass: error instanceof Error ? error.name : 'UnknownError' })}\n`);
+  process.exitCode = 2;
+});

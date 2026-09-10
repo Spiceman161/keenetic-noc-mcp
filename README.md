@@ -81,9 +81,15 @@ The opt-in remote smoke check is read-only:
 
 ~~~sh
 npm run smoke:remote
+npm run smoke:remote -- --router <profile-id>
 ~~~
 
-It uses KEENETIC_TEST_URL, KEENETIC_TEST_USER, and KEENETIC_TEST_PASSWORD. Never run a live mutation as part of a test or smoke check.
+With no arguments it uses the default remote profile and its configured secret
+store; `--router` selects another remote profile. A complete set of
+KEENETIC_TEST_URL, KEENETIC_TEST_USER, and KEENETIC_TEST_PASSWORD overrides the
+profile registry for CI. Its summary contains only response shapes, statuses,
+and counts - never log lines, device aliases, addresses, or the endpoint. Never
+run a live mutation as part of a test or smoke check.
 
 ### Documentation and contribution
 
@@ -173,9 +179,14 @@ git diff --check
 
 ~~~sh
 npm run smoke:remote
+npm run smoke:remote -- --router <profile-id>
 ~~~
 
-Она использует KEENETIC_TEST_URL, KEENETIC_TEST_USER и KEENETIC_TEST_PASSWORD. Никогда не выполняйте реальные изменения роутера в тестах или smoke-проверках.
+Без аргументов используются default remote-профиль и его secret store;
+`--router` выбирает другой remote-профиль. Полный набор KEENETIC_TEST_URL,
+KEENETIC_TEST_USER и KEENETIC_TEST_PASSWORD имеет приоритет в CI. В итоге выводятся только
+формы ответов, статусы и счётчики - без строк лога, адресов, alias устройств и
+endpoint. Никогда не выполняйте реальные изменения роутера в тестах или smoke-проверках.
 
 ### Документация и вклад
 

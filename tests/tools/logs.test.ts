@@ -51,6 +51,10 @@ describe('log tools', () => {
     const { handlers, post } = harness();
     const out = payload(await handlers['get_logs']!({ lines: 1 }));
     expect(out.lines).toEqual(['00:02 Hotspot info Host 192.0.2.5 joined']);
+    expect(out.entries).toEqual([{
+      timestamp: '00:02', ident: 'Hotspot', level: 'info', label: 'Host',
+      line: '00:02 Hotspot info Host 192.0.2.5 joined'
+    }]);
     expect(post).toHaveBeenCalledWith({ show: { log: {} } });
   });
 
@@ -59,6 +63,19 @@ describe('log tools', () => {
     const out = payload(await handlers['get_logs_by_device']!({ device: 'Iphosha13' }));
     expect(out.aliases).toContain('192.0.2.5');
     expect(out.lines).toEqual(['00:02 Hotspot info Host 192.0.2.5 joined']);
+  });
+
+  it('rejects ambiguous normalized device names without listing devices', async () => {
+    const setup = harness();
+    setup.get.mockResolvedValue({ host: [
+      { mac: '02:00:00:00:00:01', ip: '192.0.2.5', name: 'Kitchen Phone' },
+      { mac: '02:00:00:00:00:02', ip: '192.0.2.6', name: 'kitchenphone' }
+    ] });
+    const result = await setup.handlers['get_logs_by_device']!({ device: 'Kitchen Phone' });
+    expect(result.isError).toBe(true);
+    const text = result.content.map(part => part.text).join('');
+    expect(text).toMatch(/ambiguous/i);
+    expect(text).not.toContain('02:00:00:00:00:01');
   });
 
   it('combines device, interface, text and time filters without inspecting message text as a timestamp', () => {
@@ -70,7 +87,22 @@ describe('log tools', () => {
     expect(filterLogEntries(entries, {
       aliases: ['192.0.2.5'], interface: 'Bridge0', filter: 'linked',
       since: '2026-09-09T00:59:00Z', until: '2026-09-09T01:01:00Z'
-    }).map(entry => entry.text)).toEqual(['2026-09-09T01:00:00Z Network Bridge0 linked 192.0.2.5']);
+    }).map(entry => entry.line)).toEqual(['2026-09-09T01:00:00Z Network Bridge0 linked 192.0.2.5']);
+  });
+
+  it('matches an interface from structured metadata and falls back for text logs', () => {
+    const structured = logEntries({ timestamp: '00:01', ident: 'Network', message: {
+      label: 'Bridge0', message: 'linked'
+    } });
+    const legacy = logEntries('00:02 Bridge1 linked');
+    expect(filterLogEntries(structured, { interface: 'bridge0' })).toHaveLength(1);
+    expect(filterLogEntries(legacy, { interface: 'bridge1' })).toHaveLength(1);
+  });
+
+  it('uses null metadata for legacy string responses', () => {
+    expect(logEntries('00:01 ready')[0]).toEqual({
+      timestamp: '00:01', ident: null, level: null, label: null, line: '00:01 ready'
+    });
   });
 
   it('accepts the combined filters through the device-specific MCP tool', async () => {

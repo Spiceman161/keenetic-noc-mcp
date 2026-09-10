@@ -1,13 +1,17 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { NotSupportedError, RciError } from '../router/errors.js';
+import { NotSupportedError, RciError, ValidationError } from '../router/errors.js';
+import type { Rci } from '../router/rci.js';
 import { normalizeDeviceName } from './devices.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
 export interface LogEntry {
   /** The router value, kept separate so temporal filters never inspect message text. */
   timestamp: string | null;
-  text: string;
+  ident: string | null;
+  level: string | null;
+  label: string | null;
+  line: string;
 }
 
 export interface LogFilters {
@@ -39,7 +43,9 @@ function scalar(value: unknown): string | undefined {
  */
 export function logEntries(raw: unknown): LogEntry[] {
   if (typeof raw === 'string') {
-    return raw.split(/\r?\n/).filter(Boolean).map(text => ({ timestamp: timestampPrefix(text), text }));
+    return raw.split(/\r?\n/).filter(Boolean).map(line => ({
+      timestamp: timestampPrefix(line), ident: null, level: null, label: null, line
+    }));
   }
   if (Array.isArray(raw)) return raw.flatMap(logEntries);
 
@@ -48,8 +54,12 @@ export function logEntries(raw: unknown): LogEntry[] {
   const detail = record(message);
   const text = typeof message === 'string' ? message : scalar(detail['message']);
   if (text !== undefined) {
-    const fields = [scalar(root['timestamp']), scalar(root['ident']), scalar(detail['level']), scalar(detail['label']), text];
-    return [{ timestamp: scalar(root['timestamp']) ?? null, text: fields.filter(Boolean).join(' ') }];
+    const timestamp = scalar(root['timestamp']) ?? null;
+    const ident = scalar(root['ident']) ?? null;
+    const level = scalar(detail['level']) ?? null;
+    const label = scalar(detail['label']) ?? null;
+    const fields = [timestamp, ident, level, label, text];
+    return [{ timestamp, ident, level, label, line: fields.filter(Boolean).join(' ') }];
   }
   if (root['log'] !== undefined) return logEntries(root['log']);
   return Object.values(root).flatMap(logEntries);
@@ -57,7 +67,13 @@ export function logEntries(raw: unknown): LogEntry[] {
 
 /** Kept as the compact output contract used by existing callers. */
 export function logLines(raw: unknown): string[] {
-  return logEntries(raw).map(entry => entry.text);
+  return logEntries(raw).map(entry => entry.line);
+}
+
+export function unwrapLogEntries(raw: unknown): LogEntry[] {
+  const root = record(raw);
+  const show = record(root['show']);
+  return logEntries(show['log'] ?? show);
 }
 
 /**
@@ -67,9 +83,7 @@ export function logLines(raw: unknown): string[] {
 export async function readLogEntries(ctx: ToolContext): Promise<LogEntry[]> {
   try {
     const raw = await ctx.client.rci.post({ show: { log: {} } });
-    const root = record(raw);
-    const show = record(root['show']);
-    return logEntries(show['log'] ?? show);
+    return unwrapLogEntries(raw);
   } catch (error) {
     if (error instanceof RciError) {
       throw new NotSupportedError(
@@ -81,7 +95,7 @@ export async function readLogEntries(ctx: ToolContext): Promise<LogEntry[]> {
 }
 
 export async function readLogs(ctx: ToolContext): Promise<string[]> {
-  return (await readLogEntries(ctx)).map(entry => entry.text);
+  return (await readLogEntries(ctx)).map(entry => entry.line);
 }
 
 function timestampPrefix(line: string): string | null {
@@ -125,9 +139,10 @@ function includes(value: string, needle: string): boolean {
 
 export function filterLogEntries(entries: readonly LogEntry[], opts: LogFilters): LogEntry[] {
   return entries.filter(entry => {
-    if (opts.filter && !includes(entry.text, opts.filter)) return false;
-    if (opts.interface && !includes(entry.text, opts.interface)) return false;
-    if (opts.aliases && !opts.aliases.some(alias => includes(entry.text, alias))) return false;
+    if (opts.filter && !includes(entry.line, opts.filter)) return false;
+    if (opts.interface && ![entry.ident, entry.label].some(value => value !== null && includes(value, opts.interface!)) &&
+      !includes(entry.line, opts.interface)) return false;
+    if (opts.aliases && !opts.aliases.some(alias => includes(entry.line, alias))) return false;
     if (opts.since && (entry.timestamp === null || !afterOrEqual(entry.timestamp, opts.since))) return false;
     if (opts.until && (entry.timestamp === null || !beforeOrEqual(entry.timestamp, opts.until))) return false;
     return true;
@@ -136,21 +151,27 @@ export function filterLogEntries(entries: readonly LogEntry[], opts: LogFilters)
 
 /** Compatibility helper for callers that already hold only flattened lines. */
 export function filterLogs(lines: string[], opts: Omit<LogFilters, 'aliases' | 'interface'>): string[] {
-  const entries = lines.map(text => ({ timestamp: timestampPrefix(text), text }));
-  return filterLogEntries(entries, opts).slice(-Math.min(opts.lines ?? 100, 1000)).map(entry => entry.text);
+  const entries = lines.map(line => ({ timestamp: timestampPrefix(line), ident: null, level: null, label: null, line }));
+  return filterLogEntries(entries, opts).slice(-Math.min(opts.lines ?? 100, 1000)).map(entry => entry.line);
 }
 
-async function hosts(ctx: ToolContext): Promise<Array<Record<string, unknown>>> {
-  const raw = await ctx.client.rci.get('show/ip/hotspot');
+function publicEntry(entry: LogEntry): Record<string, string | null> {
+  return { timestamp: entry.timestamp, ident: entry.ident, level: entry.level, label: entry.label, line: entry.line };
+}
+
+async function hosts(rci: Rci): Promise<Array<Record<string, unknown>>> {
+  const raw = await rci.get('show/ip/hotspot');
   const root = record(raw);
   return Array.isArray(root['host']) ? root['host'] as Array<Record<string, unknown>> : [];
 }
 
-async function resolveDeviceAliases(ctx: ToolContext, device: string): Promise<string[]> {
+export async function resolveDeviceAliases(rci: Rci, device: string): Promise<string[]> {
   const needle = normalizeDeviceName(device);
-  const match = (await hosts(ctx)).find(host =>
+  const matches = (await hosts(rci)).filter(host =>
     ['mac', 'ip', 'name', 'hostname'].some(key => normalizeDeviceName(String(host[key] ?? '')) === needle)
   );
+  if (matches.length > 1) throw new ValidationError('Device name is ambiguous after normalization. Use an exact MAC or IP address.');
+  const match = matches[0];
   return match
     ? ['mac', 'ip', 'name', 'hostname'].map(key => String(match[key] ?? '')).filter(Boolean)
     : [device];
@@ -169,7 +190,7 @@ function responseFilters(args: { filter?: string | undefined; since?: string | u
 }
 
 async function selectLogs(ctx: ToolContext, args: LogFilters & { device?: string | undefined }): Promise<{ all: LogEntry[]; selected: LogEntry[]; aliases?: string[] }> {
-  const aliases = args.device === undefined ? undefined : await resolveDeviceAliases(ctx, args.device);
+  const aliases = args.device === undefined ? undefined : await resolveDeviceAliases(ctx.client.rci, args.device);
   const all = await readLogEntries(ctx);
   const selected = filterLogEntries(all, { ...args, ...(aliases === undefined ? {} : { aliases }) })
     .slice(-Math.min(args.lines ?? 100, 1000));
@@ -188,7 +209,8 @@ export function registerLogTools(server: McpServer, ctx: ToolContext): void {
     guard(async args => {
       const { all, selected, aliases } = await selectLogs(ctx, args);
       return ok({
-        lines: selected.map(entry => entry.text),
+        lines: selected.map(entry => entry.line),
+        entries: selected.map(publicEntry),
         total: all.length,
         matched: selected.length,
         filters: responseFilters(args),
@@ -211,7 +233,8 @@ export function registerLogTools(server: McpServer, ctx: ToolContext): void {
       return ok({
         device: args.device,
         aliases: aliases ?? [],
-        lines: selected.map(entry => entry.text),
+        lines: selected.map(entry => entry.line),
+        entries: selected.map(publicEntry),
         total: all.length,
         matched: selected.length,
         filters: responseFilters(args),

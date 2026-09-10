@@ -15,9 +15,48 @@ Use Node.js 20 or newer.
 - `npm run test:watch` runs Vitest interactively during development.
 - `npm run typecheck` checks strict TypeScript, including tests and scripts.
 - `npm run build` compiles `src/` into `dist/`.
-- `npm run smoke:remote` performs an opt-in, read-only KeenDNS smoke test using `KEENETIC_TEST_*` variables.
+- `npm run smoke:remote` performs an opt-in, read-only KeenDNS smoke test using
+  the default remote profile. Use `npm run smoke:remote -- --router <id>` to
+  select another profile; a complete `KEENETIC_TEST_*` environment overrides
+  profile discovery for CI.
 
 Never run a live mutation as part of tests or smoke checks.
+
+## Existing-Project Change Workflow
+
+Use this workflow for fixes, compatibility work, refactors, and incremental
+features in this repository. It is intentionally for changing an existing
+system, not for greenfield product ideation.
+
+1. Ground the change in repository evidence. Read the relevant implementation,
+   adjacent tests, contracts, documentation, and current diff before editing.
+   Reproduce a reported failure when it can be done safely and deterministically.
+2. State the observable behavior being changed and the acceptance criteria.
+   Identify compatibility surfaces such as MCP schemas, profile files, CLI exit
+   codes, RCI wire shapes, redaction, and backup-before-write.
+3. For a bug or regression, add or identify a test that fails for the right
+   reason before changing production behavior. For a refactor, establish passing
+   characterization coverage first. If a meaningful automated test is not
+   possible, document why and define a bounded read-only validation instead.
+4. Implement the smallest cohesive change that satisfies the acceptance
+   criteria. Prefer additive contracts and existing seams. Do not mix unrelated
+   cleanup, speculative abstractions, dependency changes, or broad rewrites into
+   the same patch.
+5. Diagnose unexpected failures before editing again. Read the complete error,
+   identify the failing layer, and test one hypothesis at a time; do not stack
+   unverified fixes or weaken assertions merely to make a test pass.
+6. Review the resulting diff as a security and compatibility artifact. Check
+   that secrets cannot reach arguments, URLs, output, fixtures, or git; response
+   bounds still apply; read-only annotations are accurate; and old supported
+   response shapes still work unless removal was explicitly requested.
+7. Verify with the narrowest relevant tests while iterating, then run fresh
+   `npm run typecheck`, `npm test`, and `git diff --check` before claiming the
+   work is complete. Run live smoke checks only when explicitly authorized, keep
+   them read-only, and report sanitized counts and shapes rather than raw data.
+
+Treat verification output as evidence, not ceremony: never claim a command
+passed unless it was run after the final relevant edit. If a required check
+cannot run, report that limitation explicitly instead of inferring success.
 
 ## Keenetic RCI Compatibility
 

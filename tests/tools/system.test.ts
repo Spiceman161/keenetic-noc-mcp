@@ -25,7 +25,7 @@ function contextWith(
   getText: (path: string) => Promise<string> = async () => ''
 ): ToolContext {
   const client = {
-    rci: { get, post: vi.fn(), getText },
+    rci: { get, post: vi.fn(), getText: vi.fn(getText) },
     capabilities: async () => CAPS
   } as unknown as KeeneticClient;
   return { client, maxResponseBytes: 25_000, readOnly: false, backup: stubBackup() };
@@ -112,6 +112,27 @@ describe('get_system_info', () => {
     const { configs } = capture(contextWith(async () => ({})));
     expect(configs['get_system_info']?.annotations?.readOnlyHint).toBe(true);
     expect(configs['get_config_state']?.annotations?.readOnlyHint).toBe(true);
+  });
+});
+
+describe('get_connection_status', () => {
+  it('reports the remote startup-config limitation without probing /ci', async () => {
+    const ctx = contextWith(async () => ({}));
+    ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
+    const { handlers } = capture(ctx);
+    const payload = JSON.parse(textOf(await handlers['get_connection_status']!({})));
+    expect(payload.startupConfigCapability).toBe('unsupported-remotely');
+    expect(payload.backupPathCapability).toBe('unsupported-remotely');
+    expect(payload.backupBeforeWrite).toBe('requires-lan-profile');
+    expect(ctx.client.rci.getText).not.toHaveBeenCalled();
+  });
+
+  it('leaves LAN startup-config capability unverified until a backup is taken', async () => {
+    const ctx = contextWith(async () => ({}));
+    ctx.connection = { mode: 'lan', endpoint: 'http://192.0.2.1/rci/' };
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_connection_status']!({})));
+    expect(payload.startupConfigCapability).toBe('not-tested');
+    expect(payload.backupBeforeWrite).toBe('available-when-verified');
   });
 });
 
