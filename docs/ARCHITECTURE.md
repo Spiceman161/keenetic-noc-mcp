@@ -34,6 +34,24 @@ saved implicitly:
 guard -> startup-config backup once -> apply -> read back -> verify -> audit
 ```
 
+`diagnose_internet` is the first composite read tool. It starts with a fresh
+bounded version read; authentication or transport failure stops the call, while
+an RCI-level version failure remains partial. It then gathers bounded core
+sources sequentially and reads the heavier log source last. This avoids remote
+KeenDNS requests starving each other while preserving partial results. The
+first transport failure latches the remaining sources unavailable without more
+requests, and an authentication failure remains fatal. An individual RCI-level
+endpoint failure becomes an unavailable evidence slot and an unknown check
+instead of discarding successful siblings. Findings are fixed rules over
+explicit state; log text is returned only as bounded untrusted evidence and
+cannot create findings. Input bounds are applied to both GET responses and the
+known read-only `show log` dispatcher POST. Output trimming preserves checks and
+findings before dropping logs, routes, interfaces, DNS upstreams, and VPN rows
+in that order.
+Remote composite diagnosis does not request `/ci/startup-config.txt`; it keeps
+the saved-state comparison unknown without broadening the credentialed request
+surface.
+
 Configuration reads use a separate 256 KB input-bounded reader whose errors
 never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never

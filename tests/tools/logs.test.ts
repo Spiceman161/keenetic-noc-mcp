@@ -136,4 +136,15 @@ describe('log tools', () => {
     expect(text).toMatch(/not exposed/i);
     expect(text).toMatch(/firmware or connection mode/i);
   });
+
+  it('does not misclassify an oversized log response as unsupported', async () => {
+    const error = new RciError('response exceeds safety limit', {
+      path: 'response', code: 'response-too-large', ident: 'rci'
+    });
+    const result = await harness({ error }).handlers['get_logs']!({});
+    expect(result.isError).toBe(true);
+    const text = result.content.map(part => part.text).join('');
+    expect(text).toMatch(/response-too-large/);
+    expect(text).not.toMatch(/not exposed/i);
+  });
 });

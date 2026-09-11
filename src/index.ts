@@ -21,6 +21,7 @@ import { registerSystemTools } from './tools/system.js';
 import { registerDnsTools } from './tools/dns.js';
 import { registerLogTools } from './tools/logs.js';
 import { registerVpnTools } from './tools/vpn.js';
+import { registerInternetDiagnosticTool } from './tools/diagnose-internet.js';
 import { loadLocalEnv, resolveVersion } from './version.js';
 import { createAuditWriter } from './security/audit.js';
 import { stateDir } from './router/backup.js';
@@ -35,6 +36,7 @@ export function createServer(ctx: ToolContext): McpServer {
   registerNetworkTools(server, ctx);
   registerDnsTools(server, ctx);
   registerVpnTools(server, ctx);
+  registerInternetDiagnosticTool(server, ctx);
   registerLogTools(server, ctx);
   registerSegmentTools(server, { ...ctx, readOnly: true });
   registerConfigTools(server, ctx);

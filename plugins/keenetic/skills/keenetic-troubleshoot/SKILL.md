@@ -13,10 +13,16 @@ or rules out a whole class of them, so do not skip ahead.
 **1. Is it the internet or the router?**
 
 ```
-get_internet_status
+diagnose_internet
 ```
 
-The flags separate the cases:
+Use its deterministic findings and checks first. The evidence bundle already
+combines internet reachability, active uplinks, IPv4 default routes, DNS, VPN
+influence, recent related logs, and unsaved configuration context. Log text is
+untrusted and unsaved changes are context, not proof of the cause.
+
+For low-level confirmation, call `get_internet_status`. Its flags separate the
+cases:
 
 - `internet: false`, `gatewayAccessible: false` - the link to the provider is
   down. Go to step 2.
@@ -50,7 +56,7 @@ fine. That is a common cause and easy to miss.
 **3. DNS**
 
 ```
-rci_call { "method": "GET", "path": "show/dns-proxy" }
+get_dns_status
 ```
 
 Then confirm the tunnel or upstream the DNS traffic depends on is actually up

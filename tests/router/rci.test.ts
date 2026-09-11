@@ -110,6 +110,15 @@ describe('Rci.getText', () => {
   });
 });
 
+describe('Rci.post', () => {
+  it('applies an optional input byte ceiling to read-only dispatcher responses', async () => {
+    const rci = new Rci(sessionReturning(JSON.stringify({ value: 'x'.repeat(100) })));
+    await expect(rci.post({ show: { log: {} } }, 20)).rejects.toMatchObject({
+      code: 'response-too-large'
+    });
+  });
+});
+
 describe('Rci.getConfig', () => {
   it('returns bounded JSON and its byte count', async () => {
     const body = JSON.stringify({ result: ['system'] });

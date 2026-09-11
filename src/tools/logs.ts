@@ -80,12 +80,14 @@ export function unwrapLogEntries(raw: unknown): LogEntry[] {
  * Dispatcher POST is read-only for this known `show` command. `GET show/log`
  * is a 404 on KeeneticOS 5.1.3, so do not replace this with a generated path.
  */
-export async function readLogEntries(ctx: ToolContext): Promise<LogEntry[]> {
+export async function readLogEntries(ctx: ToolContext, maxBytes?: number): Promise<LogEntry[]> {
   try {
-    const raw = await ctx.client.rci.post({ show: { log: {} } });
+    const raw = maxBytes === undefined
+      ? await ctx.client.rci.post({ show: { log: {} } })
+      : await ctx.client.rci.post({ show: { log: {} } }, maxBytes);
     return unwrapLogEntries(raw);
   } catch (error) {
-    if (error instanceof RciError) {
+    if (error instanceof RciError && error.code === '404') {
       throw new NotSupportedError(
         'Router logs are not exposed by this firmware or remote RCI profile.'
       );

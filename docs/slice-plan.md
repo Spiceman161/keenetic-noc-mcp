@@ -640,7 +640,11 @@ The principle is: do not make the model manually reconstruct every common incide
 
 ## Slice B1 - `diagnose_internet`
 
-**Progress:** Planned; blocked by Milestone A exit criteria.
+**Progress:** Implemented. Independent diagnostic-logic, privacy/bounds, and
+MCP compatibility reviewers reported no remaining material findings after four
+review-fix iterations. Live read-only evidence on KeeneticOS 5.1.3 showed that
+parallel composite reads can starve otherwise fast requests through KeenDNS;
+the tool now polls core sources sequentially and reads logs last.
 
 ### Goal
 

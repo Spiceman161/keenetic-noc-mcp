@@ -9,6 +9,7 @@ import { stubBackup } from './helpers/backup.js';
 // Local filesystem writes count as writes even when the router is unchanged.
 const READ_TOOLS = [
   'rci_call',
+  'diagnose_internet',
   'get_config_state',
   'get_connection_status',
   'get_device',
@@ -123,6 +124,18 @@ describe('assembled server over MCP', () => {
     expect((diff?.properties as any)?.include_diff?.default).toBe(false);
     expect((diff?.properties as any)?.limit).toMatchObject({ default: 200, minimum: 1,
       maximum: 1000 });
+  });
+
+  it('advertises and calls the zero-argument internet diagnostic over MCP', async () => {
+    const client = await connectedClient(true);
+    const { tools } = await client.listTools();
+    const tool = tools.find(item => item.name === 'diagnose_internet');
+    expect(tool?.inputSchema).toMatchObject({ type: 'object', properties: {} });
+    expect(tool?.annotations?.readOnlyHint).toBe(true);
+
+    const result = await client.callTool({ name: 'diagnose_internet', arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content.map(part => part.text).join(''))).toMatchObject({ schemaVersion: 1 });
   });
 });
 

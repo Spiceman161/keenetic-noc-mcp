@@ -1,4 +1,5 @@
 import type { Rci } from './rci.js';
+import { AuthError, TransportError } from './errors.js';
 
 /** Where the router serves the saved configuration. Three callers need the path. */
 export const STARTUP_CONFIG = '/ci/startup-config.txt';
@@ -35,12 +36,21 @@ export interface ConfigState {
   failSafe: { unsaved: boolean; rollbackPending: boolean; secondsLeft: unknown };
 }
 
+export interface ConfigStateReadLimits {
+  lastChangeBytes?: number;
+  startupBytes?: number;
+  /** Remote profiles must not send credentials to the auxiliary /ci/ surface. */
+  skipStartup?: boolean;
+  /** Composite callers can stop later reads when the shared session is lost. */
+  propagateSessionErrors?: boolean;
+}
+
 /**
  * The cheap half: a small JSON document, against ~17 KB for the startup config.
  * Enough to see that the router has acted, not enough to prove what it wrote.
  */
-export async function readLastChange(rci: Rci): Promise<LastChange> {
-  const raw = asRecord(await rci.get('show/last-change'));
+export async function readLastChange(rci: Rci, maxBytes?: number): Promise<LastChange> {
+  const raw = asRecord(await rci.get('show/last-change', maxBytes));
   const failSafe = asRecord(raw['fail-safe']);
   return {
     date: asString(raw['date']),
@@ -72,15 +82,26 @@ export function lastChangeMoved(before: LastChange, after: LastChange): boolean 
  * The checksum is the signal that actually moves, so the running one is
  * compared against the header the router writes into startup-config.txt.
  */
-export async function readConfigState(rci: Rci): Promise<ConfigState> {
-  const last = await readLastChange(rci);
+export async function readConfigState(
+  rci: Rci,
+  limits: ConfigStateReadLimits = {}
+): Promise<ConfigState> {
+  const last = await readLastChange(rci, limits.lastChangeBytes);
 
   let savedChecksum: string | null = null;
-  try {
-    savedChecksum = SAVED_CHECKSUM.exec(await rci.getText(STARTUP_CONFIG))?.[1] ?? null;
-  } catch {
-    // Reporting "saved" on a failed read would be the very error this replaces.
-    savedChecksum = null;
+  if (limits.skipStartup !== true) {
+    try {
+      savedChecksum = SAVED_CHECKSUM.exec(
+        await rci.getText(STARTUP_CONFIG, limits.startupBytes)
+      )?.[1] ?? null;
+    } catch (error) {
+      if (limits.propagateSessionErrors === true &&
+          (error instanceof AuthError || error instanceof TransportError)) {
+        throw error;
+      }
+      // Reporting "saved" on a failed read would be the very error this replaces.
+      savedChecksum = null;
+    }
   }
 
   return {

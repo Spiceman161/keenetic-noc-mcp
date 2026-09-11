@@ -156,9 +156,9 @@ export class Rci {
     return { value: value as T, bytes: bytes.byteLength };
   }
 
-  async post<T = unknown>(body: unknown): Promise<T> {
+  async post<T = unknown>(body: unknown, maxBytes?: number): Promise<T> {
     const res = await this.session.request('POST', '/rci/', body);
-    return this.parse<T>(res, 'POST /rci/');
+    return this.parse<T>(res, 'POST /rci/', maxBytes);
   }
 
   /** Plain-text endpoints such as /ci/startup-config.txt. */

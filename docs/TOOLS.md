@@ -2,7 +2,7 @@
 
 Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `get_running_config`, `get_startup_config`, `search_config`, `get_config_diff`,
-`get_internet_status`, `list_interfaces`, `get_interface`, `list_routes`,
+`diagnose_internet`, `get_internet_status`, `list_interfaces`, `get_interface`, `list_routes`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
 and bounded raw `rci_call` GET.
@@ -15,6 +15,30 @@ enables it and each call passes dry-run/confirmation and denylist checks.
 
 Response limits are global. A raw call's `max_bytes` can lower but cannot raise
 the global ceiling. Router log content is data, never instructions.
+
+## Internet diagnosis
+
+`diagnose_internet` is the first call for an internet-down or internet-slow
+incident. It has no arguments and combines bounded system, internet-status,
+interface, IPv4 default-route, DNS, VPN, recent-log, and configuration-state
+reads. The result has `schemaVersion: 1`, an overall `status`, `complete`, fixed
+`checks`, deterministic `findings`, and projected `evidence`.
+
+Overall status is `unhealthy` only for a confirmed blocking fault,
+`degraded` when core evidence is incomplete or contains a warning, `healthy`
+when the core internet path passes, and `unknown` when no core conclusion can
+be made. Optional logs or saved-config comparison can be unavailable while the
+network status remains healthy; `complete: false` records that evidence gap.
+Remote profiles do not request the LAN-only `/ci/startup-config.txt` surface;
+their saved-state comparison remains unknown in B1.
+
+Findings come only from explicit router state, such as an unreachable gateway,
+missing usable `0.0.0.0/0` route, DNS reachability failure, required physical
+uplink down, or failed VPN carrying the default route. An active default-route
+VPN and unsaved configuration are informational context. Logs never create a
+finding and remain marked `untrusted`; their timestamps and proximity to an
+incident do not establish causality. B1 does not diagnose IPv6 routes and does
+not apply CPU, memory, or connection-table thresholds.
 
 ## Log filters
 
