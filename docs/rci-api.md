@@ -357,6 +357,30 @@ occurred as both a number and a string. The probe retained only these field
 names, shapes, row count, and response-size metadata. B4 joins a lease to the
 already resolved hotspot device by exact case-insensitive MAC only.
 
+### Wi-Fi diagnostic evidence status
+
+The sanitized KeeneticOS 5.1.3 fixtures expose association `rssi` in dBm,
+`txrate`/optional `rxrate` in Mbps, association `ht` in MHz, and WifiMaster
+`bandwidth` in MHz. `station.ap` is the exact AccessPoint ID; the parent radio
+is accepted only from the measured `WifiMasterN/AccessPointN` structure.
+`busy-channels` is a channel list, not a utilization percentage. `roam: "ft"`
+describes the current association's capability/state, not a roaming event. The
+measured fixture contains no `band`, so B5 does not infer one from a channel or
+WifiMaster number. Retry/error counters, channel utilization, deauthentication
+reasons, and roaming history/events remain `not-exposed`. Scan commands were
+not probed because there is no separate proof that they are passive and safe.
+
+The B5 read paths and smoke-summary privacy boundary were freshly validated
+read-only through remote profile `tupik` on Viva (KN-1912), KeeneticOS 5.1.5,
+on 2026-09-11. The sanitized summary reported 2 WifiMaster rows, 14 AccessPoint
+rows, 15 association rows, and 47 hotspot rows. All 15 association AP IDs joined
+an exact AccessPoint and its confirmed WifiMaster parent. Every association row
+exposed numeric `rssi`, `txrate`, `rxrate`, `ht`, `mcs`, and `txss`; hotspot
+exposed current wireless metrics for 15 rows but no `rxrate` in any row. This
+confirms that B5 must not backfill missing association `rxrate` from hotspot.
+Only allowlisted field shapes, counts, fixed unit labels, and anonymous join
+counts were emitted; raw responses and router identifiers were not retained.
+
 ### DNS diagnostic evidence status
 
 `show/dns-proxy` and the targeted DNS configuration branches were verified

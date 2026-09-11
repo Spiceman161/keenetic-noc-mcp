@@ -78,6 +78,21 @@ without health thresholds, policy membership is not treated as proof of the
 active route, and log text cannot create findings. Output trimming removes
 logs and optional context before identity, checks, or findings.
 
+Wi-Fi diagnostics share a stricter topology projection. `diagnose_wifi` reads
+fresh `show/version` (64 KB), then `show/interface` and `show/associations`
+(256 KB each). Authentication is fatal; the first transport failure stops later
+requests, while RCI and malformed-shape failures become unavailable source
+evidence. `get_wifi_client_health` first performs the required bounded hotspot
+resolution, then associations and interfaces with the same latch. Hotspot and
+station rows join only by exact case-insensitive MAC; `station.ap` joins an AP
+exactly, and its radio parent is accepted only for the confirmed anchored
+`WifiMasterN/AccessPointN` ID form. Aggregate output suppresses client identity,
+SSID and BSSID. Selected-client output keeps only its sanitized identity/SSID.
+Central redaction and control stripping apply at the output boundary; budget
+reduction removes optional AP/client metric detail before checks, findings,
+totals, or selected identity. No band, utilization, retry, or event history is
+derived from channel numbers, `busy-channels`, `_11`, or `roam`.
+
 Configuration reads use a separate 256 KB input-bounded reader whose errors
 never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never

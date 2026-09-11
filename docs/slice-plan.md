@@ -827,7 +827,12 @@ Use `unknown` instead of guessing when telemetry is absent.
 
 ## Slice B5 - Wi-Fi health diagnostics
 
-**Progress:** Planned.
+**Progress:** Implemented with fixture/unit validation. `diagnose_wifi` and
+`get_wifi_client_health` are bounded passive read tools. Environment scanning
+and unverified retry/error, utilization, deauthentication, and roaming-event
+telemetry remain deferred. A fresh read-only remote smoke on `tupik` validated
+the B5 sources and anonymous joins on Viva (KN-1912), KeeneticOS 5.1.5, on
+2026-09-11; no raw router response or identifier was retained.
 
 ### Candidate tools
 

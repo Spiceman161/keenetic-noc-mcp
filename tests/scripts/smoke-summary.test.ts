@@ -4,7 +4,8 @@ import {
   createDeviceShapeSummary,
   createDnsShapeSummary,
   createLogSmokeSummary,
-  createUnavailableSmokeSummary
+  createUnavailableSmokeSummary,
+  createWifiShapeSummary
 } from '../../scripts/smoke-summary.js';
 
 describe('remote smoke summary', () => {
@@ -125,5 +126,41 @@ describe('device smoke summary', () => {
     });
     expect(createUnavailableSmokeSummary(Object.assign(new Error('missing'), { code: '404' })))
       .toMatchObject({ code: '404' });
+  });
+});
+
+describe('Wi-Fi smoke summary', () => {
+  it('retains only field shapes, counts, units and anonymous exact joins', () => {
+    const summary = createWifiShapeSummary({
+      WifiMaster0: { id: 'WifiMaster0', type: 'WifiMaster', channel: 6, bandwidth: '20',
+        'busy-channels': [4, 5, 6], description: 'password=radio-secret' },
+      'WifiMaster0/AccessPoint0': { id: 'WifiMaster0/AccessPoint0', type: 'AccessPoint',
+        ssid: 'private-ssid', mac: '02:00:00:00:00:aa' }
+    }, { station: [{ mac: '02:00:00:00:00:01', ap: 'WifiMaster0/AccessPoint0',
+      authenticated: true, rssi: -55, txrate: '72', rxrate: 65, ht: 20, roam: 'ft', event: 'private event' }] },
+    { host: [{ mac: '02:00:00:00:00:01', name: 'private device', hostname: 'private-host',
+      ssid: 'private-ssid', ap: 'WifiMaster0/AccessPoint0', rssi: -55 }] });
+    expect(summary).toMatchObject({
+      interfaces: { radios: 1, accessPoints: 1 },
+      associations: { stations: 1, accessPointLinks: 1, radioLinks: 1 },
+      hotspot: { hosts: 1, wirelessHosts: 1 },
+      units: { rssi: 'dBm', txrate: 'Mbps', rxrate: 'Mbps', ht: 'MHz', bandwidth: 'MHz' }
+    });
+    const associations = summary.associations as any;
+    expect(associations.fields.rxrate).toMatchObject({ present: 1, missing: 0 });
+    expect(associations.fields.roam).toMatchObject({ present: 1 });
+    const text = JSON.stringify(summary);
+    for (const secret of ['WifiMaster0', 'AccessPoint0', 'private-ssid', '02:00:00:00:00:01',
+      'private device', 'private-host', 'radio-secret', 'private event', 'ft']) {
+      expect(text).not.toContain(secret);
+    }
+    expect(text).not.toContain('utilization');
+  });
+
+  it('handles malformed roots as zero anonymous rows', () => {
+    expect(createWifiShapeSummary([], null, 'bad')).toMatchObject({
+      interfaces: { radios: 0, accessPoints: 0 }, associations: { stations: 0 },
+      hotspot: { hosts: 0, wirelessHosts: 0 }
+    });
   });
 });

@@ -85,6 +85,82 @@ export function createDeviceShapeSummary(value: unknown): Record<string, unknown
   return createShapeSummary(value, SAFE_DEVICE_FIELDS);
 }
 
+const WIFI_INTERFACE_FIELDS = ['type', 'state', 'link', 'connected', 'hwstate', 'channel',
+  'bandwidth', 'busy-channels'] as const;
+const WIFI_ASSOCIATION_FIELDS = ['ap', 'authenticated', 'rssi', 'txrate', 'rxrate', 'ht',
+  'mode', 'mcs', 'txss', '_11', 'roam'] as const;
+const WIFI_HOTSPOT_FIELDS = ['active', 'authenticated', 'rssi', 'txrate', 'rxrate', 'ht',
+  'mode', 'mcs', 'txss', '_11', 'roam'] as const;
+
+function fieldPresence(rows: readonly Record<string, unknown>[], fields: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(fields.map(field => {
+    const values = rows.filter(row => row[field] !== undefined).map(row => row[field]);
+    const types: Record<string, number> = {};
+    for (const value of values) types[shape(value)] = (types[shape(value)] ?? 0) + 1;
+    return [field, { present: values.length, missing: rows.length - values.length, types }];
+  }));
+}
+
+/** Summarizes Wi-Fi telemetry without retaining identifiers or router-controlled values. */
+export function createWifiShapeSummary(
+  interfacesRaw: unknown,
+  associationsRaw: unknown,
+  hotspotRaw: unknown
+): Record<string, unknown> {
+  const interfaces = interfacesRaw && typeof interfacesRaw === 'object' && !Array.isArray(interfacesRaw)
+    ? interfacesRaw as Record<string, unknown> : {};
+  const interfaceEntries = Object.entries(interfaces).filter((entry): entry is [string, Record<string, unknown>] =>
+    Boolean(entry[1]) && typeof entry[1] === 'object' && !Array.isArray(entry[1]));
+  const radios = interfaceEntries.filter(([, value]) => value['type'] === 'WifiMaster');
+  const accessPoints = interfaceEntries.filter(([, value]) => value['type'] === 'AccessPoint');
+  const associationRoot = associationsRaw && typeof associationsRaw === 'object' && !Array.isArray(associationsRaw)
+    ? associationsRaw as Record<string, unknown> : {};
+  const stations = Array.isArray(associationRoot['station'])
+    ? associationRoot['station'].filter((row): row is Record<string, unknown> =>
+      Boolean(row) && typeof row === 'object' && !Array.isArray(row)) : [];
+  const hotspotRoot = hotspotRaw && typeof hotspotRaw === 'object' && !Array.isArray(hotspotRaw)
+    ? hotspotRaw as Record<string, unknown> : {};
+  const hosts = Array.isArray(hotspotRoot['host'])
+    ? hotspotRoot['host'].filter((row): row is Record<string, unknown> =>
+      Boolean(row) && typeof row === 'object' && !Array.isArray(row)) : [];
+  const apIds = new Set(accessPoints.map(([id]) => id));
+  const radioIds = new Set(radios.map(([id]) => id));
+  let accessPointLinks = 0;
+  let radioLinks = 0;
+  for (const station of stations) {
+    if (typeof station['ap'] !== 'string') continue;
+    if (apIds.has(station['ap'])) accessPointLinks += 1;
+    const match = /^(WifiMaster\d+)\/AccessPoint\d+$/.exec(station['ap']);
+    if (match?.[1] && radioIds.has(match[1])) radioLinks += 1;
+  }
+  return {
+    interfaces: {
+      radios: radios.length,
+      accessPoints: accessPoints.length,
+      radioFields: fieldPresence(radios.map(([, value]) => value), WIFI_INTERFACE_FIELDS),
+      accessPointFields: fieldPresence(accessPoints.map(([, value]) => value), WIFI_INTERFACE_FIELDS)
+    },
+    associations: {
+      stations: stations.length,
+      accessPointLinks,
+      radioLinks,
+      fields: fieldPresence(stations, WIFI_ASSOCIATION_FIELDS)
+    },
+    hotspot: {
+      hosts: hosts.length,
+      wirelessHosts: hosts.filter(host => typeof host['ap'] === 'string' || typeof host['ssid'] === 'string').length,
+      fields: fieldPresence(hosts, WIFI_HOTSPOT_FIELDS)
+    },
+    units: {
+      rssi: stations.some(row => row['rssi'] !== undefined) ? 'dBm' : null,
+      txrate: stations.some(row => row['txrate'] !== undefined) ? 'Mbps' : null,
+      rxrate: stations.some(row => row['rxrate'] !== undefined) ? 'Mbps' : null,
+      ht: stations.some(row => row['ht'] !== undefined) ? 'MHz' : null,
+      bandwidth: radios.some(([, row]) => row['bandwidth'] !== undefined) ? 'MHz' : null
+    }
+  };
+}
+
 /** Classifies a probe failure without copying router-controlled error text. */
 export function createUnavailableSmokeSummary(error: unknown): Record<string, unknown> {
   const rawCode = typeof error === 'object' && error !== null && 'code' in error &&

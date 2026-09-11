@@ -9,7 +9,8 @@ import {
   createDeviceShapeSummary,
   createDnsShapeSummary,
   createLogSmokeSummary,
-  createUnavailableSmokeSummary
+  createUnavailableSmokeSummary,
+  createWifiShapeSummary
 } from './smoke-summary.js';
 
 async function main(): Promise<void> {
@@ -22,11 +23,19 @@ async function main(): Promise<void> {
   reads['show/version'] = 'passed';
   summary['router'] = { model: capabilities.model, firmware: capabilities.firmware };
   let dnsRuntime: unknown;
-  for (const path of ['show/system', 'show/interface', 'show/internet/status', 'show/ip/route', 'show/dns-proxy']) {
+  let interfaceRaw: unknown;
+  let associationsRaw: unknown;
+  let hotspotRaw: unknown;
+  for (const path of ['show/system', 'show/interface', 'show/associations', 'show/ip/hotspot',
+    'show/internet/status', 'show/ip/route', 'show/dns-proxy']) {
     const value = await client.rci.get(path, path === 'show/dns-proxy' ? 128_000 : 256_000);
     if (path === 'show/dns-proxy') dnsRuntime = value;
+    if (path === 'show/interface') interfaceRaw = value;
+    if (path === 'show/associations') associationsRaw = value;
+    if (path === 'show/ip/hotspot') hotspotRaw = value;
     reads[path] = 'passed';
   }
+  summary['wifiEvidence'] = createWifiShapeSummary(interfaceRaw, associationsRaw, hotspotRaw);
   const dnsConfigShape = async (path: string): Promise<Record<string, unknown>> => {
     try {
       return createDnsShapeSummary((await client.rci.getConfig(path, 128_000)).value);
@@ -54,10 +63,8 @@ async function main(): Promise<void> {
 
   const rawLogs = await client.rci.post({ show: { log: {} } });
   const entries = unwrapLogEntries(rawLogs);
-  const interfaceRaw = await client.rci.get('show/interface');
   const interfaceName = records(interfaceRaw).map(item => scalar(item, ['name', 'interface', 'id'])).find(Boolean) ?? null;
   const timestamp = entries.find(entry => entry.timestamp !== null)?.timestamp ?? null;
-  const hotspotRaw = await client.rci.get('show/ip/hotspot');
   const hotspotRoot = hotspotRaw && typeof hotspotRaw === 'object' ? hotspotRaw as Record<string, unknown> : {};
   const device = records(hotspotRoot['host']).map(item => scalar(item, ['name', 'hostname', 'mac', 'ip'])).find(Boolean) ?? null;
   let deviceMatched: number | null = null;

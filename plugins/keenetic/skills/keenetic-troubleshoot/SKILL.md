@@ -94,25 +94,28 @@ in this order:
 ## "Wi-Fi is bad"
 
 ```
-get_wifi_status
+diagnose_wifi
 ```
 
-Then look at signal strength per device:
+For one affected client, use exactly one selector:
 
 ```
-list_devices { "filter": "wireless", "sort": "rssi" }
+get_wifi_client_health { "mac": "..." }
 ```
+
+`ip` and `name` are alternatives. Use `get_wifi_status` and `list_devices` only
+for lower-level confirmation when needed.
 
 Reading `rssi`, which is negative and closer to zero is better:
 
-- above -60: good
-- -60 to -70: usable
-- below -70: expect drops and low speed; the device is too far from the access
-  point or something is in the way
+- -60 or higher: good
+- -70 through below -60: usable
+- below -70: weak; investigate coverage or obstruction without assuming cause
 
-If a device is on the 2.4 GHz radio with a strong signal but poor speed, the
-band is congested rather than weak. If several devices sit below -70, that is a
-coverage problem no setting will fix.
+PHY mode, rates, and width are context, not proof of congestion. Current
+telemetry cannot establish utilization, retries, or roaming events;
+`busy-channels` is not utilization and `roam: ft` is not an event. Do not infer
+the Wi-Fi band from a channel or WifiMaster number.
 
 ## "The network is slow"
 

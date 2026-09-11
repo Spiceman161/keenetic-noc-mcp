@@ -5,7 +5,8 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `diagnose_internet`, `get_internet_status`, `list_interfaces`, `get_interface`, `list_routes`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
-`list_dns_upstreams`, `diagnose_dns`, `diagnose_device`,
+`list_dns_upstreams`, `diagnose_dns`, `diagnose_device`, `diagnose_wifi`,
+`get_wifi_client_health`,
 and bounded raw `rci_call` GET.
 
 ## Active diagnostics
@@ -76,6 +77,27 @@ device-specific causality. Logs are redacted untrusted context and never create
 findings. Partial Wi-Fi/interface sources are identified by availability fields
 and make `complete=false` without discarding independently observed hotspot
 facts. The tool sends no active traffic and performs no mutation.
+
+## Wi-Fi diagnosis
+
+`diagnose_wifi` takes `{}` and sequentially reads fresh version, interface, and
+association state. Its versioned report contains bounded radio/AP summaries,
+client totals and signal buckets, but never client MACs, names, SSIDs or BSSIDs.
+`get_wifi_client_health` accepts exactly one of `mac`, `ip`, or `name`, using the
+same normalization and ambiguity rules as `diagnose_device`. It resolves the
+bounded hotspot list first, then reads associations and interfaces. Only the
+selected identity and sanitized selected SSID are returned; sibling clients and
+AP MAC/BSSID values are omitted. A wired selection returns `not-applicable`.
+
+RSSI at least -60 dBm is `good`; -70 through below -60 is `usable`; below -70
+is `weak` and creates a warning. `authenticated:false` is a failure. An active
+wireless selected device without an exact-MAC association, or an association
+whose exact AP/confirmed WifiMaster parent is absent, creates a warning when the
+required source is available. Disabled unused APs and zero connected clients
+are normal. PHY mode, rates, width, MCS, streams, byte counters, `_11`, and
+`roam` are context only. No band, utilization, retry, or roaming-history value
+is inferred; environment scanning remains unavailable pending passive-safety
+evidence.
 
 ## Internet diagnosis
 

@@ -46,6 +46,13 @@ export function ok(payload: unknown, maxBytes?: number): ToolResult {
   };
 }
 
+/** Compact variant for versioned reports whose required envelope must survive tight budgets. */
+export function compactOk(payload: unknown, maxBytes: number): ToolResult {
+  const text = JSON.stringify(redact(payload));
+  if (Buffer.byteLength(text, 'utf8') > maxBytes) return ok(payload, maxBytes);
+  return { content: [{ type: 'text', text }] };
+}
+
 /**
  * Every handler funnels failures through here. The text is read by a model, so
  * it must say what happened and what to do next - never a bare stack trace.
