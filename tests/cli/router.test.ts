@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isWizardAction, runConnectionChecks, runRouterRegistration, type RouterRegistrationDependencies, type Terminal } from '../../src/cli/router.js';
+import { isWizardAction, runConnectionChecks, runRouterRegistration, runRouterRemoval, runRouterSnapshot, type RouterRegistrationDependencies, type Terminal } from '../../src/cli/router.js';
 import { AuthError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import type { RouterProfile } from '../../src/profiles/registry.js';
@@ -161,5 +161,76 @@ describe('standalone router registration', () => {
     await expect(runRouterRegistration('/profiles', 'test', 'claude', ui, deps)).resolves.toBe(1);
     expect(deps.runRegistration).toHaveBeenCalledOnce();
     expect(outputs.at(-1)).toContain('metadata could not be updated');
+  });
+});
+
+describe('explicit router snapshot', () => {
+  it('stores a partial snapshot and prints only aggregate metadata', async () => {
+    const unavailable = { status: 'unavailable' as const, reason: 'not-supported' as const, data: null };
+    const snapshot = { schemaVersion: 1 as const, at: '2026-09-11T10:00:00.000Z', complete: false,
+      sources: { system: unavailable, configuration: unavailable, interfaces: unavailable,
+        routes: unavailable, dns: unavailable, vpn: unavailable, wifi: unavailable, devices: unavailable } };
+    const output: string[] = [];
+    const deps = {
+      getProfile: vi.fn(async () => profile('remote')),
+      readPassword: vi.fn(async () => 'not-printed'),
+      createClient: vi.fn(() => client()),
+      collect: vi.fn(async () => snapshot),
+      write: vi.fn(async () => ({ path: '/private/path.json', bytes: 900, pruned: 2 }))
+    };
+    await expect(runRouterSnapshot('/profiles', 'test', line => output.push(line), deps)).resolves.toBe(0);
+    expect(deps.write).toHaveBeenCalledWith('/profiles', 'test', snapshot);
+    expect(output.join('\n')).toContain('partial');
+    expect(output.join('\n')).toContain('900 bytes');
+    expect(output.join('\n')).not.toMatch(/not-printed|private\/path/);
+  });
+
+  it('does not collect when the profile secret is unavailable', async () => {
+    const collect = vi.fn();
+    await expect(runRouterSnapshot('/profiles', 'test', undefined, {
+      getProfile: vi.fn(async () => profile('lan')),
+      readPassword: vi.fn(async () => null),
+      collect
+    })).rejects.toThrow('Profile password is unavailable');
+    expect(collect).not.toHaveBeenCalled();
+  });
+});
+
+describe('router removal snapshot lifecycle', () => {
+  it('removes snapshots after the confirmed profile removal', async () => {
+    const calls: string[] = [];
+    const ui: Terminal = { ask: vi.fn(async () => 'y'), close: vi.fn(), out: vi.fn() };
+    await expect(runRouterRemoval('/profiles', 'test', ui, {
+      getProfile: vi.fn(async () => profile('lan')),
+      removeProfile: vi.fn(async () => { calls.push('profile'); return profile('lan'); }),
+      removeSecret: vi.fn(async () => { calls.push('secret'); }),
+      removeState: vi.fn(async () => { calls.push('state'); }),
+      removeSnapshots: vi.fn(async (_id, finalize) => { calls.push('snapshots'); await finalize(); })
+    })).resolves.toBe(0);
+    expect(calls).toEqual(['secret', 'state', 'snapshots', 'profile']);
+    expect(ui.out).toHaveBeenCalledWith(expect.stringContaining('local snapshots'));
+  });
+
+  it('keeps the profile retryable when snapshot cleanup fails', async () => {
+    const removeProfileCall = vi.fn();
+    const ui: Terminal = { ask: vi.fn(async () => 'y'), close: vi.fn(), out: vi.fn() };
+    await expect(runRouterRemoval('/profiles', 'test', ui, {
+      getProfile: vi.fn(async () => profile('lan')),
+      removeProfile: removeProfileCall,
+      removeSecret: vi.fn(async () => undefined),
+      removeState: vi.fn(async () => undefined),
+      removeSnapshots: vi.fn(async () => { throw new Error('disk busy'); })
+    })).rejects.toThrow('disk busy');
+    expect(removeProfileCall).not.toHaveBeenCalled();
+  });
+
+  it('does not remove anything when confirmation is declined', async () => {
+    const removeProfileCall = vi.fn();
+    const ui: Terminal = { ask: vi.fn(async () => 'n'), close: vi.fn(), out: vi.fn() };
+    await expect(runRouterRemoval('/profiles', 'test', ui, {
+      getProfile: vi.fn(async () => profile('lan')),
+      removeProfile: removeProfileCall
+    })).resolves.toBe(1);
+    expect(removeProfileCall).not.toHaveBeenCalled();
   });
 });

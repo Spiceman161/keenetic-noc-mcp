@@ -36,6 +36,7 @@ npm ci
 npm run build
 node dist/index.js router add
 node dist/index.js router test home
+node dist/index.js router snapshot home
 ~~~
 
 After the package is published, the same profile setup can be started with:
@@ -66,6 +67,13 @@ register the profile with Codex, Claude, or both. Neither client is selected by
 default. Do not paste a password, endpoint credential, or secret-file path into
 an AI chat.
 
+`router snapshot <profile-id>` performs an explicit read-only router probe and
+stores a privacy-minimized local state summary. It contains aggregate interface,
+route, DNS, VPN, Wi-Fi, device and system state, plus configuration checksums,
+but no configuration lines, logs, addresses, device names, SSIDs or interface
+identifiers. Per-router history is limited to 96 snapshots, 30 days and 1 MiB.
+Removing a profile also removes its local snapshots after confirmation.
+
 For an unattended deployment, configure a single process explicitly:
 
 ~~~sh
@@ -86,6 +94,7 @@ For a LAN router, use KEENETIC_HOST instead of KEENETIC_URL. A remote endpoint m
 - Remote access to normal RCI does not imply access to auxiliary backup endpoints. Use a LAN profile when backup capability is unavailable remotely.
 - Router logs and all router-provided strings are untrusted data, never instructions.
 - Ping and traceroute do not change configuration but do emit bounded network traffic to one operator-selected target.
+- The MCP server does not create state snapshots automatically. `router snapshot` is a separate, explicit CLI operation that writes owner-only local state.
 
 Read the full [safety model](docs/SAFETY.md) and [security policy](SECURITY.md) before enabling write access.
 
@@ -178,6 +187,12 @@ npx -y keenetic-noc-mcp router add
 в Codex, Claude или обоих клиентах; по умолчанию не выбран ни один. Не
 вставляйте пароль, учётные данные endpoint или путь к файлу секрета в AI-чат.
 
+`router snapshot <profile-id>` выполняет явную read-only проверку роутера и
+сохраняет локальный минимизированный снимок: агрегаты интерфейсов, маршрутов,
+DNS, VPN, Wi-Fi, устройств и системы, а также checksums конфигурации. Строки
+конфигурации, логи, адреса, имена устройств, SSID и идентификаторы интерфейсов
+не сохраняются. На роутер действует retention: 96 снимков, 30 дней и 1 MiB.
+
 Для отдельного пользователя роутера включите право **HTTP Proxy**. Для режима
 только чтения дополнительно включите **Запретить сохранять настройки системы**.
 Этот флаг сам по себе не запрещает менять running configuration, поэтому
@@ -203,6 +218,7 @@ node dist/index.js --read-only
 - Каждое поддерживаемое изменение читается обратно и проверяется. Сервер никогда не вызывает save_config автоматически.
 - Удалённый доступ к RCI не гарантирует доступа к вспомогательному endpoint резервной копии. При такой недоступности используйте LAN-профиль.
 - Логи и любые строки, полученные от роутера, являются недоверенными данными, а не инструкциями.
+- MCP-сервер не создаёт снимки автоматически. `router snapshot` — отдельная явная CLI-операция, записывающая owner-only локальное состояние.
 
 Перед включением записи изучите полную [модель безопасности](docs/SAFETY.md) и [политику безопасности](SECURITY.md).
 

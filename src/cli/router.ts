@@ -5,6 +5,10 @@ import { createClient, createRemoteClient, type KeeneticClient } from '../router
 import { getProfile, readLastTest, readProfiles, removeProfile, removeState, saveLastTest, saveRegistration, setDefaultProfile, type RouterProfile } from '../profiles/registry.js';
 import { createProfileSecretStore, generatePassword, type ProfileSecretBackend } from '../profiles/secrets.js';
 import { runRouterPreflight, type PreflightDependencies, type PreflightReport } from '../router/preflight.js';
+import { stateDir } from '../router/backup.js';
+import { collectRouterSnapshot } from '../router/snapshot-collector.js';
+import { createSnapshotStore, type SnapshotWriteResult } from '../router/snapshot-store.js';
+import type { RouterSnapshotV1 } from '../shape/router-snapshot.js';
 import { currentMcpServerLaunch, registrationInvocation, registrationPreview, runRouterWizard, type McpServerLaunch, type RegistrationInvocation } from './router-wizard.js';
 import { createPromptAdapter } from './ui/prompts.js';
 
@@ -27,6 +31,48 @@ export interface RouterRegistrationDependencies {
   serverLaunch(): McpServerLaunch;
   runRegistration(invocation: RegistrationInvocation): Promise<number>;
   saveRegistration(dir: string, id: string, client: 'codex' | 'claude', instanceName: string): Promise<void>;
+}
+
+export interface RouterRemovalDependencies {
+  getProfile(dir: string, id: string): ReturnType<typeof getProfile>;
+  removeProfile(dir: string, id: string): ReturnType<typeof removeProfile>;
+  removeSecret(dir: string, profile: RouterProfile): Promise<void>;
+  removeState(dir: string, id: string): Promise<void>;
+  removeSnapshots(id: string, finalize: () => Promise<void>): Promise<void>;
+}
+
+const removalDependencies: RouterRemovalDependencies = {
+  getProfile,
+  removeProfile,
+  async removeSecret(dir, profile) {
+    await (await createProfileSecretStore(dir,
+      profile.secretRef.startsWith('file:') ? 'file' : 'keychain')).remove(profile.id);
+  },
+  removeState,
+  removeSnapshots: (id, finalize) => createSnapshotStore(
+    stateDir(process.platform, process.env), id
+  ).removeAll(finalize)
+};
+
+export async function runRouterRemoval(
+  dir: string,
+  id: string,
+  ui: Terminal,
+  overrides: Partial<RouterRemovalDependencies> = {}
+): Promise<number> {
+  const deps = { ...removalDependencies, ...overrides };
+  const profile = await deps.getProfile(dir, id);
+  if (!profile) throw new Error(`No profile named "${id}"`);
+  ui.out(`Remove profile ${id}, its local secret, and its local snapshots. ` +
+    'This does not change the router or delete its user.');
+  if (!await confirm(ui, 'Remove profile, local secret, and snapshots?', false)) return 1;
+  await deps.removeSecret(dir, profile);
+  await deps.removeState(dir, id);
+  await deps.removeSnapshots(id, async () => {
+    if (!await deps.removeProfile(dir, id)) throw new Error(`No profile named "${id}"`);
+  });
+  ui.out('✓ Profile removed.');
+  return 0;
 }
 
 const registrationDependencies: RouterRegistrationDependencies = {
@@ -89,6 +135,50 @@ export interface ConnectionTestResult {
   checks: Record<string, string>;
 }
 
+export interface RouterSnapshotDependencies {
+  getProfile(dir: string, id: string): ReturnType<typeof getProfile>;
+  readPassword(dir: string, profile: RouterProfile): Promise<string | null>;
+  createClient(profile: RouterProfile, password: string): KeeneticClient;
+  collect(client: KeeneticClient): Promise<RouterSnapshotV1>;
+  write(dir: string, routerId: string, snapshot: RouterSnapshotV1): Promise<SnapshotWriteResult>;
+}
+
+const snapshotDependencies: RouterSnapshotDependencies = {
+  getProfile,
+  async readPassword(dir, profile) {
+    const backend: ProfileSecretBackend = profile.secretRef.startsWith('file:') ? 'file' : 'keychain';
+    return (await createProfileSecretStore(dir, backend)).read(profile.id);
+  },
+  createClient: profileClient,
+  collect: client => collectRouterSnapshot(client),
+  write: (dir, routerId, snapshot) => createSnapshotStore(
+    stateDir(process.platform, process.env), routerId
+  ).write(snapshot, new Date(), async () => {
+    if (!await getProfile(dir, routerId)) throw new Error(`No profile named "${routerId}"`);
+  })
+};
+
+/** Captures one explicit local summary without changing the router or MCP registry. */
+export async function runRouterSnapshot(
+  dir: string,
+  id: string,
+  out: (line: string) => void = line => console.log(line),
+  overrides: Partial<RouterSnapshotDependencies> = {}
+): Promise<number> {
+  const deps = { ...snapshotDependencies, ...overrides };
+  const profile = await deps.getProfile(dir, id);
+  if (!profile) throw new Error(`No profile named "${id}"`);
+  const password = await deps.readPassword(dir, profile);
+  if (!password) throw new Error('Profile password is unavailable');
+  const snapshot = await deps.collect(deps.createClient(profile, password));
+  const stored = await deps.write(dir, profile.id, snapshot);
+  const unavailable = Object.values(snapshot.sources).filter(source => source.status === 'unavailable').length +
+    (snapshot.sources.configuration.data?.savedState === 'available' ? 0 : 1);
+  out(`Snapshot saved: ${snapshot.at} - ${snapshot.complete ? 'complete' : 'partial'}; ` +
+    `unavailable domains: ${unavailable}; ${stored.bytes} bytes; pruned: ${stored.pruned}.`);
+  return 0;
+}
+
 /** Projects the richer onboarding preflight into the stable router-test result. */
 export function connectionTestFromPreflight(report: PreflightReport): ConnectionTestResult {
   const checks: Record<string, string> = {};
@@ -138,4 +228,4 @@ async function rotate(dir: string, id: string): Promise<number> { requireTty(); 
 
 export function isWizardAction(action: string | undefined): boolean { return action === 'add' || action === 'init'; }
 
-export async function runRouterFromTerminal(argv: readonly string[]): Promise<number> { await migrateLegacyConfigDir(process.platform, process.env); const dir = configDir(process.platform, process.env); const [action, id, ...rest] = argv; if (isWizardAction(action)) return add(dir); if (action === 'list') return list(dir); if (!id) throw new Error('A router profile ID is required'); if (action === 'show') return show(dir, id); if (action === 'test') return test(dir, id); if (action === 'register') return register(dir, id, rest[0] === '--client' ? rest[1] : undefined); if (action === 'rotate-password') return rotate(dir, id); if (action === 'set-default') { await setDefaultProfile(dir, id); console.log(`✓ Default profile is now ${id}.`); return 0; } if (action === 'remove') { requireTty(); const ui = terminal(); try { const profile = await getProfile(dir, id); if (!profile) throw new Error(`No profile named "${id}"`); ui.out(`Remove profile ${id}. This does not change the router or delete its user.`); if (!await confirm(ui, 'Remove profile and local secret?', false)) return 1; const removed = await removeProfile(dir, id); if (removed) { await (await createProfileSecretStore(dir, removed.secretRef.startsWith('file:') ? 'file' : 'keychain')).remove(id); await removeState(dir, id); } ui.out('✓ Profile removed.'); return 0; } finally { ui.close(); } } throw new Error(`Unknown router command "${action ?? ''}"`); }
+export async function runRouterFromTerminal(argv: readonly string[]): Promise<number> { await migrateLegacyConfigDir(process.platform, process.env); const dir = configDir(process.platform, process.env); const [action, id, ...rest] = argv; if (isWizardAction(action)) return add(dir); if (action === 'list') return list(dir); if (!id) throw new Error('A router profile ID is required'); if (action === 'show') return show(dir, id); if (action === 'test') return test(dir, id); if (action === 'snapshot') return runRouterSnapshot(dir, id); if (action === 'register') return register(dir, id, rest[0] === '--client' ? rest[1] : undefined); if (action === 'rotate-password') return rotate(dir, id); if (action === 'set-default') { await setDefaultProfile(dir, id); console.log(`✓ Default profile is now ${id}.`); return 0; } if (action === 'remove') { requireTty(); const ui = terminal(); try { return await runRouterRemoval(dir, id, ui); } finally { ui.close(); } } throw new Error(`Unknown router command "${action ?? ''}"`); }

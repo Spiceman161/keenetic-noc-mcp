@@ -116,6 +116,22 @@ Read access to startup configuration and write-backup readiness are separate.
 Remote RCI may expose saved configuration through `rci-more`, but the mutation
 guard continues to require the LAN `/ci/startup-config.txt` backup path.
 
+State snapshots are an explicit CLI workflow, not an MCP tool or background
+task. The collector first establishes capabilities, then reads bounded sources
+sequentially so remote KeenDNS sessions are not flooded. A later session
+failure leaves a typed partial snapshot and latches remaining reads. Startup
+configuration is held only long enough to parse its generated checksum.
+
+The versioned snapshot schema persists only allowlisted aggregate state. Raw
+logs, configuration lines, interface/client identifiers, addresses and
+arbitrary router labels are excluded before serialization. Files live below
+the platform state root in a path-safe per-router directory. Owner-only modes,
+same-directory atomic rename, a cross-process lock, per-file bounds and
+count/age/aggregate-byte retention apply to every write. Corrupt and unknown
+schema files do not prevent valid history from being read, but still count
+toward disk bounds. Profile removal deletes its snapshot directory without
+following symlinks.
+
 Active diagnostics use the separate finite `/rci/tools/*` continued-job
 surface. One POST starts a native count/hop-bounded job, bounded GET polls read
 message chunks, and DELETE cancels an unfinished job. The MCP cancellation

@@ -60,7 +60,18 @@ args = ["/opt/keenetic-noc-mcp/dist/index.js", "--router", "office", "--read-onl
 Prefer router register over manually editing client settings. router show
 records safe registration metadata and can compare it with the client CLI when
 installed. Removing a profile can remove its registrations and local secret,
-but never deletes the router user or changes router configuration.
+and also removes its owner-only local state snapshots. It never deletes the
+router user or changes router configuration.
+
+Capture one privacy-minimized state point explicitly with:
+
+~~~sh
+keenetic-noc-mcp router snapshot home
+~~~
+
+Snapshots use the platform state directory, or `KEENETIC_STATE_DIR` when set,
+not the profile directory. Each profile has independent count, age and byte
+retention limits. The MCP process never schedules snapshots in the background.
 
 For containers, do not use saved profiles. Provide KEENETIC_URL or
 KEENETIC_HOST, KEENETIC_USER, and KEENETIC_PASSWORD_FILE to each process.

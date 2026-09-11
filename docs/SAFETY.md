@@ -5,6 +5,17 @@ tools, including local filesystem writes. Writable mode exposes
 `backup_config`, `set_interface_state`, `restart_interface`, and `save_config`
 in v0.1, plus raw POST only when explicitly enabled.
 
+The standalone `router snapshot <profile-id>` CLI command is outside the MCP
+tool registry. When explicitly invoked, it performs bounded read-only router
+requests and writes one owner-only local summary. It is never scheduled by the
+MCP server. Snapshots contain allowlisted aggregates and configuration
+checksums only: no raw configuration, logs, addresses, client identifiers,
+device names, SSIDs, interface names, VPN endpoints, or key material. Retention
+is enforced per router before every write: 96 records, 30 days and 1 MiB.
+Lock recovery fails closed: if a process dies while holding the snapshot lock,
+confirm that no snapshot command is running before removing `.snapshot.lock`
+from that router's state directory.
+
 Writes default to `dry_run=true`. A real call needs both `dry_run=false` and
 `confirm=true`. The first real configuration mutation downloads
 `/ci/startup-config.txt`; backup failure blocks the write. The change is read

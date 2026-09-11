@@ -7,6 +7,11 @@ export const STARTUP_CONFIG = '/ci/startup-config.txt';
 /** The router stamps the saved configuration with its own checksum, in a header comment. */
 const SAVED_CHECKSUM = /^!\s*\$+\s*Md5 checksum:\s*([0-9a-f]{32})/im;
 
+/** Extracts only the router-generated saved checksum, never configuration content. */
+export function parseSavedChecksum(value: string | readonly string[]): string | null {
+  return SAVED_CHECKSUM.exec(typeof value === 'string' ? value : value.join('\n'))?.[1]?.toLowerCase() ?? null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
@@ -91,9 +96,7 @@ export async function readConfigState(
   let savedChecksum: string | null = null;
   if (limits.skipStartup !== true) {
     try {
-      savedChecksum = SAVED_CHECKSUM.exec(
-        await rci.getText(STARTUP_CONFIG, limits.startupBytes)
-      )?.[1] ?? null;
+      savedChecksum = parseSavedChecksum(await rci.getText(STARTUP_CONFIG, limits.startupBytes));
     } catch (error) {
       if (limits.propagateSessionErrors === true &&
           (error instanceof AuthError || error instanceof TransportError)) {

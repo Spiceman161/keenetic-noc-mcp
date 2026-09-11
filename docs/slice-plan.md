@@ -866,7 +866,10 @@ Do not fabricate metrics that measured RCI paths do not expose.
 
 ## Slice C1 - Lightweight router state snapshots
 
-**Progress:** Planned.
+**Progress:** Complete in the current working diff. Capture is an explicit CLI
+operation, snapshots contain aggregate allowlisted state, and per-router
+retention is limited by count, age, and bytes. The independent data-minimization,
+storage, and compatibility review-fix cycle is clean.
 
 ### Goal
 
