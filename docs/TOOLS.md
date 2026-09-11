@@ -8,6 +8,28 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `list_dns_upstreams`, `diagnose_dns`,
 and bounded raw `rci_call` GET.
 
+## Active diagnostics
+
+`ping` sends 1-5 ICMP requests from the router to one ASCII hostname or IP
+address. It supports explicit `ipv4` or `ipv6`, defaults to three requests and a
+five-second deadline, and has a hard 15-second deadline ceiling.
+
+`traceroute` performs one UDP trace from the router to one target. It defaults
+to 15 hops and a 15-second deadline, with hard ceilings of 30 hops and 30
+seconds. Protocol, port, source interface, packet size, fan-out, ranges, and
+continuous operation are not exposed.
+
+Both tools are configuration-read-only but actively send packets, so they are
+available under `--read-only` and carry `openWorldHint=true`. Only one active
+diagnostic runs at a time and at most ten can start in a rolling minute. MCP
+cancellation triggers transport abort and the router-native DELETE cancel.
+Returned router text is marked untrusted, stripped of control sequences,
+redacted, and bounded. The reported `timeoutMs` is the smaller of `timeout_ms`
+and the operator's `KEENETIC_TIMEOUT_MS`. Outcomes distinguish `completed`,
+`partial`, `timeout`, `unreachable`, and `not-found`; a deadline preserves any
+lines already received. `dns_lookup` remains unavailable because no exact
+finite RCI command has been verified.
+
 ## DNS diagnosis
 
 `list_dns_upstreams` returns separate bounded observations from DNS proxy

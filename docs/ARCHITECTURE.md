@@ -88,6 +88,22 @@ Read access to startup configuration and write-backup readiness are separate.
 Remote RCI may expose saved configuration through `rci-more`, but the mutation
 guard continues to require the LAN `/ci/startup-config.txt` backup path.
 
+Active diagnostics use the separate finite `/rci/tools/*` continued-job
+surface. One POST starts a native count/hop-bounded job, bounded GET polls read
+message chunks, and DELETE cancels an unfinished job. The MCP cancellation
+signal and a per-call deadline reach the HTTP transport, but native count and
+hop limits remain the primary router-side termination guarantee. The whole-job
+deadline is the smaller of the tool request and configured session timeout;
+timeouts retain bounded partial chunks after native cancellation. A shared
+coordinator permits one active job at a time and ten starts per rolling minute;
+it rejects excess work rather than building a queue. Active start POSTs are
+never transport-retried. On a cold remote session, a single-attempt read-only
+version request discovers authentication before the active POST, so that POST
+is never a shared authentication flight. A failed cancellation blocks new
+active work until the MCP server process restarts because no router-side
+duration is proven. Output is untrusted, redacted, control/format-stripped, and
+bounded before reaching the global response ceiling.
+
 ## Error boundary
 
 - `AuthError`: HTTP 401/403 or rejected LAN credentials; never retried.

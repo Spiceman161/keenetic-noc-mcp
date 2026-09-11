@@ -686,7 +686,7 @@ Return evidence plus deterministic findings, not an LLM-generated narrative insi
 
 ## Slice B2 - Deep DNS diagnostics
 
-**Progress:** Implemented in the current working diff. Remote read-only evidence
+**Progress:** Complete and merged in `8baf4a9`. Remote read-only evidence
 on Viva (KN-1912), KeeneticOS 5.1.3 confirmed runtime DoT/DoH, targeted
 configuration, plain name-server, and interface-binding shapes. DoH3 and DNS
 route-binding semantics remain explicitly unverified. A complete MCP live
@@ -743,7 +743,10 @@ Combine what is actually available from:
 
 ## Slice B3 - Bounded active diagnostics
 
-**Progress:** Planned; requires explicit live command evidence.
+**Progress:** Implemented in the current working diff. Active evidence on Viva
+(KN-1912), KeeneticOS 5.1.3, through remote KeenDNS confirmed finite continued
+RCI jobs for IPv4/IPv6 ping and UDP traceroute. No active DNS lookup command was
+found, so `dns_lookup` remains deferred rather than guessed.
 
 ### Goal
 

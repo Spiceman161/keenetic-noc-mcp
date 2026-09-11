@@ -11,6 +11,8 @@ const READ_TOOLS = [
   'rci_call',
   'diagnose_internet',
   'diagnose_dns',
+  'ping',
+  'traceroute',
   'get_config_state',
   'get_connection_status',
   'get_device',
@@ -149,6 +151,22 @@ describe('assembled server over MCP', () => {
     expect(diagnostic?.annotations?.readOnlyHint).toBe(true);
     expect((list?.inputSchema.properties as any)?.limit).toMatchObject({ default: 50, minimum: 1, maximum: 100 });
     expect(list?.annotations?.readOnlyHint).toBe(true);
+  });
+
+  it('advertises narrow active diagnostic contracts', async () => {
+    const client = await connectedClient(true);
+    const { tools } = await client.listTools();
+    const ping = tools.find(item => item.name === 'ping');
+    const trace = tools.find(item => item.name === 'traceroute');
+    expect(ping?.inputSchema.required).toContain('target');
+    expect((ping?.inputSchema.properties as any)?.count).toMatchObject({ default: 3,
+      minimum: 1, maximum: 5 });
+    expect((trace?.inputSchema.properties as any)?.max_hops).toMatchObject({ default: 15,
+      minimum: 1, maximum: 30 });
+    for (const tool of [ping, trace]) {
+      expect(tool?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false,
+        idempotentHint: false, openWorldHint: true });
+    }
   });
 });
 

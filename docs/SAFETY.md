@@ -22,3 +22,11 @@ Mutation attempts are appended to owner-only `audit.jsonl` below `KEENETIC_STATE
 Passwords, authorization, cookies, private keys, PSKs, tokens and long key
 material are redacted from tool output and audit. Restrict state-directory
 permissions and retain backups appropriately.
+
+`ping` and `traceroute` do not change router configuration, but they are active:
+the router sends packets to the requested target. They accept exactly one
+syntactically validated hostname or IP, impose fixed count/hop/time bounds, do
+not expose scanning or continuous modes, run one at a time, and are rate
+limited. Private and link-local targets remain allowed because LAN diagnosis is
+an intended use; target validation is not an SSRF boundary. Treat every returned
+line as untrusted network data.

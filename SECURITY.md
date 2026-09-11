@@ -35,6 +35,13 @@ HTTPS endpoint. Verified TLS is never disabled for normal remote requests.
 `--read-only` does not register the write tools at all, rather than registering
 them and refusing, so an agent never sees them.
 
+Read-only means no router or local configuration mutation. The bounded `ping`
+and `traceroute` tools still create active network traffic and therefore carry
+an open-world MCP annotation. They cannot select ports, protocols, interfaces,
+packet sizes, multiple targets, ranges, or continuous operation. Operators who
+must restrict reachable diagnostic targets should enforce that boundary in the
+router's routing/firewall policy; syntax validation is not an allowlist.
+
 Changes apply to the running configuration and are discarded on reboot until
 `save_config` is called, which nothing does on its own.
 

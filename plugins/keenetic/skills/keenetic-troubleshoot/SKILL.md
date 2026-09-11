@@ -53,6 +53,10 @@ If the default route points at a VPN tunnel rather than the physical WAN, and
 that tunnel is down, the internet is unreachable even though the provider is
 fine. That is a common cause and easy to miss.
 
+After passive state identifies a concrete target worth testing, use `ping` for
+a small router-originated reachability/latency check or `traceroute` for its
+bounded path. Never fan these tools across guessed hosts or address ranges.
+
 **3. DNS**
 
 ```

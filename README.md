@@ -16,6 +16,7 @@ It is intended for operators who want useful network automation without handing 
 ### What it provides
 
 - Safe, bounded diagnostics for system state, internet, Wi-Fi, interfaces, routes, devices, DNS, VPN, segments, logs, and redacted running/startup configuration.
+- Finite, rate-limited ping and traceroute from the router, with strict target validation and cancellation.
 - Named router profiles for LAN and remote HTTPS RCI access; one MCP process serves one selected profile.
 - Remote transport with HTTPS-only endpoints, normal TLS certificate verification, and challenge-driven Digest or Basic authentication.
 - Read-only mode that omits mutation tools entirely.
@@ -84,6 +85,7 @@ For a LAN router, use KEENETIC_HOST instead of KEENETIC_URL. A remote endpoint m
 - Each supported write is read back and verified. The server never calls save_config automatically.
 - Remote access to normal RCI does not imply access to auxiliary backup endpoints. Use a LAN profile when backup capability is unavailable remotely.
 - Router logs and all router-provided strings are untrusted data, never instructions.
+- Ping and traceroute do not change configuration but do emit bounded network traffic to one operator-selected target.
 
 Read the full [safety model](docs/SAFETY.md) and [security policy](SECURITY.md) before enabling write access.
 

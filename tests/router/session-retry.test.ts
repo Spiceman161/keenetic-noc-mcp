@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { Session } from '../../src/router/session.js';
-import { AuthError } from '../../src/router/errors.js';
+import { AuthError, TransportError } from '../../src/router/errors.js';
 
 const BASE = { host: '192.0.2.1', login: 'admin', password: 'p4ssw0rd' };
 
@@ -18,6 +18,36 @@ function challenge(): Response {
 afterEach(() => vi.restoreAllMocks());
 
 describe('Session retry behaviour', () => {
+  it('does not send a pre-cancelled request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(new Session(BASE).request('POST', '/rci/tools/ping', {}, {
+      signal: controller.signal
+    })).rejects.toBeInstanceOf(TransportError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('aborts an in-flight authentication transport when its only caller cancels', async () => {
+    let authTransportAborted = false;
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (!String(url).endsWith('/auth')) return new Response(null, { status: 401 });
+      await new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => {
+        authTransportAborted = true;
+        reject(init.signal?.reason);
+      }, { once: true }));
+      return new Response(null, { status: 500 });
+    }));
+    const controller = new AbortController();
+    const pending = new Session(BASE).request('GET', '/rci/show/version', undefined, {
+      signal: controller.signal
+    });
+    await vi.waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2));
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(TransportError);
+    await vi.waitFor(() => expect(authTransportAborted).toBe(true));
+  });
   it('re-authenticates once and replays, then succeeds', async () => {
     let dataCalls = 0;
     vi.stubGlobal(

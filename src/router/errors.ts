@@ -98,3 +98,18 @@ export class ValidationError extends KeeneticError {
     this.finalize(cause);
   }
 }
+
+export class ResourceError extends KeeneticError {
+  readonly guidance = 'Wait for the current active diagnostic or rate window to finish, then retry.';
+
+  constructor(cause: string) {
+    super(cause);
+    this.finalize(cause);
+  }
+}
+
+export class ActiveDiagnosticUncertainError extends ResourceError {
+  constructor() {
+    super('The active diagnostic failed and router-side cancellation could not be confirmed.');
+  }
+}

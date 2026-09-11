@@ -358,6 +358,37 @@ DoT rows under `proxy-tls.server-tls[]` and DoH rows under
 rows and 2/2/0/0 DoH rows. Values and proxy-generated configuration/statistic
 strings were not retained.
 
+## Active diagnostic jobs
+
+Active command evidence was measured through remote KeenDNS on Viva (KN-1912),
+KeeneticOS 5.1.3, on 2026-09-11. These are finite continued RCI jobs, not
+configuration commands and not `POST /rci/` command-dispatch trees:
+
+| Operation | Start request |
+|---|---|
+| IPv4 ping | `POST /rci/tools/ping` with `host`, `packetsize: 84`, and finite `count` |
+| IPv6 ping | `POST /rci/tools/ping6` with the same fields |
+| traceroute | `POST /rci/tools/traceroute` with `host`, `port: 33434`, `packetsize: 52`, finite `max-ttl`, and `type: udp` |
+
+The start and later `GET` polls return `{message: string[], continued: true}`;
+completion is an empty object. `DELETE` on the same path is the Web UI's native
+cancel operation. A one-packet ping and a one-hop trace both terminated without
+an explicit cancel. Start requests must never be retried after an ambiguous
+transport failure because doing so would emit the diagnostic twice.
+On a cold remote session, authentication is first discovered with one
+non-retried `GET /rci/show/version`; the active POST itself is never shared with
+unrelated callers.
+
+The continued-job deadline is capped by the configured session timeout as well
+as the tool limit. Caller cancellation and that deadline interrupt remote retry
+backoff before native DELETE cleanup. A deadline after one or more chunks is a
+bounded partial result; malformed non-empty terminal objects remain RCI errors.
+
+Only sanitized shapes, counts, durations, and the placeholder command forms
+above were retained. Live targets, resolved addresses, hop addresses, and raw
+responses were discarded. No active DNS lookup RCI job was found in the
+KeeneticOS 5.1.3 RCI/Web UI surface, so `dns_lookup` is not implemented.
+
 The targeted `dns-proxy` configuration response exposes `tls.upstream[]`,
 `https.upstream[]`, and `route[]`. The measured response contained three DoT,
 two DoH, and three DNS route rows. `ip/name-server` is an array of objects with

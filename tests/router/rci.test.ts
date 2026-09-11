@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { Rci, collectStatuses } from '../../src/router/rci.js';
-import { RciError } from '../../src/router/errors.js';
+import { AuthError, RciError } from '../../src/router/errors.js';
 import { Session } from '../../src/router/session.js';
 
 // A Response body can only be read once, so each call must get a fresh instance.
@@ -116,6 +116,150 @@ describe('Rci.post', () => {
     await expect(rci.post({ show: { log: {} } }, 20)).rejects.toMatchObject({
       code: 'response-too-large'
     });
+  });
+});
+
+describe('Rci.runContinued', () => {
+  it('starts once, polls bounded chunks, and returns accumulated messages', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['started'], continued: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['reply'], continued: true })))
+      .mockResolvedValueOnce(new Response('{}'));
+    const result = await new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024, { timeoutMs: 5_000 });
+    expect(result).toMatchObject({ messages: ['started', 'reply'], polls: 2,
+      termination: 'completed', effectiveTimeoutMs: 5_000 });
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'GET']);
+  });
+
+  it('sends the native DELETE cancellation after an active job fails', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['started'], continued: true })))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024, { timeoutMs: 5_000 }))
+      .rejects.toThrow('offline');
+    expect(request.mock.calls.at(-1)?.slice(0, 2)).toEqual(['DELETE', '/rci/tools/ping']);
+  });
+
+  it('preserves a deterministic start HTTP error without issuing DELETE', async () => {
+    const request = vi.fn().mockResolvedValue(new Response('{}', { status: 404 }));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024))
+      .rejects.toMatchObject({ code: '404' });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { status: 'error', code: 'bad', ident: 'tool' },
+    { wrapper: { status: [{ status: 'error', code: 'bad', ident: 'tool' }] } }
+  ])('preserves a deterministic start RCI rejection without DELETE', async payload => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload)));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024))
+      .rejects.toMatchObject({ code: 'bad' });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it('preserves a deterministic start authentication error without issuing DELETE', async () => {
+    const auth = new AuthError('credentials rejected');
+    const request = vi.fn().mockRejectedValue(auth);
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024)).rejects.toBe(auth);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it('attempts cleanup when authentication fails after the start was acknowledged', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ continued: true })))
+      .mockRejectedValueOnce(new AuthError('session expired'))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024)).rejects.toBeInstanceOf(AuthError);
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'DELETE']);
+  });
+
+  it('attempts cleanup when an RCI rejection arrives after the start', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ continued: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'error', code: 'bad' })))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024))
+      .rejects.toMatchObject({ code: 'bad' });
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'DELETE']);
+  });
+
+  it('does not poll after a chunk exhausts the aggregate input budget', async () => {
+    const first = JSON.stringify({ message: ['reply'], continued: true });
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(first))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, Buffer.byteLength(first)))
+      .rejects.toMatchObject({ code: 'response-too-large' });
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
+  });
+
+  it('reports uncertain state when native DELETE cancellation fails', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['started'], continued: true })))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('cancel failed'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024, { timeoutMs: 5_000 }))
+      .rejects.toMatchObject({ name: 'ActiveDiagnosticUncertainError' });
+  });
+
+  it.each([
+    { status: 'error', code: 'cancel-failed' },
+    { wrapper: { status: [{ status: 'error', code: 'cancel-failed' }] } },
+    { unexpected: true }
+  ])('treats an unproven HTTP-success DELETE payload as uncertain', async payload => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ continued: true })))
+      .mockRejectedValueOnce(new Error('poll failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload)));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024))
+      .rejects.toMatchObject({ name: 'ActiveDiagnosticUncertainError' });
+  });
+
+  it('rejects malformed chunks instead of reporting success', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: { private: true } })))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024))
+      .rejects.toMatchObject({ code: 'unexpected-response' });
+  });
+
+  it('rejects a non-empty unknown terminal object', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ unexpected: true })))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024))
+      .rejects.toMatchObject({ code: 'unexpected-response' });
+  });
+
+  it('uses the session ceiling for the whole job and preserves partial timeout output', async () => {
+    vi.useFakeTimers();
+    try {
+      const request = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['reply'], continued: true })))
+        .mockResolvedValueOnce(new Response('{}'));
+      const session = { request, effectiveTimeoutMs: () => 100 };
+      const pending = new Rci(session).runContinued('tools/ping',
+        { host: '192.0.2.1', packetsize: 84, count: 1 }, 1024, { timeoutMs: 5_000 });
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(pending).resolves.toMatchObject({ messages: ['reply'], termination: 'timeout',
+        effectiveTimeoutMs: 100 });
+      expect(request.mock.calls.at(-1)?.[0]).toBe('DELETE');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

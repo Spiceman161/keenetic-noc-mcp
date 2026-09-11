@@ -1,3 +1,4 @@
+import type { ServerContext } from '@modelcontextprotocol/server';
 import { KeeneticError } from '../router/errors.js';
 import type { BackupGuard } from '../router/backup.js';
 import type { KeeneticClient } from '../router/client.js';
@@ -61,11 +62,11 @@ export function fail(error: unknown): ToolResult {
 
 /** Wraps a handler so it can never reject - the SDK expects a result, not a throw. */
 export function guard<A>(
-  handler: (args: A) => Promise<ToolResult>
-): (args: A) => Promise<ToolResult> {
-  return async (args: A) => {
+  handler: (args: A, context: ServerContext) => Promise<ToolResult>
+): (args: A, context: ServerContext) => Promise<ToolResult> {
+  return async (args: A, context: ServerContext) => {
     try {
-      return await handler(args);
+      return await handler(args, context);
     } catch (error) {
       return fail(error);
     }

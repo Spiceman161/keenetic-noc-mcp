@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { AuthError, RemoteCapabilityError, TransportError } from './errors.js';
 import { redactText } from '../security/redact.js';
+import type { RciRequestControls } from './rci.js';
 
 export interface RemoteSessionOptions {
   endpoint: string; login: string; password: string; routerId: string;
@@ -69,41 +70,73 @@ export function digestAuthorization(opts: {
 
 export class RemoteSession {
   private authorization: AuthorizationState | null = null;
-  private handshake: Promise<Response | null> | null = null;
+  private handshake: {
+    promise: Promise<Response | null>;
+    controller: AbortController;
+    waiters: number;
+    settled: boolean;
+  } | null = null;
   private rciAccessProven = false;
   constructor(private readonly opts: RemoteSessionOptions) {}
 
-  async request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
+  effectiveTimeoutMs(requestedMs: number): number {
+    return Math.min(this.opts.timeoutMs ?? 10_000, requestedMs);
+  }
+
+  async request(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, controls: RciRequestControls = {}): Promise<Response> {
     const base = new URL(this.opts.endpoint);
     const url = path === '/rci/' ? base : new URL(path, base.origin);
-    const deadline = this.now() + (this.opts.timeoutMs ?? 10_000);
+    const deadline = this.now() + this.effectiveTimeoutMs(
+      controls.timeoutMs ?? Number.POSITIVE_INFINITY
+    );
 
     if (this.authorization === null) {
       const existing = this.handshake;
       if (existing) {
-        await this.withinDeadline(existing, deadline, method, url);
+        await this.waitForHandshake(existing, deadline, method, url, controls.signal);
       } else {
-        const handshake = this.discoverAuthorization(method, url, body, deadline);
-        this.handshake = handshake;
-        try {
-          const direct = await this.withinDeadline(handshake, deadline, method, url);
-          if (direct) return this.classify(direct, method, url);
-        } finally {
-          if (this.handshake === handshake) this.handshake = null;
-        }
+        const controller = new AbortController();
+        const sharedDeadline = this.now() + (this.opts.timeoutMs ?? 10_000);
+        const discoveryIsOperational = method === 'GET';
+        const discoveryUrl = discoveryIsOperational
+          ? url
+          : new URL('/rci/show/version', base.origin);
+        const flight = { promise: Promise.resolve<Response | null>(null), controller,
+          waiters: 0, settled: false };
+        flight.promise = this.discoverAuthorization(discoveryIsOperational ? method : 'GET',
+          discoveryUrl, discoveryIsOperational ? body : undefined, sharedDeadline,
+          controller.signal, discoveryIsOperational).finally(() => {
+          flight.settled = true;
+          if (this.handshake === flight) this.handshake = null;
+        });
+        this.handshake = flight;
+        const direct = await this.waitForHandshake(flight, deadline, method, url, controls.signal);
+        if (direct && discoveryIsOperational) return this.classify(direct, method, url);
       }
     }
 
-    let response = await this.send(method, url, body, deadline);
+    let response = await this.send(method, url, body, deadline, true, controls.signal);
     if (response.status === 401) {
       this.acceptChallenge(response, method, url);
-      response = await this.send(method, url, body, deadline);
+      response = await this.send(method, url, body, deadline, true, controls.signal);
     }
     return this.classify(response, method, url);
   }
 
-  private async discoverAuthorization(method: string, url: URL, body: unknown, deadline: number): Promise<Response | null> {
-    const response = await this.send(method, url, body, deadline, false);
+  private async waitForHandshake(flight: NonNullable<RemoteSession['handshake']>, deadline: number,
+    method: string, url: URL, signal?: AbortSignal): Promise<Response | null> {
+    flight.waiters += 1;
+    try {
+      return await this.withinDeadline(flight.promise, deadline, method, url, signal);
+    } finally {
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled) flight.controller.abort();
+    }
+  }
+
+  private async discoverAuthorization(method: string, url: URL, body: unknown, deadline: number,
+    signal?: AbortSignal, allowRetry = true): Promise<Response | null> {
+    const response = await this.send(method, url, body, deadline, false, signal, allowRetry);
     if (response.status !== 401) {
       this.authorization = { kind: 'none' };
       return response;
@@ -123,10 +156,11 @@ export class RemoteSession {
     else throw this.authError('HTTP 401 without a supported Digest or Basic challenge', method, url);
   }
 
-  private async send(method: string, url: URL, body: unknown, deadline: number, authenticate = true): Promise<Response> {
+  private async send(method: string, url: URL, body: unknown, deadline: number, authenticate = true,
+    signal?: AbortSignal, allowRetry = true): Promise<Response> {
     // A failed transport does not tell us whether the router applied a POST.
     // Retry only GET and the known read-only `show` dispatcher form.
-    const attempts = retryable(method, body) ? this.opts.attempts ?? 5 : 1;
+    const attempts = allowRetry && retryable(method, body) ? this.opts.attempts ?? 5 : 1;
     const authorization = authenticate ? this.authorizationHeader(method, url) : null;
     for (let attempt = 1; ; attempt++) {
       const remaining = deadline - this.now();
@@ -137,17 +171,35 @@ export class RemoteSession {
       try {
         return await (this.opts.fetch ?? fetch)(url, { method, headers,
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(Math.max(1, Math.ceil(remaining))), redirect: 'manual' });
+          signal: signal === undefined
+            ? AbortSignal.timeout(Math.max(1, Math.ceil(remaining)))
+            : AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.ceil(remaining)))]),
+          redirect: 'manual' });
       } catch (cause) {
+        if (signal?.aborted) throw this.transportError('request cancelled', method, url);
         if (deadline <= this.now()) throw this.transportError('request deadline exceeded', method, url);
         if (attempt >= attempts) throw this.transportError(`failed after ${attempts} attempts: ${redactText((cause as Error).message)}`, method, url);
         const base = 1000 * 2 ** (attempt - 1);
         const delay = base * (1 + (this.opts.random ?? Math.random)() * 0.25);
         const left = deadline - this.now();
         if (delay >= left) throw this.transportError('request deadline exceeded during retry backoff', method, url);
-        await (this.opts.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(delay);
+        await this.retryDelay(delay, signal, method, url);
       }
     }
+  }
+
+  private async retryDelay(ms: number, signal: AbortSignal | undefined,
+    method: string, url: URL): Promise<void> {
+    if (signal?.aborted) throw this.transportError('request cancelled during retry backoff', method, url);
+    const sleeper = (this.opts.sleep ?? (delayMs => new Promise(resolve => setTimeout(resolve, delayMs))))(ms);
+    if (!signal) return sleeper;
+    await new Promise<void>((resolve, reject) => {
+      const abort = (): void => reject(this.transportError(
+        'request cancelled during retry backoff', method, url
+      ));
+      signal.addEventListener('abort', abort, { once: true });
+      sleeper.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
   }
 
   private authorizationHeader(method: string, url: URL): string | null {
@@ -160,10 +212,12 @@ export class RemoteSession {
       cnonce: state.cnonce, nonceCount: state.nonceCount });
   }
 
-  private async withinDeadline<T>(promise: Promise<T>, deadline: number, method: string, url: URL): Promise<T> {
+  private async withinDeadline<T>(promise: Promise<T>, deadline: number, method: string, url: URL,
+    signal?: AbortSignal): Promise<T> {
     const remaining = deadline - this.now();
     if (remaining <= 0) throw this.transportError('request deadline exceeded while waiting for authentication', method, url);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
     try {
       return await Promise.race([
         promise,
@@ -171,10 +225,15 @@ export class RemoteSession {
           timer = setTimeout(() => reject(this.transportError(
             'request deadline exceeded while waiting for authentication', method, url
           )), remaining);
+          if (signal) {
+            abort = () => reject(this.transportError('request cancelled while waiting for authentication', method, url));
+            signal.addEventListener('abort', abort, { once: true });
+          }
         })
       ]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      if (signal && abort) signal.removeEventListener('abort', abort);
     }
   }
 

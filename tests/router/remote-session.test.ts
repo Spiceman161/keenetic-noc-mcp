@@ -45,6 +45,47 @@ describe('remote Digest authentication', () => {
     expect(fetch.mock.calls[2]![1].headers.authorization).toContain('uri="/rci/show/system"');
   });
 
+  it('keeps a shared initial handshake alive when one caller cancels', async () => {
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => challenge)
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+    const session = new RemoteSession({ ...opts, fetch, attempts: 1 });
+    const controller = new AbortController();
+    const first = session.request('GET', '/rci/show/version', undefined, {
+      signal: controller.signal
+    });
+    const second = session.request('GET', '/rci/show/system');
+    controller.abort();
+    await expect(first).rejects.toBeInstanceOf(TransportError);
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5'
+    } }));
+    await expect(second).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('never shares a cold active POST as the authorization-discovery flight', async () => {
+    let releaseDiscovery!: (response: Response) => void;
+    const discovery = new Promise<Response>(resolve => { releaseDiscovery = resolve; });
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => discovery)
+      .mockResolvedValue(new Response('{}'));
+    const session = new RemoteSession({ ...opts, fetch, attempts: 1 });
+    const controller = new AbortController();
+    const active = session.request('POST', '/rci/tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, { signal: controller.signal });
+    const passive = session.request('GET', '/rci/show/system');
+    expect(fetch.mock.calls[0]![0].toString()).toContain('/rci/show/version');
+    controller.abort();
+    await expect(active).rejects.toBeInstanceOf(TransportError);
+    releaseDiscovery(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5'
+    } }));
+    await expect(passive).resolves.toMatchObject({ status: 200 });
+    expect(fetch.mock.calls.some(call => call[1].method === 'POST')).toBe(false);
+  });
+
   it('matches the RFC 2617 MD5 example', () => {
     const challenge = parseChallenges('Digest realm="testrealm@host.com", qop="auth", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41"')[0]!;
     const value = digestAuthorization({ challenge, username: 'Mufasa', password: 'Circle Of Life', method: 'GET', uri: '/dir/index.html', cnonce: '0a4f113b', nonceCount: 1 });
@@ -95,13 +136,78 @@ describe('remote failure policy', () => {
   });
 
   it('does not retry a mutating POST after an ambiguous transport failure', async () => {
-    const fetch = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('{}'))
+      .mockRejectedValueOnce(new Error('ECONNRESET'));
     const sleep = vi.fn().mockResolvedValue(undefined);
     await expect(new RemoteSession({ ...opts, fetch, sleep }).request(
       'POST', '/rci/', { system: { configuration: { save: {} } } }
     )).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0]![0].toString()).toContain('/rci/show/version');
+    expect(fetch.mock.calls[1]![1].method).toBe('POST');
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('does not retry an active diagnostic POST after an ambiguous transport failure', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('{}'))
+      .mockRejectedValueOnce(new Error('ECONNRESET'));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    await expect(new RemoteSession({ ...opts, fetch, sleep }).request(
+      'POST', '/rci/tools/ping', { host: '192.0.2.1', packetsize: 84, count: 1 }
+    )).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0]![0].toString()).toContain('/rci/show/version');
+    expect(fetch.mock.calls[1]![1].method).toBe('POST');
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('passes caller cancellation to the initial HTTP request', async () => {
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      await new Promise((_resolve, reject) => init?.signal?.addEventListener('abort',
+        () => reject(init.signal?.reason), { once: true }));
+      return new Response('{}');
+    });
+    const controller = new AbortController();
+    const pending = new RemoteSession({ ...opts, fetch }).request('POST', '/rci/tools/ping',
+      { host: '192.0.2.1', packetsize: 84, count: 1 }, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('does not retry a GET after caller cancellation aborts fetch', async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      await new Promise((_resolve, reject) => init?.signal?.addEventListener('abort',
+        () => reject(init.signal?.reason), { once: true }));
+      return new Response('{}');
+    });
+    const controller = new AbortController();
+    const pending = new RemoteSession({ ...opts, fetch, sleep }).request(
+      'GET', '/rci/tools/ping', undefined, { signal: controller.signal }
+    );
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(TransportError);
     expect(fetch).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('interrupts retry backoff when the caller cancels', async () => {
+    let beginSleep!: () => void;
+    const sleeping = new Promise<void>(resolve => { beginSleep = resolve; });
+    const fetch = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const sleep = vi.fn(() => sleeping);
+    const controller = new AbortController();
+    const pending = new RemoteSession({ ...opts, fetch, sleep }).request(
+      'GET', '/rci/tools/ping', undefined, { signal: controller.signal }
+    );
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledOnce();
+    beginSleep();
   });
 
   it('uses one deadline for attempts and retry backoff', async () => {

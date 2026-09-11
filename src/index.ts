@@ -23,6 +23,7 @@ import { registerLogTools } from './tools/logs.js';
 import { registerVpnTools } from './tools/vpn.js';
 import { registerInternetDiagnosticTool } from './tools/diagnose-internet.js';
 import { registerDnsDiagnosticTool } from './tools/diagnose-dns.js';
+import { registerActiveDiagnosticTools } from './tools/active-diagnostics.js';
 import { loadLocalEnv, resolveVersion } from './version.js';
 import { createAuditWriter } from './security/audit.js';
 import { stateDir } from './router/backup.js';
@@ -39,6 +40,7 @@ export function createServer(ctx: ToolContext): McpServer {
   registerVpnTools(server, ctx);
   registerInternetDiagnosticTool(server, ctx);
   registerDnsDiagnosticTool(server, ctx);
+  registerActiveDiagnosticTools(server, ctx);
   registerLogTools(server, ctx);
   registerSegmentTools(server, { ...ctx, readOnly: true });
   registerConfigTools(server, ctx);
