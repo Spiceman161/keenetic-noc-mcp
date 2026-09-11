@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createConfigSmokeSummary, createDnsShapeSummary, createLogSmokeSummary } from '../../scripts/smoke-summary.js';
+import {
+  createConfigSmokeSummary,
+  createDeviceShapeSummary,
+  createDnsShapeSummary,
+  createLogSmokeSummary,
+  createUnavailableSmokeSummary
+} from '../../scripts/smoke-summary.js';
 
 describe('remote smoke summary', () => {
   it('retains only anonymous shapes and counts', () => {
@@ -96,5 +102,28 @@ describe('DNS smoke summary', () => {
     expect(fields.find(field => field.path.endsWith('<dynamic>.status'))).toMatchObject({ shape: 'mixed', values: ['up'] });
     expect(fields.find(field => field.path.endsWith('<dynamic>.protocol'))?.values).toEqual(['dot']);
     expect(JSON.stringify(summary)).not.toContain('private-profile-name');
+  });
+});
+
+describe('device smoke summary', () => {
+  it('retains the measured DHCP shape but no device values', () => {
+    const summary = createDeviceShapeSummary({ lease: [{ mac: '02:00:00:00:00:01',
+      ip: '192.0.2.5', hostname: 'private-host', name: 'private-name', via: 'PrivateBridge',
+      expires: 1200 }] });
+    const text = JSON.stringify(summary);
+    expect(text).toContain('lease[].expires');
+    expect(text).toContain('lease[].mac');
+    expect(text).not.toContain('192.0.2.5');
+    expect(text).not.toContain('private-host');
+    expect(text).not.toContain('PrivateBridge');
+  });
+
+  it('does not copy router-controlled failure codes', () => {
+    const error = Object.assign(new Error('private'), { code: 'token=private-device-value' });
+    expect(createUnavailableSmokeSummary(error)).toEqual({
+      status: 'unavailable', errorClass: 'Error', code: null
+    });
+    expect(createUnavailableSmokeSummary(Object.assign(new Error('missing'), { code: '404' })))
+      .toMatchObject({ code: '404' });
   });
 });

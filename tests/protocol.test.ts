@@ -11,6 +11,7 @@ const READ_TOOLS = [
   'rci_call',
   'diagnose_internet',
   'diagnose_dns',
+  'diagnose_device',
   'ping',
   'traceroute',
   'get_config_state',
@@ -151,6 +152,33 @@ describe('assembled server over MCP', () => {
     expect(diagnostic?.annotations?.readOnlyHint).toBe(true);
     expect((list?.inputSchema.properties as any)?.limit).toMatchObject({ default: 50, minimum: 1, maximum: 100 });
     expect(list?.annotations?.readOnlyHint).toBe(true);
+  });
+
+  it('advertises the device diagnostic contract as read-only', async () => {
+    const client = await connectedClient(true);
+    const { tools } = await client.listTools();
+    const diagnostic = tools.find(item => item.name === 'diagnose_device');
+    const alternatives = (diagnostic?.inputSchema.anyOf ?? diagnostic?.inputSchema.oneOf) as
+      | Array<{ required?: string[] }>
+      | undefined;
+    expect(alternatives?.map(value => value.required?.[0]).sort()).toEqual(['ip', 'mac', 'name']);
+    expect(diagnostic?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+  });
+
+  it('enforces the device selector alternatives over MCP', async () => {
+    const client = await connectedClient(true);
+    const empty = await client.callTool({ name: 'diagnose_device', arguments: {} });
+    const multiple = await client.callTool({ name: 'diagnose_device', arguments: {
+      mac: '02:00:00:00:00:01', ip: '192.0.2.5'
+    } });
+    const one = await client.callTool({ name: 'diagnose_device', arguments: { name: 'device-1' } });
+    expect(empty.isError).toBe(true);
+    expect(multiple.isError).toBe(true);
+    expect(one.isError).toBe(true);
+    const text = (result: typeof one): string => JSON.stringify(result.content);
+    expect(text(empty)).toMatch(/invalid.*argument/i);
+    expect(text(multiple)).toMatch(/invalid.*argument/i);
+    expect(text(one)).not.toMatch(/invalid.*argument/i);
   });
 
   it('advertises narrow active diagnostic contracts', async () => {

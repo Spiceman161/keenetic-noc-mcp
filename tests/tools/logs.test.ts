@@ -78,6 +78,13 @@ describe('log tools', () => {
     expect(text).not.toContain('02:00:00:00:00:01');
   });
 
+  it('rejects a blank device selector before reading the log dispatcher', async () => {
+    const setup = harness();
+    const result = await setup.handlers['get_logs_by_device']!({ device: '   ' });
+    expect(result.isError).toBe(true);
+    expect(setup.post).not.toHaveBeenCalled();
+  });
+
   it('combines device, interface, text and time filters without inspecting message text as a timestamp', () => {
     const entries = logEntries({ log: {
       '1': { timestamp: '2026-09-09T01:00:00Z', ident: 'Network', message: { message: 'Bridge0 linked 192.0.2.5' } },

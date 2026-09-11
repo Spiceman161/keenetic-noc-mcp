@@ -788,7 +788,11 @@ Do not add port scanning or arbitrary TCP probing in this slice.
 
 ## Slice B4 - Device-centric diagnostics
 
-**Progress:** Planned.
+**Progress:** Implemented in the current working diff. A read-only probe on the
+authorized `tupik` profile confirmed that `show/ip/dhcp/bindings` returns an
+object containing `lease[]` rows with `mac`, `ip`, `hostname`, `name`, `via`,
+and numeric-or-string `expires`. Only this sanitized shape was retained; no
+device value or raw response was stored.
 
 ### New tool
 

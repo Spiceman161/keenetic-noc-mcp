@@ -1,0 +1,20 @@
+{
+  "lease": [
+    {
+      "mac": "02:00:00:00:00:21",
+      "ip": "192.0.2.21",
+      "hostname": "host-1",
+      "name": "device-1",
+      "via": "Bridge0",
+      "expires": 1200
+    },
+    {
+      "mac": "02:00:00:00:00:22",
+      "ip": "192.0.2.22",
+      "hostname": "host-2",
+      "name": "device-2",
+      "via": "Bridge0",
+      "expires": "900"
+    }
+  ]
+}

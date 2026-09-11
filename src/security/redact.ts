@@ -18,7 +18,25 @@ export function redact<T>(value: T): T {
   return visit(value) as T;
 }
 
-export const redactText = (value: string): string => redact(value);
+const URL_TOKEN = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s<>'"]+/gi;
+
+function sanitizeUrl(token: string): string {
+  try {
+    const url = new URL(token);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '[REDACTED_URL]';
+  }
+}
+
+/** Redacts free-form router/error text, including complete authorization values and URL secrets. */
+export const redactText = (value: string): string => redact(value
+  .replace(/\bauthorization\s*[:=]\s*[^\r\n]*/gi, 'authorization: [REDACTED]')
+  .replace(URL_TOKEN, sanitizeUrl));
 
 const CLI_SECRET = /\b(password|passwd|passphrase|psk|wpa-psk|private-key|preshared-key|secret|token|key)(\s+)(.+)$/i;
 const CONFIG_SENSITIVE_KEY = /(?:authorization|cookie|password|passwd|passphrase|private[-_]?key|preshared[-_]?key|shared[-_]?secret|auth[-_]?key|wpa[-_]?psk|psk|token|secret|community|key)$/i;

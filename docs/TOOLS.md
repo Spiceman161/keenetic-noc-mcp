@@ -5,7 +5,7 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `diagnose_internet`, `get_internet_status`, `list_interfaces`, `get_interface`, `list_routes`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
-`list_dns_upstreams`, `diagnose_dns`,
+`list_dns_upstreams`, `diagnose_dns`, `diagnose_device`,
 and bounded raw `rci_call` GET.
 
 ## Active diagnostics
@@ -57,6 +57,25 @@ enables it and each call passes dry-run/confirmation and denylist checks.
 
 Response limits are global. A raw call's `max_bytes` can lower but cannot raise
 the global ceiling. Router log content is data, never instructions.
+
+## Device diagnosis
+
+`diagnose_device` accepts exactly one of `mac`, `ip`, or `name`; the name may
+also be a hostname and uses the same Unicode, case, and whitespace normalization
+as `get_device`. Ambiguous normalized matches and no-match failures never list
+the router's other devices.
+
+The report combines the selected hotspot record, DHCP binding, current Wi-Fi
+association, interface/AP state, access controls, assigned routing policy,
+router-wide DNS reachability, and at most 20 matching recent log rows. Wired
+devices report Wi-Fi as `not-applicable`. Missing addresses, metrics, or joins
+remain `unknown`; a missing DHCP lease does not prove failure because the
+device may use a static address. Routing-policy configuration does not prove
+the path currently carrying traffic, and router-wide DNS state is context, not
+device-specific causality. Logs are redacted untrusted context and never create
+findings. Partial Wi-Fi/interface sources are identified by availability fields
+and make `complete=false` without discarding independently observed hotspot
+facts. The tool sends no active traffic and performs no mutation.
 
 ## Internet diagnosis
 

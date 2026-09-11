@@ -2,21 +2,19 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { capList } from '../shape/budget.js';
 import { projectDevice } from '../shape/project.js';
+import {
+  hotspotHosts,
+  resolveDeviceRecord,
+  type HostRecord
+} from '../router/device-state.js';
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 import { describeWrite, verifiedWrite } from './write.js';
 
-type HostRecord = Record<string, unknown>;
-
-/** Name lookup is forgiving about display casing and spaces, but nothing else. */
-export function normalizeDeviceName(value: string): string {
-  return value.normalize('NFKC').toLowerCase().replace(/\s+/gu, '');
-}
+export { normalizeDeviceName } from '../router/device-state.js';
 
 async function fetchHosts(ctx: ToolContext): Promise<HostRecord[]> {
   const raw = await ctx.client.rci.get('show/ip/hotspot');
-  const container = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
-  const hosts = container['host'];
-  return Array.isArray(hosts) ? (hosts as HostRecord[]) : [];
+  return hotspotHosts(raw) ?? [];
 }
 
 /** Reads one row out of a config branch that stores hosts as a MAC-keyed array. */
@@ -131,31 +129,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
       }
 
       const hosts = await fetchHosts(ctx);
-      const wanted = mac?.toLowerCase();
-      let match = hosts.find(host => {
-        const hostMac = typeof host['mac'] === 'string' ? host['mac'].toLowerCase() : '';
-        if (wanted && hostMac === wanted) return true;
-        if (ip && host['ip'] === ip) return true;
-        if (name && (host['name'] === name || host['hostname'] === name)) return true;
-        return false;
-      });
-
-      if (!match && name) {
-        const wantedName = normalizeDeviceName(name);
-        const matches = hosts.filter(host =>
-          ['name', 'hostname'].some(field =>
-            typeof host[field] === 'string' && normalizeDeviceName(host[field]) === wantedName
-          )
-        );
-        if (matches.length > 1) {
-          return fail(
-            new Error(
-              'The normalized device name is ambiguous. Supply its exact IP or MAC address.'
-            )
-          );
-        }
-        match = matches[0];
-      }
+      const match = resolveDeviceRecord(hosts, { mac, ip, name });
 
       if (!match) {
         return fail(

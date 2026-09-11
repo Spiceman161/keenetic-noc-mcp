@@ -4,7 +4,13 @@ import { probeConfigCapabilities } from '../src/router/config-capabilities.js';
 import { AuthError, TransportError } from '../src/router/errors.js';
 import { filterLogEntries, resolveDeviceAliases, unwrapLogEntries } from '../src/tools/logs.js';
 import { loadRemoteSmokeCredentials } from './smoke-credentials.js';
-import { createConfigSmokeSummary, createDnsShapeSummary, createLogSmokeSummary } from './smoke-summary.js';
+import {
+  createConfigSmokeSummary,
+  createDeviceShapeSummary,
+  createDnsShapeSummary,
+  createLogSmokeSummary,
+  createUnavailableSmokeSummary
+} from './smoke-summary.js';
 
 async function main(): Promise<void> {
   const credentials = await loadRemoteSmokeCredentials(process.argv.slice(2), process.env);
@@ -26,9 +32,7 @@ async function main(): Promise<void> {
       return createDnsShapeSummary((await client.rci.getConfig(path, 128_000)).value);
     } catch (error) {
       if (error instanceof AuthError || error instanceof TransportError) throw error;
-      const code = typeof error === 'object' && error !== null && 'code' in error &&
-        typeof error.code === 'string' ? error.code : null;
-      return { status: 'unavailable', errorClass: error instanceof Error ? error.name : 'UnknownError', code };
+      return createUnavailableSmokeSummary(error);
     }
   };
   summary['dnsEvidence'] = {
@@ -60,6 +64,14 @@ async function main(): Promise<void> {
   if (device !== null) {
     const aliases = await resolveDeviceAliases(client.rci, device);
     deviceMatched = filterLogEntries(entries, { aliases }).length;
+  }
+  try {
+    const bindings = await client.rci.get('show/ip/dhcp/bindings', 256_000);
+    reads['show/ip/dhcp/bindings'] = 'passed';
+    summary['deviceEvidence'] = { dhcpBindings: createDeviceShapeSummary(bindings) };
+  } catch (error) {
+    if (error instanceof AuthError || error instanceof TransportError) throw error;
+    summary['deviceEvidence'] = { dhcpBindings: createUnavailableSmokeSummary(error) };
   }
 
   summary['logs'] = createLogSmokeSummary(entries, {

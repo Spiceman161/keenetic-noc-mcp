@@ -348,6 +348,15 @@ object.
 | `user` | accounts |
 | `components` | component settings |
 
+### Device diagnostic evidence status
+
+On the authorized `tupik` remote profile, KeeneticOS 5.1.3 exposed
+`show/ip/dhcp/bindings` as an object containing a `lease` array. Each measured
+row carried `mac`, `ip`, `hostname`, `name`, `via`, and `expires`; `expires`
+occurred as both a number and a string. The probe retained only these field
+names, shapes, row count, and response-size metadata. B4 joins a lease to the
+already resolved hotspot device by exact case-insensitive MAC only.
+
 ### DNS diagnostic evidence status
 
 `show/dns-proxy` and the targeted DNS configuration branches were verified

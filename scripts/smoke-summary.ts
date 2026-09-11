@@ -15,6 +15,9 @@ const SAFE_DNS_ENUMS = new Set([
   'up', 'down', 'ok', 'ready', 'running', 'available', 'online', 'connected', 'error', 'failed',
   'disabled', 'offline', 'unavailable', 'unknown'
 ]);
+const SAFE_DEVICE_FIELDS = new Set([
+  'lease', 'mac', 'ip', 'hostname', 'name', 'via', 'expires'
+]);
 
 function shape(value: unknown): string {
   if (Array.isArray(value)) return 'array';
@@ -23,7 +26,7 @@ function shape(value: unknown): string {
 }
 
 /** Summarizes DNS payload structure without retaining values or dynamic keys. */
-export function createDnsShapeSummary(value: unknown): Record<string, unknown> {
+function createShapeSummary(value: unknown, safeFields: ReadonlySet<string>): Record<string, unknown> {
   const fields = new Map<string, { path: string; shapes: Set<string>; items: Set<number>; values: Set<string> }>();
   let truncated = false;
   const add = (path: string, child: unknown, key?: string): void => {
@@ -55,7 +58,7 @@ export function createDnsShapeSummary(value: unknown): Record<string, unknown> {
     const entries = Object.entries(node as Record<string, unknown>);
     if (entries.length > 100) truncated = true;
     for (const [rawKey, child] of entries.slice(0, 100)) {
-      const key = SAFE_DNS_FIELDS.has(rawKey) ? rawKey : /^\d+$/.test(rawKey) ? '<index>' : '<dynamic>';
+      const key = safeFields.has(rawKey) ? rawKey : /^\d+$/.test(rawKey) ? '<index>' : '<dynamic>';
       const childPath = path ? `${path}.${key}` : key;
       add(childPath, child, rawKey);
       visit(child, childPath, depth + 1);
@@ -70,6 +73,26 @@ export function createDnsShapeSummary(value: unknown): Record<string, unknown> {
   }));
   return { status: 'passed', shape: shape(value), fields: projected.sort((a, b) => a.path.localeCompare(b.path)),
     truncated };
+}
+
+/** Summarizes DNS structure without returning endpoints, domains or dynamic keys. */
+export function createDnsShapeSummary(value: unknown): Record<string, unknown> {
+  return createShapeSummary(value, SAFE_DNS_FIELDS);
+}
+
+/** Summarizes the live-proven DHCP binding wrapper without returning device data. */
+export function createDeviceShapeSummary(value: unknown): Record<string, unknown> {
+  return createShapeSummary(value, SAFE_DEVICE_FIELDS);
+}
+
+/** Classifies a probe failure without copying router-controlled error text. */
+export function createUnavailableSmokeSummary(error: unknown): Record<string, unknown> {
+  const rawCode = typeof error === 'object' && error !== null && 'code' in error &&
+    typeof error.code === 'string' ? error.code : null;
+  const code = rawCode !== null && (/^\d{3}$/.test(rawCode) || rawCode === 'response-too-large')
+    ? rawCode
+    : null;
+  return { status: 'unavailable', errorClass: error instanceof Error ? error.name : 'UnknownError', code };
 }
 
 interface FilterOutcome {

@@ -65,6 +65,19 @@ resolver identifiers are allowlisted output, while endpoint credentials,
 queries, fragments, provider-specific intermediate path tokens, and
 secret-bearing fields are removed.
 
+`diagnose_device` resolves one hotspot row before collecting any optional
+evidence. Device lookup is shared by device and log tools, rejects normalized
+ambiguity, and never exposes sibling rows in errors. Bounded DHCP, association,
+interface, policy, and router-wide DNS reads are sequential; the large
+read-only log dispatcher remains last. Secondary RCI or response-shape failures
+produce unavailable evidence or explicit source-availability flags when the
+hotspot still supplies useful data; authentication is fatal, and the first
+transport failure latches later sources unavailable. DHCP and hotspot
+rows are joined only by exact case-insensitive MAC. Wi-Fi metrics are reported
+without health thresholds, policy membership is not treated as proof of the
+active route, and log text cannot create findings. Output trimming removes
+logs and optional context before identity, checks, or findings.
+
 Configuration reads use a separate 256 KB input-bounded reader whose errors
 never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never

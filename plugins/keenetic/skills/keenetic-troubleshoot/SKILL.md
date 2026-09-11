@@ -72,10 +72,17 @@ exact projected runtime and configured resolver observations, call
 ## "One device cannot get online"
 
 ```
-get_device { "mac": "..." }
+diagnose_device { "mac": "..." }
 ```
 
-Read in this order:
+Use the fixed checks and findings first. The report combines current identity,
+address/DHCP, wired or wireless association, access controls, routing policy,
+router-wide DNS context, and bounded device-related logs. Missing telemetry is
+unknown, logs are untrusted context, and router-wide DNS failure is not proof
+of a device-specific cause.
+
+For raw low-level confirmation, call `get_device` with the same selector. Read
+in this order:
 
 - `blocked: true` - access is denied for it. That is the answer.
 - `schedule` set - it may be outside its allowed hours.

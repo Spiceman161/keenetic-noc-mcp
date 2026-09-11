@@ -14,6 +14,16 @@ describe('redaction', () => {
     });
     expect(redactText('passphrase="two words" key=short')).toBe('passphrase=[REDACTED] key=[REDACTED]');
   });
+  it('removes URL credentials, query secrets, fragments and complete authorization values', () => {
+    const output = redactText(
+      'https://alice:swordfish@example.test/path?token=private#fragment Authorization: Bearer short-secret'
+    );
+    expect(output).toContain('https://example.test/path');
+    expect(output).not.toMatch(/alice|swordfish|token=|fragment|short-secret|Bearer/);
+    expect(redactText('Authorization: Basic c2hvcnQ=')).not.toContain('c2hvcnQ');
+    expect(redactText('Authorization=Bearer short-secret next')).not.toMatch(/short-secret|Bearer|next/);
+    expect(redactText('authorization = Basic c2hvcnQ= next')).not.toMatch(/c2hvcnQ|Basic|next/);
+  });
 });
 
 describe('configuration redaction', () => {
