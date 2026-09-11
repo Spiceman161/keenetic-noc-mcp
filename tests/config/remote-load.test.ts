@@ -12,6 +12,12 @@ describe('remote connection profile', () => {
   });
   it('selects remote mode from KEENETIC_URL', async () => {
     const config = await loadConfig([], { KEENETIC_URL: 'https://rci.example.test', KEENETIC_PASSWORD: 'test-only' });
-    expect(config).toMatchObject({ mode: 'remote', endpoint: 'https://rci.example.test/rci/', routerId: 'home' });
+    expect(config).toMatchObject({ mode: 'remote', endpoint: 'https://rci.example.test/rci/', routerId: 'home',
+      timeoutMs: 30_000 });
+  });
+  it('honours an explicit remote timeout', async () => {
+    const config = await loadConfig([], { KEENETIC_URL: 'https://rci.example.test',
+      KEENETIC_PASSWORD: 'test-only', KEENETIC_TIMEOUT_MS: '45000' });
+    expect(config.timeoutMs).toBe(45_000);
   });
 });

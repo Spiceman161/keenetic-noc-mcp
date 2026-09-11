@@ -1,9 +1,10 @@
 import { createRemoteClient } from '../src/router/client.js';
 import { normalizeRemoteUrl } from '../src/config/load.js';
 import { probeConfigCapabilities } from '../src/router/config-capabilities.js';
+import { AuthError, TransportError } from '../src/router/errors.js';
 import { filterLogEntries, resolveDeviceAliases, unwrapLogEntries } from '../src/tools/logs.js';
 import { loadRemoteSmokeCredentials } from './smoke-credentials.js';
-import { createConfigSmokeSummary, createLogSmokeSummary } from './smoke-summary.js';
+import { createConfigSmokeSummary, createDnsShapeSummary, createLogSmokeSummary } from './smoke-summary.js';
 
 async function main(): Promise<void> {
   const credentials = await loadRemoteSmokeCredentials(process.argv.slice(2), process.env);
@@ -14,10 +15,27 @@ async function main(): Promise<void> {
   const capabilities = await client.capabilities();
   reads['show/version'] = 'passed';
   summary['router'] = { model: capabilities.model, firmware: capabilities.firmware };
+  let dnsRuntime: unknown;
   for (const path of ['show/system', 'show/interface', 'show/internet/status', 'show/ip/route', 'show/dns-proxy']) {
-    await client.rci.get(path);
+    const value = await client.rci.get(path, path === 'show/dns-proxy' ? 128_000 : 256_000);
+    if (path === 'show/dns-proxy') dnsRuntime = value;
     reads[path] = 'passed';
   }
+  const dnsConfigShape = async (path: string): Promise<Record<string, unknown>> => {
+    try {
+      return createDnsShapeSummary((await client.rci.getConfig(path, 128_000)).value);
+    } catch (error) {
+      if (error instanceof AuthError || error instanceof TransportError) throw error;
+      const code = typeof error === 'object' && error !== null && 'code' in error &&
+        typeof error.code === 'string' ? error.code : null;
+      return { status: 'unavailable', errorClass: error instanceof Error ? error.name : 'UnknownError', code };
+    }
+  };
+  summary['dnsEvidence'] = {
+    runtime: createDnsShapeSummary(dnsRuntime),
+    dnsProxyConfig: await dnsConfigShape('dns-proxy'),
+    nameServerConfig: await dnsConfigShape('ip/name-server')
+  };
 
   function records(value: unknown): Array<Record<string, unknown>> {
     if (Array.isArray(value)) return value.flatMap(records);

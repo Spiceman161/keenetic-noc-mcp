@@ -5,7 +5,27 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `diagnose_internet`, `get_internet_status`, `list_interfaces`, `get_interface`, `list_routes`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
+`list_dns_upstreams`, `diagnose_dns`,
 and bounded raw `rci_call` GET.
+
+## DNS diagnosis
+
+`list_dns_upstreams` returns separate bounded observations from DNS proxy
+runtime state and the targeted `dns-proxy` and `ip/name-server` running
+configuration branches. Runtime and configuration rows are not merged unless
+firmware evidence provides a stable identity. Exact resolver addresses and TLS
+server names are returned when exposed, while URL credentials, query strings,
+fragments, provider-specific intermediate path tokens, secrets, and control
+characters are removed. Runtime rows include the measured proxy scope and port
+when KeeneticOS exposes them.
+
+`diagnose_dns` combines DNS proxy state, the current internet DNS reachability
+flag, targeted upstream configuration, deterministically resolvable routes and
+interfaces, and recent DNS-related logs. Configuration, reachability,
+encryption, routing, and resolver evidence remain separate. Configuring DoT,
+DoH, or DoH3 does not prove that TLS or the resolver is reachable. Logs are
+bounded untrusted context and never establish causality. The tool performs no
+active DNS query; active diagnostics are reserved for a later slice.
 
 Write mode additionally advertises `backup_config`, `set_interface_state`,
 `restart_interface`, and `save_config`. `backup_config` defaults to a preview,

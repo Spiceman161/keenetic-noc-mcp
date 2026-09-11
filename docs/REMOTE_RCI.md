@@ -56,7 +56,10 @@ failures are transport failures and receive at most five attempts. RCI status
 errors are deterministic and are not retried. Concurrent first requests share
 one authentication handshake. `KEENETIC_TIMEOUT_MS` is the deadline for the
 complete logical remote request, including handshake queueing, retry backoff,
-and every transport attempt; it is not a fresh timeout for each attempt.
+and every transport attempt; it is not a fresh timeout for each attempt. The
+default is 30 seconds for remote profiles (10 seconds for LAN connections),
+because bounded log reads through KeenDNS can legitimately take longer than
+10 seconds.
 
 During preflight, DNS output is limited to success and address count. TLS uses
 the system trust store and SNI, with certificate verification enabled. A

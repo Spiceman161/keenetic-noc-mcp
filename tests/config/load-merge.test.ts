@@ -9,7 +9,8 @@ describe('loadConfig precedence', () => {
     expect(cfg).toMatchObject({
       host: '198.51.100.1',
       login: 'stored-user',
-      password: 'stored-pass'
+      password: 'stored-pass',
+      timeoutMs: 10_000
     });
   });
 

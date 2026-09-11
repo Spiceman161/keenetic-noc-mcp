@@ -686,7 +686,15 @@ Return evidence plus deterministic findings, not an LLM-generated narrative insi
 
 ## Slice B2 - Deep DNS diagnostics
 
-**Progress:** Planned.
+**Progress:** Implemented in the current working diff. Remote read-only evidence
+on Viva (KN-1912), KeeneticOS 5.1.3 confirmed runtime DoT/DoH, targeted
+configuration, plain name-server, and interface-binding shapes. DoH3 and DNS
+route-binding semantics remain explicitly unverified. A complete MCP live
+diagnostic on profile `tupik` scanned the router's 4000-row log response
+(approximately 863 KiB as compact JSON), matched 128 DNS-related rows, and
+returned a bounded 20-row tail. The diagnostic input ceiling is 2 MB; remote
+profiles default to a 30-second logical-request deadline so this bounded read
+can complete through KeenDNS.
 
 ### Goal
 

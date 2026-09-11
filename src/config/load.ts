@@ -21,6 +21,8 @@ export interface StoredCredentials {
 }
 
 export const DEFAULT_MAX_RESPONSE_BYTES = 25_000;
+export const DEFAULT_LAN_TIMEOUT_MS = 10_000;
+export const DEFAULT_REMOTE_TIMEOUT_MS = 30_000;
 
 export function normalizeRemoteUrl(raw: string): string {
   const url = new URL(raw);
@@ -64,7 +66,8 @@ export async function loadConfig(
   const passwordFile = env['KEENETIC_PASSWORD_FILE'];
   const filePassword = passwordFile ? (await readFile(passwordFile, 'utf8')).trimEnd() : undefined;
   const password = env['KEENETIC_PASSWORD'] ?? filePassword ?? stored?.password;
-  const timeoutMs = Number.parseInt(env['KEENETIC_TIMEOUT_MS'] ?? '10000', 10);
+  const defaultTimeoutMs = mode === 'remote' ? DEFAULT_REMOTE_TIMEOUT_MS : DEFAULT_LAN_TIMEOUT_MS;
+  const timeoutMs = Number.parseInt(env['KEENETIC_TIMEOUT_MS'] ?? String(defaultTimeoutMs), 10);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('KEENETIC_TIMEOUT_MS must be a positive integer');
   const login = env['KEENETIC_USER'] ?? stored?.login ?? 'admin';
 

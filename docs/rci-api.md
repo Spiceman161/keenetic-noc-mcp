@@ -348,6 +348,29 @@ object.
 | `user` | accounts |
 | `components` | component settings |
 
+### DNS diagnostic evidence status
+
+`show/dns-proxy` and the targeted DNS configuration branches were verified
+read-only through remote KeenDNS on Viva (KN-1912), KeeneticOS 5.1.3, on
+2026-09-11. The runtime response is `proxy-status[]`; each proxy scope exposes
+DoT rows under `proxy-tls.server-tls[]` and DoH rows under
+`proxy-https.server-https[]`. The measured four scopes contained 3/3/1/1 DoT
+rows and 2/2/0/0 DoH rows. Values and proxy-generated configuration/statistic
+strings were not retained.
+
+The targeted `dns-proxy` configuration response exposes `tls.upstream[]`,
+`https.upstream[]`, and `route[]`. The measured response contained three DoT,
+two DoH, and three DNS route rows. `ip/name-server` is an array of objects with
+`address`, `domain`, and `interface`; eight rows were measured. DoH URLs can
+contain provider profile identifiers in intermediate path segments, so output
+keeps the origin and final operation segment only.
+
+The running configuration reader uses only the targeted `dns-proxy` and
+`ip/name-server` branches. DoT, DoH, plain name-server, and interface-binding
+forms above are live-proven. DoH3 and the semantics of `dns-proxy.route[]`
+remain unverified. No additional RCI DNS path or active resolver command is
+assumed.
+
 ## Prior work
 
 Existing open-source clients that implement the same handshake:

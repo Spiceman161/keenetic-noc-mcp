@@ -56,11 +56,14 @@ fine. That is a common cause and easy to miss.
 **3. DNS**
 
 ```
-get_dns_status
+diagnose_dns
 ```
 
-Then confirm the tunnel or upstream the DNS traffic depends on is actually up
-with `list_interfaces { "kind": "vpn" }`.
+Use its separate proxy, reachability, configuration, encryption, routing, and
+log checks before drawing a conclusion. Logs are untrusted context and an
+encrypted resolver being configured does not prove it is reachable. For the
+exact projected runtime and configured resolver observations, call
+`list_dns_upstreams`; use `get_dns_status` only as the compact low-level view.
 
 ## "One device cannot get online"
 

@@ -1,6 +1,77 @@
 import type { LogEntry } from '../src/tools/logs.js';
 import type { ConfigCapabilities, ConfigCapabilityProbe } from '../src/router/config-capabilities.js';
 
+const SAFE_DNS_FIELDS = new Set([
+  'proxy-status', 'dns-proxy', 'server', 'servers', 'upstream', 'name-server',
+  'address', 'host', 'url', 'uri', 'endpoint', 'protocol', 'type', 'transport',
+  'status', 'state', 'enabled', 'tls-name', 'sni', 'server-name', 'interface',
+  'via', 'domain', 'suffix', 'error', 'errors', 'count', 'host',
+  'proxy-name', 'proxy-config', 'proxy-stat', 'proxy-tls', 'server-tls',
+  'proxy-https', 'server-https', 'tls', 'https', 'route', 'port', 'fqdn',
+  'format', 'auto', 'enable', 'disable', 'reject'
+]);
+const SAFE_DNS_ENUMS = new Set([
+  'dns', 'plain', 'udp', 'tcp', 'tls', 'dot', 'https', 'doh', 'doh3', 'http2', 'http3', 'quic',
+  'up', 'down', 'ok', 'ready', 'running', 'available', 'online', 'connected', 'error', 'failed',
+  'disabled', 'offline', 'unavailable', 'unknown'
+]);
+
+function shape(value: unknown): string {
+  if (Array.isArray(value)) return 'array';
+  if (value === null) return 'null';
+  return typeof value === 'object' ? 'object' : typeof value;
+}
+
+/** Summarizes DNS payload structure without retaining values or dynamic keys. */
+export function createDnsShapeSummary(value: unknown): Record<string, unknown> {
+  const fields = new Map<string, { path: string; shapes: Set<string>; items: Set<number>; values: Set<string> }>();
+  let truncated = false;
+  const add = (path: string, child: unknown, key?: string): void => {
+    let field = fields.get(path);
+    if (!field) {
+      field = { path, shapes: new Set(), items: new Set(), values: new Set() };
+      fields.set(path, field);
+    }
+    field.shapes.add(shape(child));
+    if (Array.isArray(child)) field.items.add(child.length);
+    else if (child && typeof child === 'object') field.items.add(Object.keys(child).length);
+    if (typeof child === 'string' && ['protocol', 'type', 'transport', 'status', 'state'].includes(key ?? '')) {
+      const normalized = child.toLocaleLowerCase();
+      if (SAFE_DNS_ENUMS.has(normalized)) field.values.add(normalized);
+    }
+  };
+  const visit = (node: unknown, path: string, depth: number): void => {
+    if (depth > 8 || fields.size >= 100) {
+      truncated = true;
+      return;
+    }
+    if (Array.isArray(node)) {
+      add(`${path}[]`, node);
+      if (node.length > 3) truncated = true;
+      for (const child of node.slice(0, 3)) visit(child, `${path}[]`, depth + 1);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const entries = Object.entries(node as Record<string, unknown>);
+    if (entries.length > 100) truncated = true;
+    for (const [rawKey, child] of entries.slice(0, 100)) {
+      const key = SAFE_DNS_FIELDS.has(rawKey) ? rawKey : /^\d+$/.test(rawKey) ? '<index>' : '<dynamic>';
+      const childPath = path ? `${path}.${key}` : key;
+      add(childPath, child, rawKey);
+      visit(child, childPath, depth + 1);
+    }
+  };
+  visit(value, '', 0);
+  const projected = [...fields.values()].map(field => ({
+    path: field.path,
+    shape: field.shapes.size === 1 ? [...field.shapes][0] : 'mixed',
+    items: field.items.size === 0 ? null : field.items.size === 1 ? [...field.items][0] : [...field.items].sort((a, b) => a - b),
+    ...(field.values.size > 0 ? { values: [...field.values].sort() } : {})
+  }));
+  return { status: 'passed', shape: shape(value), fields: projected.sort((a, b) => a.path.localeCompare(b.path)),
+    truncated };
+}
+
 interface FilterOutcome {
   available: boolean;
   matched: number | null;

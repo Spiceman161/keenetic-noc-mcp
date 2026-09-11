@@ -52,6 +52,19 @@ Remote composite diagnosis does not request `/ci/startup-config.txt`; it keeps
 the saved-state comparison unknown without broadening the credentialed request
 surface.
 
+`diagnose_dns` follows the same sequential KeenDNS-safe collection model. It
+keeps proxy runtime, internet reachability, the `dns-proxy` and
+`ip/name-server` configuration branches, route/interface association, and log
+context in independent evidence slots. The two configuration branches share a
+256 KB ceiling and one failed branch cannot hide a successful sibling. The
+known read-only log dispatcher has a 2 MB input ceiling and its 4000-row live
+response is reduced to at most 20 matching DNS rows before output. Only an
+explicit upstream IP or interface can be associated with routing; hostnames,
+policy routing, and ambiguous equal-prefix routes remain unknown. Exact
+resolver identifiers are allowlisted output, while endpoint credentials,
+queries, fragments, provider-specific intermediate path tokens, and
+secret-bearing fields are removed.
+
 Configuration reads use a separate 256 KB input-bounded reader whose errors
 never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never

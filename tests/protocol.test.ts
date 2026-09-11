@@ -10,12 +10,14 @@ import { stubBackup } from './helpers/backup.js';
 const READ_TOOLS = [
   'rci_call',
   'diagnose_internet',
+  'diagnose_dns',
   'get_config_state',
   'get_connection_status',
   'get_device',
   'get_interface',
   'get_internet_status',
   'get_dns_status',
+  'list_dns_upstreams',
   'get_logs',
   'get_logs_by_device',
   'get_config_diff',
@@ -136,6 +138,17 @@ describe('assembled server over MCP', () => {
     const result = await client.callTool({ name: 'diagnose_internet', arguments: {} });
     const content = result.content as Array<{ type: string; text: string }>;
     expect(JSON.parse(content.map(part => part.text).join(''))).toMatchObject({ schemaVersion: 1 });
+  });
+
+  it('advertises the DNS diagnostic contracts as read-only', async () => {
+    const client = await connectedClient(true);
+    const { tools } = await client.listTools();
+    const diagnostic = tools.find(item => item.name === 'diagnose_dns');
+    const list = tools.find(item => item.name === 'list_dns_upstreams');
+    expect(diagnostic?.inputSchema).toMatchObject({ type: 'object', properties: {} });
+    expect(diagnostic?.annotations?.readOnlyHint).toBe(true);
+    expect((list?.inputSchema.properties as any)?.limit).toMatchObject({ default: 50, minimum: 1, maximum: 100 });
+    expect(list?.annotations?.readOnlyHint).toBe(true);
   });
 });
 
