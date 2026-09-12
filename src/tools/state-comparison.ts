@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import type { SnapshotListResult } from '../router/snapshot-store.js';
 import { ValidationError } from '../router/errors.js';
 import type { RouterSnapshotV1 } from '../shape/router-snapshot.js';
@@ -370,7 +370,7 @@ function normalizeTimestamp(value: string | undefined): string | null {
   return value === undefined ? null : new Date(value).toISOString();
 }
 
-export function registerStateComparisonTools(server: McpServer, ctx: ToolContext): void {
+export function registerStateComparisonTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool('compare_router_state', {
     title: 'Compare two stored router observations',
     description: 'Compares two locally stored privacy-minimized router observations without reading the live router, creating a snapshot, or claiming causality.',

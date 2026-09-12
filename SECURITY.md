@@ -25,10 +25,17 @@ piped or redirected input. For containers, prefer `KEENETIC_PASSWORD_FILE`;
 explicit environment configuration is compatible but does not merge with a
 saved profile.
 
-## What it does not do
+## Technical telemetry
 
-No telemetry. It connects only to the selected router LAN address or KeenDNS
-HTTPS endpoint. Verified TLS is never disabled for normal remote requests.
+MCP call telemetry is disabled by default. When explicitly enabled, it writes
+an owner-only local JSONL journal containing tool names, router profile IDs,
+timing, controlled error codes, argument shapes, result sizes, and truncation
+flags. It never stores argument values, result bodies, router configuration,
+exception text, credentials, LLM content, or token accounting. See
+[MCP call telemetry](docs/TELEMETRY.md).
+
+The server connects only to the selected router LAN address or KeenDNS HTTPS
+endpoint. Verified TLS is never disabled for normal remote requests.
 
 ## Reducing what it can do
 

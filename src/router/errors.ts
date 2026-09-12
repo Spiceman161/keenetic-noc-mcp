@@ -99,17 +99,28 @@ export class ValidationError extends KeeneticError {
   }
 }
 
+export type ResourceErrorCode =
+  | 'active_diagnostic_busy'
+  | 'active_diagnostic_rate_limited'
+  | 'active_diagnostic_uncertain'
+  | 'resource_unavailable';
+
 export class ResourceError extends KeeneticError {
   readonly guidance = 'Wait for the current active diagnostic or rate window to finish, then retry.';
+  readonly code: ResourceErrorCode;
 
-  constructor(cause: string) {
+  constructor(cause: string, code: ResourceErrorCode = 'resource_unavailable') {
     super(cause);
+    this.code = code;
     this.finalize(cause);
   }
 }
 
 export class ActiveDiagnosticUncertainError extends ResourceError {
   constructor() {
-    super('The active diagnostic failed and router-side cancellation could not be confirmed.');
+    super(
+      'The active diagnostic failed and router-side cancellation could not be confirmed.',
+      'active_diagnostic_uncertain'
+    );
   }
 }

@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import {
   deviceAliases,
   hotspotHosts,
@@ -180,7 +180,7 @@ export async function collectDeviceDiagnosticEvidence(
   };
 }
 
-export function registerDeviceDiagnosticTool(server: McpServer, ctx: ToolContext): void {
+export function registerDeviceDiagnosticTool(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'diagnose_device',
     {

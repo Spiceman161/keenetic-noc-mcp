@@ -12,6 +12,15 @@ MCP stdio -> tool registry -> projections / mutation orchestrator -> RCI client
                                                                -> remote HTTP auth transport
 ```
 
+When OBS-1 telemetry is enabled, the assembly root passes every tool module a
+single instrumented `registerTool` facade. It observes validated handler calls,
+uses `ToolContext.routerId` for attribution, and appends bounded metadata-only
+records to an owner-only JSONL file through an asynchronous serialized writer. It never sees
+or persists router result bodies. Writer failure is isolated from the handler
+result and any warning uses stderr because stdout carries MCP protocol data.
+The SDK validates schemas before invoking registered callbacks, so pre-handler
+schema rejection is outside this public instrumentation seam.
+
 The tool layer depends on an RCI client interface, not on either authentication
 mechanism. LAN mode keeps `/auth` challenge-response and cookie sessions. Remote
 mode sends requests to a normalized `https://.../rci/` URL and responds to

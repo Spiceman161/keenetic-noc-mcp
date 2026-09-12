@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { capList } from '../shape/budget.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
@@ -7,7 +7,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-export function registerNetworkTools(server: McpServer, ctx: ToolContext): void {
+export function registerNetworkTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'get_internet_status',
     {

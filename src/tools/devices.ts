@@ -1,5 +1,6 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
+import { GuardError, ValidationError } from '../router/errors.js';
 import { capList } from '../shape/budget.js';
 import { projectDevice } from '../shape/project.js';
 import {
@@ -41,7 +42,7 @@ async function operationalHost(ctx: ToolContext, mac: string): Promise<HostRecor
   return hosts.find(row => String(row['mac']).toLowerCase() === mac.toLowerCase());
 }
 
-export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
+export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'list_devices',
     {
@@ -125,7 +126,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
     },
     guard(async ({ mac, ip, name }): Promise<ToolResult> => {
       if (!mac && !ip && !name) {
-        return fail(new Error('Supply one of mac, ip or name to identify the device.'));
+        return fail(new ValidationError('Supply one of mac, ip or name to identify the device.'));
       }
 
       const hosts = await fetchHosts(ctx);
@@ -133,7 +134,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
 
       if (!match) {
         return fail(
-          new Error(
+          new ValidationError(
             'No device matched. Call list_devices to find its exact name, IP or MAC address.'
           )
         );
@@ -174,7 +175,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
         priority === undefined
       ) {
         return fail(
-          new Error(
+          new ValidationError(
             'Nothing to change. Supply at least one of name, access, policy, schedule or priority.'
           )
         );
@@ -184,7 +185,7 @@ export function registerDeviceTools(server: McpServer, ctx: ToolContext): void {
         ...(policy === undefined ? {} : { policy }), ...(schedule === undefined ? {} : { schedule }),
         ...(priority === undefined ? {} : { priority }) };
       if (dry_run !== false) return ok({ dryRun: true, planned, risk: 'high' }, ctx.maxResponseBytes);
-      if (!confirm) return fail(new Error('Real mutation requires confirm=true together with dry_run=false.'));
+      if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'));
 
       const snapshot = await ctx.backup.ensure();
       const applied: Record<string, unknown> = {};

@@ -1,5 +1,6 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
+import { ValidationError } from '../router/errors.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
 const VPN = /wireguard|ipsec|openvpn|l2tp|pptp|sstp|openconnect|vpn/i;
@@ -32,11 +33,11 @@ async function all(ctx: ToolContext): Promise<Array<Record<string, unknown>>> {
   return Object.entries(raw).filter(([name, value]) => VPN.test(`${name} ${record(value)['type'] ?? ''}`)).map(([name, value]) => projectVpn(name, value));
 }
 
-export function registerVpnTools(server: McpServer, ctx: ToolContext): void {
+export function registerVpnTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool('list_vpn', { title: 'List VPN interfaces', description: 'Compact status for VPN interfaces and WireGuard peers. Secrets are always redacted.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok({ vpn: await all(ctx) }, ctx.maxResponseBytes)));
   server.registerTool('get_vpn', { title: 'Get one VPN interface', description: 'Detailed projected state and protocol-specific runtime fields for one named VPN interface.', inputSchema: { name: z.string() }, annotations: READ_ONLY }, guard(async ({ name }) => {
     const found = (await all(ctx)).find(item => item['name'] === name);
-    if (!found) throw new Error(`VPN interface "${name}" was not found. Call list_vpn.`);
+    if (!found) throw new ValidationError(`VPN interface "${name}" was not found. Call list_vpn.`);
     return ok(found, ctx.maxResponseBytes);
   }));
 }

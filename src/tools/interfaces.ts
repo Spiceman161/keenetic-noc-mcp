@@ -1,10 +1,10 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { capList } from '../shape/budget.js';
 import { projectInterface } from '../shape/project.js';
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 import { describeWrite, verifiedWrite } from './write.js';
-import { GuardError, VerificationError } from '../router/errors.js';
+import { GuardError, KeeneticError, VerificationError } from '../router/errors.js';
 
 type InterfaceKind = 'all' | 'wan' | 'lan' | 'wifi' | 'vpn' | 'bridge';
 
@@ -46,7 +46,7 @@ function matchesKind(id: string, record: Record<string, unknown>, kind: Interfac
   }
 }
 
-export function registerInterfaceTools(server: McpServer, ctx: ToolContext): void {
+export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'list_interfaces',
     {
@@ -111,6 +111,7 @@ export function registerInterfaceTools(server: McpServer, ctx: ToolContext): voi
       try {
         return ok(await readInterface(ctx, name), ctx.maxResponseBytes);
       } catch (error) {
+        if (error instanceof KeeneticError) return fail(error);
         return fail(
           new Error(
             `Could not read interface "${name}": ${(error as Error).message} ` +

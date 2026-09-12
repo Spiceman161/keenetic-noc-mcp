@@ -22,6 +22,7 @@ It is intended for operators who want useful network automation without handing 
 - Read-only mode that omits mutation tools entirely.
 - Guarded changes: preview by default, explicit confirmation, backup before the first write, read-back verification, and separate persistence with save_config.
 - Centralized redaction in tool responses, errors, and audit records. Passwords are not accepted in command-line arguments.
+- Optional owner-only MCP call telemetry for tool frequency, latency, failures, and truncation, without argument values or result bodies.
 
 Keenetic and Netcraze are trademarks of their respective owners. This independent project is not affiliated with or endorsed by either company.
 
@@ -100,6 +101,7 @@ For a LAN router, use KEENETIC_HOST instead of KEENETIC_URL. A remote endpoint m
 - Router logs and all router-provided strings are untrusted data, never instructions.
 - Ping and traceroute do not change configuration but do emit bounded network traffic to one operator-selected target.
 - The MCP server does not create state snapshots automatically. `router snapshot` is a separate, explicit CLI operation that writes owner-only local state.
+- MCP call telemetry is disabled by default. See [Telemetry](docs/TELEMETRY.md) before enabling its local JSONL journal.
 
 Read the full [safety model](docs/SAFETY.md) and [security policy](SECURITY.md) before enabling write access.
 
@@ -133,6 +135,7 @@ run a live mutation as part of a test or smoke check.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Remote RCI setup](docs/REMOTE_RCI.md)
 - [Multi-router clients](docs/MULTI_ROUTER.md)
+- [MCP call telemetry](docs/TELEMETRY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security reporting](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
@@ -155,6 +158,7 @@ Keenetic NOC MCP - ориентированный на безопасность 
 - Режим только для чтения, в котором инструменты изменения вообще не регистрируются.
 - Защищённые изменения: сначала предварительный просмотр, затем явное подтверждение, резервная копия перед первой записью, проверка чтением и отдельное сохранение конфигурации.
 - Централизованная маскировка секретов в ответах инструментов, ошибках и журнале аудита. Пароли не принимаются в аргументах командной строки.
+- Опциональная owner-only telemetry вызовов MCP: частота, задержки, ошибки и truncation без значений аргументов и содержимого ответов.
 
 Keenetic и Netcraze - товарные знаки соответствующих владельцев. Это независимый проект, не аффилированный и не одобренный данными компаниями.
 
@@ -229,6 +233,7 @@ node dist/index.js --read-only
 - Удалённый доступ к RCI не гарантирует доступа к вспомогательному endpoint резервной копии. При такой недоступности используйте LAN-профиль.
 - Логи и любые строки, полученные от роутера, являются недоверенными данными, а не инструкциями.
 - MCP-сервер не создаёт снимки автоматически. `router snapshot` — отдельная явная CLI-операция, записывающая owner-only локальное состояние.
+- Telemetry вызовов MCP по умолчанию отключена. Перед включением локального JSONL-журнала прочитайте раздел [Telemetry](docs/TELEMETRY.md).
 
 Перед включением записи изучите полную [модель безопасности](docs/SAFETY.md) и [политику безопасности](SECURITY.md).
 
@@ -261,6 +266,7 @@ endpoint. Никогда не выполняйте реальные измене
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Настройка Remote RCI](docs/REMOTE_RCI.md)
 - [Несколько роутеров](docs/MULTI_ROUTER.md)
+- [Telemetry вызовов MCP](docs/TELEMETRY.md)
 - [Участие в разработке](CONTRIBUTING.md)
 - [Сообщение об уязвимости](SECURITY.md)
 - [Уведомления о стороннем коде](THIRD_PARTY_NOTICES.md)

@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { NotSupportedError, RciError } from '../router/errors.js';
 import type { Rci } from '../router/rci.js';
 import { deviceAliases, hotspotHosts, resolveDeviceText } from '../router/device-state.js';
@@ -191,7 +191,7 @@ async function selectLogs(ctx: ToolContext, args: LogFilters & { device?: string
   return aliases === undefined ? { all, selected } : { all, selected, aliases };
 }
 
-export function registerLogTools(server: McpServer, ctx: ToolContext): void {
+export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'get_logs',
     {

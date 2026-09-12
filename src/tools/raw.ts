@@ -1,5 +1,6 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
+import { GuardError, ValidationError } from '../router/errors.js';
 import { fail, guard, ok, type ToolContext, type ToolResult } from './registry.js';
 
 type RawBody = string | Record<string, unknown> | unknown[];
@@ -53,7 +54,7 @@ function unsafeRaw(value: unknown): boolean {
     /^(user|crypto|auth|security|http-proxy)$/i.test(key) || unsafeRaw(child));
 }
 
-export function registerRawTool(server: McpServer, ctx: ToolContext): void {
+export function registerRawTool(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'rci_call',
     {
@@ -98,28 +99,28 @@ export function registerRawTool(server: McpServer, ctx: ToolContext): void {
 
       if (method === 'GET') {
         if (path === undefined || path.length === 0) {
-          return fail(new Error('GET needs a path, for example "show/version".'));
+          return fail(new ValidationError('GET needs a path, for example "show/version".'));
         }
       } else {
         if (ctx.readOnly) {
           return fail(
-            new Error(
+            new GuardError(
               'This server is running read-only, so raw POST is refused.'
             )
           );
         }
         if (ctx.allowRawWrite === false) {
-          return fail(new Error('Raw POST is disabled. Set KEENETIC_ALLOW_RAW_WRITE=true to enable its guarded use.'));
+          return fail(new GuardError('Raw POST is disabled. Set KEENETIC_ALLOW_RAW_WRITE=true to enable its guarded use.'));
         }
         if (body === undefined) {
-          return fail(new Error('POST needs a body, for example {"show": {"version": {}}}.'));
+          return fail(new ValidationError('POST needs a body, for example {"show": {"version": {}}}.'));
         }
         const decoded = decodeBody(body);
-        if (!decoded.ok) return fail(new Error(decoded.message));
+        if (!decoded.ok) return fail(new ValidationError(decoded.message));
         payload = decoded.body;
-        if (unsafeRaw(payload)) return fail(new Error('Raw POST refused: payload touches an auth, crypto, security, user, or HTTP proxy branch.'));
+        if (unsafeRaw(payload)) return fail(new GuardError('Raw POST refused: payload touches an auth, crypto, security, user, or HTTP proxy branch.'));
         if (dry_run !== false) return ok({ dryRun: true, plannedRciRequest: payload, risk: 'high', expectedVerification: 'manual narrow GET read-back required' }, ctx.maxResponseBytes);
-        if (!confirm) return fail(new Error('Raw POST requires confirm=true together with dry_run=false.'));
+        if (!confirm) return fail(new GuardError('Raw POST requires confirm=true together with dry_run=false.'));
         await ctx.backup.ensure();
       }
 

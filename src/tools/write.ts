@@ -10,7 +10,7 @@ export interface ChangeControl { dry_run?: boolean; confirm?: boolean; }
 
 export function requireConfirmed(args: ChangeControl): void {
   if (args.dry_run !== false) return;
-  if (args.confirm !== true) throw new Error('Real mutation refused: set dry_run=false and confirm=true after reviewing the preview.');
+  if (args.confirm !== true) throw new GuardError('Real mutation refused: set dry_run=false and confirm=true after reviewing the preview.');
 }
 
 /**
@@ -31,7 +31,7 @@ export async function verifiedWrite<T>(opts: {
   await opts.apply();
   const value = await opts.readBack();
   if (!opts.check(value)) {
-    throw new Error(
+    throw new VerificationError(
       `The router accepted the command but ${opts.what} did not take effect. ` +
         'This usually means the field belongs to a different configuration branch. ' +
         'Read the current state with the matching get_ tool before retrying.'
@@ -54,3 +54,4 @@ export function describeWrite(
       'A reboot discards it. Call save_config to make it permanent.'
   };
 }
+import { GuardError, VerificationError } from '../router/errors.js';

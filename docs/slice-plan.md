@@ -941,6 +941,41 @@ Report temporal correlation, not causality.
 
 Focus on changes such as default route, interface up/down, DNS state, VPN default state, firmware, config checksum, and client-count anomalies.
 
+## Slice OBS-1 - MCP call telemetry
+
+**Progress:** Implemented in the current working diff. Four independent review
+scopes (security/privacy, MCP reliability, NOC data quality, and adversarial
+failure injection) completed three fix iterations; all material findings are
+closed. Final local verification passed without a live router check.
+
+### Purpose and scope
+
+Record deterministic technical metadata for every validated MCP tool handler
+call, independent of the calling client. The opt-in owner-only JSONL journal
+contains a unique call ID, router profile, tool annotations, start/end time,
+duration, success/error, controlled error code, metadata-only argument summary,
+final result size, truncation flag, and server version. A shared registration
+facade covers the complete assembled tool surface, while a serialized append
+writer isolates storage failure from tool behavior.
+
+### Security and non-goals
+
+Never store argument values, result bodies, raw RCI/configuration, exception
+text, credentials, LLM prompts/responses, token estimates, or subjective
+diagnostic quality. Rotation, dashboards, exporters, and SDK pre-handler schema
+rejections are later work. Telemetry does not replace the mutation audit or
+alter guarded writes, backup, verification, or explicit `save_config`.
+
+### Dependencies and acceptance
+
+Reuse `ToolContext.routerId`, existing tool annotations/error classes, response
+truncation metadata, and the platform state-root convention. Telemetry is
+disabled by default, uses owner-only storage when enabled, remains valid under
+concurrent calls, exposes a correlation `call_id` in MCP result metadata, and
+cannot change a tool result when storage is unavailable. Unit, privacy,
+concurrency, real in-memory MCP protocol, full-suite, build, and independent
+security/architecture/NOC/failure-injection reviews must all pass.
+
 ---
 
 # Milestone D: Fleet / multi-router NOC

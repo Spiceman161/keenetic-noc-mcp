@@ -1,6 +1,6 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { ValidationError } from '../router/errors.js';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
+import { GuardError, NotSupportedError, ValidationError, VerificationError } from '../router/errors.js';
 import {
   allocate,
   createSegment,
@@ -13,7 +13,7 @@ import {
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 import { describeWrite } from './write.js';
 
-export function registerSegmentTools(server: McpServer, ctx: ToolContext): void {
+export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'list_segments',
     {
@@ -116,14 +116,14 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
 
         if (dry_run !== false) return ok({ dryRun: true, planned: { name, wifi: ssid ?? null,
           subnet: subnet ?? 'auto', permitInterfaces: permit_interfaces ?? [] }, risk: 'high' }, ctx.maxResponseBytes);
-        if (!confirm) return fail(new ValidationError('Real mutation requires confirm=true together with dry_run=false.'));
+        if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'));
 
         const snapshot = await ctx.backup.ensure();
         const inventory = await readInventory(ctx.client.rci);
 
         if (inventory.ports.length === 0) {
           return fail(
-            new Error(
+            new NotSupportedError(
               'No switch ports were found, so a VLAN cannot be trunked and the segment ' +
                 'would not appear in the web interface. Call list_segments to see what ' +
                 'this router reports.'
@@ -194,7 +194,7 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
       }
 
       if (dry_run !== false) return ok({ dryRun: true, planned: { remove: bridge }, risk: 'high' }, ctx.maxResponseBytes);
-      if (!confirm) return fail(new ValidationError('Real mutation requires confirm=true together with dry_run=false.'));
+      if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'));
 
       const state = await readSegment(ctx.client.rci, bridge);
       if (state === null) {
@@ -218,7 +218,7 @@ export function registerSegmentTools(server: McpServer, ctx: ToolContext): void 
       const after = await readSegment(ctx.client.rci, bridge);
       if (after !== null) {
         return fail(
-          new Error(
+          new VerificationError(
             `${bridge} still exists after the removal. Left to clean up by hand: ` +
               `${failed.join('; ') || 'nothing reported as failed'}.`
           )

@@ -72,14 +72,25 @@ export class ActiveDiagnosticCoordinator {
   constructor(private readonly now: () => number = Date.now) {}
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.active) throw new ResourceError('Another active diagnostic is already running.');
+    if (this.active) {
+      throw new ResourceError(
+        'Another active diagnostic is already running.',
+        'active_diagnostic_busy'
+      );
+    }
     if (this.uncertain) {
-      throw new ResourceError('A previous active diagnostic has uncertain router-side state.');
+      throw new ResourceError(
+        'A previous active diagnostic has uncertain router-side state.',
+        'active_diagnostic_uncertain'
+      );
     }
     const cutoff = this.now() - 60_000;
     this.starts = this.starts.filter(start => start > cutoff);
     if (this.starts.length >= 10) {
-      throw new ResourceError('Active diagnostic rate limit reached (10 starts per 60 seconds).');
+      throw new ResourceError(
+        'Active diagnostic rate limit reached (10 starts per 60 seconds).',
+        'active_diagnostic_rate_limited'
+      );
     }
     this.active = true;
     this.starts.push(this.now());

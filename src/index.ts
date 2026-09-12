@@ -33,25 +33,40 @@ import { resolveProfile } from './profiles/registry.js';
 import { createProfileSecretStore } from './profiles/secrets.js';
 import { createSnapshotStore } from './router/snapshot-store.js';
 import { registerStateComparisonTools } from './tools/state-comparison.js';
+import { loadTelemetryConfig } from './telemetry/config.js';
+import { instrumentToolRegistration } from './telemetry/instrumentation.js';
+import { createTelemetryWriter, type TelemetryWriter } from './telemetry/writer.js';
 
-export function createServer(ctx: ToolContext): McpServer {
-  const server = new McpServer({ name: 'keenetic', version: resolveVersion() });
-  registerSystemTools(server, ctx);
-  registerDeviceTools(server, { ...ctx, readOnly: true });
-  registerInterfaceTools(server, ctx);
-  registerNetworkTools(server, ctx);
-  registerDnsTools(server, ctx);
-  registerVpnTools(server, ctx);
-  registerInternetDiagnosticTool(server, ctx);
-  registerDnsDiagnosticTool(server, ctx);
-  registerDeviceDiagnosticTool(server, ctx);
-  registerWifiDiagnosticTools(server, ctx);
-  registerActiveDiagnosticTools(server, ctx);
-  registerLogTools(server, ctx);
-  registerSegmentTools(server, { ...ctx, readOnly: true });
-  registerConfigTools(server, ctx);
-  registerStateComparisonTools(server, ctx);
-  registerRawTool(server, ctx);
+export interface ServerTelemetry {
+  writer: TelemetryWriter;
+  onWriteError?: () => void;
+}
+
+export function createServer(ctx: ToolContext, telemetry?: ServerTelemetry): McpServer {
+  const version = resolveVersion();
+  const server = new McpServer({ name: 'keenetic', version });
+  const tools = instrumentToolRegistration(server, telemetry === undefined ? undefined : {
+    writer: telemetry.writer,
+    routerProfile: ctx.routerId ?? 'unknown',
+    serverVersion: version,
+    ...(telemetry.onWriteError === undefined ? {} : { onWriteError: telemetry.onWriteError })
+  });
+  registerSystemTools(tools, ctx);
+  registerDeviceTools(tools, { ...ctx, readOnly: true });
+  registerInterfaceTools(tools, ctx);
+  registerNetworkTools(tools, ctx);
+  registerDnsTools(tools, ctx);
+  registerVpnTools(tools, ctx);
+  registerInternetDiagnosticTool(tools, ctx);
+  registerDnsDiagnosticTool(tools, ctx);
+  registerDeviceDiagnosticTool(tools, ctx);
+  registerWifiDiagnosticTools(tools, ctx);
+  registerActiveDiagnosticTools(tools, ctx);
+  registerLogTools(tools, ctx);
+  registerSegmentTools(tools, { ...ctx, readOnly: true });
+  registerConfigTools(tools, ctx);
+  registerStateComparisonTools(tools, ctx);
+  registerRawTool(tools, ctx);
   return server;
 }
 
@@ -182,7 +197,26 @@ async function main(): Promise<void> {
     ctx = unconfiguredContext();
   }
 
-  await createServer(ctx).connect(new StdioServerTransport());
+  let telemetry: ServerTelemetry | undefined;
+  let telemetryWarningWritten = false;
+  const warnTelemetry = (): void => {
+    if (telemetryWarningWritten) return;
+    telemetryWarningWritten = true;
+    process.stderr.write('keenetic-noc-mcp telemetry is unavailable; tool execution will continue.\n');
+  };
+  try {
+    const telemetryConfig = loadTelemetryConfig(process.platform, process.env);
+    if (telemetryConfig.enabled) {
+      telemetry = {
+        writer: createTelemetryWriter(telemetryConfig.path),
+        onWriteError: warnTelemetry
+      };
+    }
+  } catch {
+    warnTelemetry();
+  }
+
+  await createServer(ctx, telemetry).connect(new StdioServerTransport());
 }
 
 /**

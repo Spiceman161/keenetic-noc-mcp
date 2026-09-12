@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { hotspotHosts, resolveDeviceRecord, validateDeviceSelector } from '../router/device-state.js';
 import { AuthError, NotSupportedError, RciError, TransportError } from '../router/errors.js';
 import type { SafeReason } from '../shape/internet-diagnostic.js';
@@ -109,7 +109,7 @@ export async function collectWifiClientHealth(
   return buildWifiClientHealth(evidence);
 }
 
-export function registerWifiDiagnosticTools(server: McpServer, ctx: ToolContext): void {
+export function registerWifiDiagnosticTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool('diagnose_wifi', {
     title: 'Diagnose Wi-Fi health',
     description: 'Aggregates bounded radio, access-point, association and signal health without exposing client identifiers, SSIDs or BSSIDs.',

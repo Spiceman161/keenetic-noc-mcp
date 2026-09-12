@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { readConfigState } from '../router/config-state.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
@@ -6,7 +6,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-export function registerSystemTools(server: McpServer, ctx: ToolContext): void {
+export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'get_connection_status',
     { title: 'Connection status', description: 'Safely tests RCI reachability and authentication without exposing credentials.', inputSchema: {}, annotations: READ_ONLY },

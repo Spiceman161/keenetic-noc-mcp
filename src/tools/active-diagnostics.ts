@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import {
   ActiveDiagnosticCoordinator,
   pingCommand,
@@ -19,7 +19,7 @@ const ACTIVE = {
 } as const;
 const INPUT_BYTES = 64_000;
 
-export function registerActiveDiagnosticTools(server: McpServer, ctx: ToolContext): void {
+export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolContext): void {
   const coordinator = new ActiveDiagnosticCoordinator();
 
   server.registerTool('ping', {

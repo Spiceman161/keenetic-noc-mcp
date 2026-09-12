@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { readDnsConfigBranch } from '../router/dns-config.js';
 import { AuthError, NotSupportedError, RciError, TransportError } from '../router/errors.js';
 import {
@@ -143,7 +143,7 @@ export async function collectDnsDiagnosticEvidence(ctx: ToolContext): Promise<Dn
   return { proxyRuntime, internetReachability, dnsProxyConfig, nameServerConfig, routing, logs };
 }
 
-export function registerDnsDiagnosticTool(server: McpServer, ctx: ToolContext): void {
+export function registerDnsDiagnosticTool(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'diagnose_dns',
     {

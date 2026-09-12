@@ -1,7 +1,7 @@
 import { chmod, writeFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import {
   lastChangeMoved,
   readConfigState,
@@ -10,8 +10,7 @@ import {
   type LastChange
 } from '../router/config-state.js';
 import { fail, guard, ok, type ToolContext, type ToolResult } from './registry.js';
-import { GuardError } from '../router/errors.js';
-import { ValidationError } from '../router/errors.js';
+import { GuardError, ValidationError, VerificationError } from '../router/errors.js';
 import {
   assertStructuredSection,
   readCliConfig,
@@ -94,7 +93,7 @@ async function getConfig(
   return ok(payload, ctx.maxResponseBytes);
 }
 
-function registerConfigReadTools(server: McpServer, ctx: ToolContext): void {
+function registerConfigReadTools(server: ToolRegistrar, ctx: ToolContext): void {
   const common = {
     section: sectionSchema.describe('Required configuration section; use all only with an explicit limit of at least 200.'),
     filter: z.string().max(500).optional().describe('Optional normalized literal filter for CLI lines.'),
@@ -226,7 +225,7 @@ async function waitForSaved(
   return (await readConfigState(ctx.client.rci)).unsavedChanges === false;
 }
 
-export function registerConfigTools(server: McpServer, ctx: ToolContext): void {
+export function registerConfigTools(server: ToolRegistrar, ctx: ToolContext): void {
   registerConfigReadTools(server, ctx);
   if (ctx.readOnly) return;
 
@@ -245,7 +244,7 @@ export function registerConfigTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
     },
     guard(async ({ path, dry_run, confirm }): Promise<ToolResult> => {
-      if (!isAbsolute(path)) return fail(new Error('Backup destination must be an absolute path.'));
+      if (!isAbsolute(path)) return fail(new ValidationError('Backup destination must be an absolute path.'));
       if (dry_run !== false) return ok({ dryRun: true, path, effect: 'create owner-only startup-config backup; existing files are refused' }, ctx.maxResponseBytes);
       if (!confirm) throw new GuardError('Writing a local backup requires confirm=true together with dry_run=false.');
       const text = await ctx.client.rci.getText(STARTUP_CONFIG);
@@ -285,7 +284,7 @@ export function registerConfigTools(server: McpServer, ctx: ToolContext): void {
       try {
         const snapshot = await ctx.backup.ensure();
         await ctx.client.rci.post(planned);
-        if (!(await waitForSaved(ctx, before))) throw new Error('The save command was accepted but the router still reports unsaved changes. Call get_config_state before retrying.');
+        if (!(await waitForSaved(ctx, before))) throw new VerificationError('The save command was accepted but the router still reports unsaved changes. Call get_config_state before retrying.');
         await ctx.audit?.write({ ...base, before, verified: true, saved: true, success: true });
         return ok({ saved: true, backup: snapshot.path, note: 'The running configuration is now the startup configuration.' }, ctx.maxResponseBytes);
       } catch (error) {

@@ -1,5 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { readDnsConfigBranch } from '../router/dns-config.js';
 import { AuthError, NotSupportedError, RciError, TransportError } from '../router/errors.js';
 import { boundedArrayEnvelope } from '../shape/config.js';
@@ -40,7 +40,7 @@ export function projectDns(raw: unknown): Record<string, unknown> {
     enabled: proxy['enabled'] ?? null, upstreamResolvers, staticHostsCount: Array.isArray(hosts) ? hosts.length : Object.keys(record(hosts)).length,
     errors: proxy['error'] ?? proxy['errors'] ?? [] };
 }
-export function registerDnsTools(server: McpServer, ctx: ToolContext): void {
+export function registerDnsTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool('get_dns_status', { title: 'DNS proxy status', description: 'Compact DNS proxy state, upstream resolvers, encrypted-DNS metadata, static host count, and relevant errors.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok(projectDns(await ctx.client.rci.get('show/dns-proxy', 128_000)), ctx.maxResponseBytes)));
 
   server.registerTool('list_dns_upstreams', {

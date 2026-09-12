@@ -5,6 +5,7 @@ import { createServer } from '../src/index.js';
 import type { ToolContext } from '../src/tools/registry.js';
 import type { KeeneticClient } from '../src/router/client.js';
 import { stubBackup } from './helpers/backup.js';
+import type { TelemetryRecord } from '../src/telemetry/record.js';
 
 // Local filesystem writes count as writes even when the router is unchanged.
 const READ_TOOLS = [
@@ -59,7 +60,13 @@ function context(readOnly: boolean): ToolContext {
       features: new Set<string>()
     }))
   } as unknown as KeeneticClient;
-  return { client, maxResponseBytes: 25_000, readOnly, backup: stubBackup() };
+  return {
+    client,
+    maxResponseBytes: 25_000,
+    readOnly,
+    backup: stubBackup(),
+    allowRawWrite: false
+  };
 }
 
 /** Speaks real MCP to the assembled server over a linked in-memory transport. */
@@ -73,7 +80,91 @@ async function connectedClient(readOnly = false): Promise<Client> {
   return client;
 }
 
+async function connectedTelemetryClient(
+  options: { routerId?: string; readOnly?: boolean } = { routerId: 'tupik' }
+): Promise<{ client: Client; records: TelemetryRecord[] }> {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const records: TelemetryRecord[] = [];
+  const ctx = context(options.readOnly ?? true);
+  if (options.routerId !== undefined) ctx.routerId = options.routerId;
+  const server = createServer(ctx, { writer: { write: async record => { records.push(record); } } });
+  await server.connect(serverTransport);
+  const client = new Client({ name: 'telemetry-protocol-test', version: '0.0.0' });
+  await client.connect(clientTransport);
+  return { client, records };
+}
+
 describe('assembled server over MCP', () => {
+  it('does not add call metadata or records when telemetry is disabled', async () => {
+    const client = await connectedClient(true);
+    const result = await client.callTool({ name: 'get_system_info', arguments: {} });
+    expect(result._meta).toBeUndefined();
+  });
+
+  it('records a successful real MCP round trip and exposes its call ID as metadata', async () => {
+    const { client, records } = await connectedTelemetryClient();
+    const result = await client.callTool({ name: 'get_system_info', arguments: {} });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      router_profile: 'tupik', tool: 'get_system_info', status: 'success'
+    });
+    expect((result._meta?.['io.github.spiceman161/telemetry'] as { call_id: string }).call_id)
+      .toBe(records[0]!.call_id);
+  });
+
+  it('does not invent a profile when an embedded context omits routerId', async () => {
+    const { client, records } = await connectedTelemetryClient({});
+    await client.callTool({ name: 'get_system_info', arguments: {} });
+    expect(records[0]?.router_profile).toBe('unknown');
+  });
+
+  it('records handler validation failures but not SDK schema rejections', async () => {
+    const { client, records } = await connectedTelemetryClient();
+    const handlerFailure = await client.callTool({
+      name: 'ping',
+      arguments: { target: 'invalid;target', family: 'ipv4', count: 3, timeout_ms: 5_000 }
+    });
+    expect(handlerFailure.isError).toBe(true);
+    expect(records[0]).toMatchObject({ status: 'error', error_code: 'validation' });
+
+    const schemaFailure = await client.callTool({
+      name: 'ping',
+      arguments: { target: 'example.test', count: 'three' }
+    });
+    expect(schemaFailure.isError).toBe(true);
+    expect(records).toHaveLength(1);
+  });
+
+  it('classifies representative caller and policy failures without internal errors', async () => {
+    const { client, records } = await connectedTelemetryClient({
+      routerId: 'tupik', readOnly: false
+    });
+    const calls = [
+      client.callTool({ name: 'rci_call', arguments: { method: 'GET' } }),
+      client.callTool({ name: 'get_device', arguments: {} }),
+      client.callTool({
+        name: 'backup_config',
+        arguments: { path: 'relative.txt', dry_run: false, confirm: true }
+      }),
+      client.callTool({ name: 'rci_call', arguments: { method: 'POST', body: {} } })
+    ];
+    const results = await Promise.all(calls);
+    expect(results.every(result => result.isError === true)).toBe(true);
+    expect(records.map(record => record.error_code)).toEqual(expect.arrayContaining([
+      'validation', 'validation', 'validation', 'guard_refusal'
+    ]));
+    expect(records.some(record => record.error_code === 'internal')).toBe(false);
+  });
+
+  it('records concurrent real MCP calls as distinct calls', async () => {
+    const { client, records } = await connectedTelemetryClient();
+    await Promise.all(Array.from({ length: 8 }, () => client.callTool({
+      name: 'get_system_info', arguments: {}
+    })));
+    expect(records).toHaveLength(8);
+    expect(new Set(records.map(record => record.call_id)).size).toBe(8);
+  });
+
   it('advertises every read tool', async () => {
     const client = await connectedClient();
     const { tools } = await client.listTools();

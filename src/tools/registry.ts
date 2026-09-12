@@ -5,6 +5,7 @@ import type { KeeneticClient } from '../router/client.js';
 import { redact, redactText } from '../security/redact.js';
 import type { AuditWriter } from '../security/audit.js';
 import type { SnapshotStore } from '../router/snapshot-store.js';
+import { normalizeErrorCode } from '../telemetry/record.js';
 
 export interface ToolContext {
   client: KeeneticClient;
@@ -33,27 +34,54 @@ export interface ToolResult {
   isError?: true;
 }
 
+export interface ToolResultTelemetry {
+  errorCode: string | null;
+  outputTruncated: boolean;
+}
+
+const resultTelemetry = new WeakMap<ToolResult, ToolResultTelemetry>();
+
+export function getToolResultTelemetry(result: ToolResult): ToolResultTelemetry | undefined {
+  return resultTelemetry.get(result);
+}
+
+function containsTruncation(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (!Array.isArray(value) && (value as Record<string, unknown>)['truncated'] === true) return true;
+  return Object.values(value).some(child => containsTruncation(child, seen));
+}
+
 /** `maxBytes` caps the serialised payload; omit it for responses already shaped. */
 export function ok(payload: unknown, maxBytes?: number): ToolResult {
-  const text = JSON.stringify(redact(payload), null, 2);
+  const safePayload = redact(payload);
+  const text = JSON.stringify(safePayload, null, 2);
   if (maxBytes !== undefined && Buffer.byteLength(text, 'utf8') > maxBytes) {
     const envelope = JSON.stringify({
       truncated: true,
       originalBytes: Buffer.byteLength(text, 'utf8'),
       note: 'Response exceeded the configured byte ceiling. Narrow the query.'
     });
-    return { content: [{ type: 'text', text: Buffer.byteLength(envelope, 'utf8') <= maxBytes ? envelope : maxBytes >= 4 ? 'null' : '0' }] };
+    const result = { content: [{ type: 'text' as const, text: Buffer.byteLength(envelope, 'utf8') <= maxBytes ? envelope : maxBytes >= 4 ? 'null' : '0' }] };
+    resultTelemetry.set(result, { errorCode: null, outputTruncated: true });
+    return result;
   }
-  return {
-    content: [{ type: 'text', text }]
+  const result = {
+    content: [{ type: 'text' as const, text }]
   };
+  resultTelemetry.set(result, { errorCode: null, outputTruncated: containsTruncation(safePayload) });
+  return result;
 }
 
 /** Compact variant for versioned reports whose required envelope must survive tight budgets. */
 export function compactOk(payload: unknown, maxBytes: number): ToolResult {
-  const text = JSON.stringify(redact(payload));
+  const safePayload = redact(payload);
+  const text = JSON.stringify(safePayload);
   if (Buffer.byteLength(text, 'utf8') > maxBytes) return ok(payload, maxBytes);
-  return { content: [{ type: 'text', text }] };
+  const result = { content: [{ type: 'text' as const, text }] };
+  resultTelemetry.set(result, { errorCode: null, outputTruncated: containsTruncation(safePayload) });
+  return result;
 }
 
 /**
@@ -66,8 +94,10 @@ export function fail(error: unknown): ToolResult {
       ? redactText(error.message)
       : error instanceof Error
         ? `${redactText(error.message)} Retry, or call get_system_info to check connectivity.`
-        : `${String(error)} Retry, or call get_system_info to check connectivity.`;
-  return { content: [{ type: 'text', text }], isError: true };
+        : `${redactText(String(error))} Retry, or call get_system_info to check connectivity.`;
+  const result: ToolResult = { content: [{ type: 'text', text }], isError: true };
+  resultTelemetry.set(result, { errorCode: normalizeErrorCode(error), outputTruncated: false });
+  return result;
 }
 
 /** Wraps a handler so it can never reject - the SDK expects a result, not a throw. */

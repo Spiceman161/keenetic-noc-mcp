@@ -1,7 +1,9 @@
 # Safety model
 
 Start with `--read-only` for diagnosis. That registry contains no mutation
-tools, including local filesystem writes. Writable mode exposes
+tools. Optional MCP call telemetry is the only automatic local write and is
+disabled unless `KEENETIC_TELEMETRY_ENABLED=true`; it never changes router
+state or stores tool argument values/result bodies. Writable mode exposes
 `backup_config`, `set_interface_state`, `restart_interface`, and `save_config`
 in v0.1, plus raw POST only when explicitly enabled.
 
@@ -41,6 +43,11 @@ Mutation attempts are appended to owner-only `audit.jsonl` below `KEENETIC_STATE
 Passwords, authorization, cookies, private keys, PSKs, tokens and long key
 material are redacted from tool output and audit. Restrict state-directory
 permissions and retain backups appropriately.
+
+When enabled, technical call records are appended separately to owner-only
+`mcp-calls.jsonl`. Telemetry failure is fail-open for the MCP call, and the
+journal contains controlled metadata only. It is not a mutation audit, user
+memory, semantic diagnosis, or token-usage log. See [MCP call telemetry](TELEMETRY.md).
 
 `ping` and `traceroute` do not change router configuration, but they are active:
 the router sends packets to the requested target. They accept exactly one

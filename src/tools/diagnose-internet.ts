@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { parseCapabilities, type Capabilities } from '../router/capabilities.js';
 import { readConfigState } from '../router/config-state.js';
 import { AuthError, NotSupportedError, RciError, TransportError } from '../router/errors.js';
@@ -83,7 +83,7 @@ async function settle<T>(operation: () => Promise<T>): Promise<PromiseSettledRes
   }
 }
 
-export function registerInternetDiagnosticTool(server: McpServer, ctx: ToolContext): void {
+export function registerInternetDiagnosticTool(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'diagnose_internet',
     {
