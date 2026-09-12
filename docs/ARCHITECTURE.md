@@ -132,6 +132,16 @@ schema files do not prevent valid history from being read, but still count
 toward disk bounds. Profile removal deletes its snapshot directory without
 following symlinks.
 
+The MCP comparison tools receive a per-router snapshot reader through their
+tool context; embedded or unconfigured contexts never fall back to an ambient
+state directory. They compare an explicit allowlist of aggregate fields and do
+not perform generic JSON diffs. Checksum equality is evaluated in memory but
+the values are never returned. Duplicate timestamps are not ordered
+arbitrarily, and uptime is used only to flag possible reboot or wall-clock
+discontinuity. Reports describe differences between retained observations,
+not continuous history or causality. Response shaping preserves the version,
+selection, summary and truncation envelope before the global byte guard.
+
 Active diagnostics use the separate finite `/rci/tools/*` continued-job
 surface. One POST starts a native count/hop-bounded job, bounded GET polls read
 message chunks, and DELETE cancels an unfinished job. The MCP cancellation

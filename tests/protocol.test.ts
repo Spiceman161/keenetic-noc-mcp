@@ -26,6 +26,8 @@ const READ_TOOLS = [
   'get_logs',
   'get_logs_by_device',
   'get_config_diff',
+  'compare_router_state',
+  'get_recent_changes',
   'get_running_config',
   'get_startup_config',
   'search_config',
@@ -131,6 +133,28 @@ describe('assembled server over MCP', () => {
     expect((diff?.properties as any)?.include_diff?.default).toBe(false);
     expect((diff?.properties as any)?.limit).toMatchObject({ default: 200, minimum: 1,
       maximum: 1000 });
+  });
+
+  it('advertises bounded local state-comparison contracts as read-only', async () => {
+    const client = await connectedClient(true);
+    const { tools } = await client.listTools();
+    const compare = tools.find(tool => tool.name === 'compare_router_state');
+    const recent = tools.find(tool => tool.name === 'get_recent_changes');
+    expect((compare?.inputSchema.properties as any)?.from_at?.format).toBe('date-time');
+    expect((compare?.inputSchema.properties as any)?.domains?.maxItems).toBe(8);
+    expect((recent?.inputSchema.properties as any)?.limit).toMatchObject({
+      default: 10, minimum: 1, maximum: 50
+    });
+    for (const tool of [compare, recent]) {
+      expect(tool?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+    }
+
+    const result = await client.callTool({ name: 'compare_router_state', arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content.map(part => part.text).join(''))).toMatchObject({
+      schemaVersion: 1, status: 'indeterminate', correlationOnly: true,
+      uncertainty: ['history-unavailable']
+    });
   });
 
   it('advertises and calls the zero-argument internet diagnostic over MCP', async () => {
@@ -275,7 +299,7 @@ describe('write mode', () => {
     const client = await connectedClient(false);
     const { tools } = await client.listTools();
     for (const name of ['get_running_config', 'get_startup_config', 'search_config',
-      'get_config_diff']) {
+      'get_config_diff', 'compare_router_state', 'get_recent_changes']) {
       expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
     }
   });

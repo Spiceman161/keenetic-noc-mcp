@@ -16,6 +16,14 @@ Lock recovery fails closed: if a process dies while holding the snapshot lock,
 confirm that no snapshot command is running before removing `.snapshot.lock`
 from that router's state directory.
 
+`compare_router_state` and `get_recent_changes` may read those owner-only local
+summaries through MCP. They never create snapshots, write the state directory,
+or contact the router. Comparison output contains only the same allowlisted
+aggregate values, and reports configuration fingerprints only as changed or
+unchanged. File names, paths, checksum values, corrupt payloads, and unknown
+schema contents are not exposed. Sparse observations provide temporal
+correlation only: they do not prove when or why a change happened.
+
 Writes default to `dry_run=true`. A real call needs both `dry_run=false` and
 `confirm=true`. The first real configuration mutation downloads
 `/ci/startup-config.txt`; backup failure blocks the write. The change is read

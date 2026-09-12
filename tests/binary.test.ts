@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -165,6 +165,7 @@ describe('the built binary', () => {
     expect(result.stderr).toBe('');
     expect(tools.length).toBeGreaterThan(0);
     expect(tools.map(tool => tool.name)).toContain('get_config_diff');
+    expect(tools.map(tool => tool.name)).toContain('get_recent_changes');
   });
 
   it('answers initialize in safe mode when nothing is configured', async () => {
@@ -177,5 +178,21 @@ describe('the built binary', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('"serverInfo"');
     expect(result.stderr).toBe('');
+  });
+
+  it('does not bind environment-based routers to a same-named profile history', async () => {
+    const state = await mkdtemp(join(tmpdir(), 'kn-state-'));
+    await mkdir(join(state, 'home', 'snapshots'), { recursive: true, mode: 0o700 });
+    const input = [INITIALIZE,
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+        name: 'compare_router_state', arguments: {}
+      } })].join('\n') + '\n';
+    const result = await run(DIST, input, { ...CONFIGURED, KEENETIC_STATE_DIR: state });
+    const messages = result.stdout.trim().split('\n').map(line => JSON.parse(line) as {
+      id?: number; result?: { content?: Array<{ text?: string }> }
+    });
+    const text = messages.find(message => message.id === 2)?.result?.content?.[0]?.text ?? '{}';
+    expect(JSON.parse(text).uncertainty).toContain('history-unavailable');
   });
 });

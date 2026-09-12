@@ -4,6 +4,7 @@ import type { BackupGuard } from '../router/backup.js';
 import type { KeeneticClient } from '../router/client.js';
 import { redact, redactText } from '../security/redact.js';
 import type { AuditWriter } from '../security/audit.js';
+import type { SnapshotStore } from '../router/snapshot-store.js';
 
 export interface ToolContext {
   client: KeeneticClient;
@@ -17,6 +18,8 @@ export interface ToolContext {
   audit?: AuditWriter;
   protectedInterfaces?: ReadonlySet<string>;
   allowDestructive?: boolean;
+  /** Injected local history reader; absent contexts never fall back to ambient state. */
+  snapshotHistory?: Pick<SnapshotStore, 'list'>;
 }
 
 /**

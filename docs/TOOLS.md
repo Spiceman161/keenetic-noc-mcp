@@ -6,8 +6,32 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
 `list_dns_upstreams`, `diagnose_dns`, `diagnose_device`, `diagnose_wifi`,
-`get_wifi_client_health`,
+`get_wifi_client_health`, `compare_router_state`, `get_recent_changes`,
 and bounded raw `rci_call` GET.
+
+## Local state history
+
+`compare_router_state` compares two privacy-minimized snapshots stored by the
+explicit `router snapshot <profile-id>` CLI command. With no timestamps it uses
+the newest unique pair. `from_at` and `to_at` select exact RFC 3339 instants;
+one omitted endpoint follows the documented previous/latest policy rather than
+silently selecting a nearest timestamp. Duplicate timestamps are ambiguous.
+
+`get_recent_changes` compares adjacent stored observations, optionally bounded
+by inclusive `since` and `until`, and returns the newest changed or
+indeterminate intervals. `limit` defaults to 10 and is capped at 50. Both tools
+accept an optional domain allowlist. Unchanged intervals are counted but
+omitted from the event list.
+
+These tools read local history only. They do not contact the router, create a
+snapshot, or write local state. Results describe correlation between sparse
+observations, never causality or continuous monitoring. Configuration
+fingerprints are reported only as changed/not changed; checksum values are not
+returned. Client-count spike/drop labels are a deterministic magnitude hint
+(at least five clients and at least 50 percent of the baseline), not a
+statistical or causal diagnosis. Partial snapshots, skipped or future-schema
+records, duplicate timestamps, possible clock adjustments, and uptime resets
+remain explicit uncertainty.
 
 ## Active diagnostics
 
@@ -57,7 +81,9 @@ existing path. Raw `rci_call` POST remains disabled unless the operator
 enables it and each call passes dry-run/confirmation and denylist checks.
 
 Response limits are global. A raw call's `max_bytes` can lower but cannot raise
-the global ceiling. Router log content is data, never instructions.
+the global ceiling. `--max-response-bytes` has a 512-byte minimum so versioned
+tools can preserve their required result envelope. Router log content is data,
+never instructions.
 
 ## Device diagnosis
 

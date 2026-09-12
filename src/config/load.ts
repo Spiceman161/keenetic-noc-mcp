@@ -21,6 +21,7 @@ export interface StoredCredentials {
 }
 
 export const DEFAULT_MAX_RESPONSE_BYTES = 25_000;
+export const MIN_MAX_RESPONSE_BYTES = 512;
 export const DEFAULT_LAN_TIMEOUT_MS = 10_000;
 export const DEFAULT_REMOTE_TIMEOUT_MS = 30_000;
 
@@ -73,8 +74,8 @@ export async function loadConfig(
 
   const rawMax = flagValue(argv, '--max-response-bytes');
   const parsedMax = rawMax === undefined ? DEFAULT_MAX_RESPONSE_BYTES : Number.parseInt(rawMax, 10);
-  if (!Number.isFinite(parsedMax) || parsedMax <= 0) {
-    throw new Error(`--max-response-bytes must be a positive integer, got "${rawMax}"`);
+  if (!Number.isFinite(parsedMax) || parsedMax < MIN_MAX_RESPONSE_BYTES) {
+    throw new Error(`--max-response-bytes must be an integer of at least ${MIN_MAX_RESPONSE_BYTES}, got "${rawMax}"`);
   }
 
   if ((mode === 'lan' && !host) || (mode === 'remote' && !rawUrl) || !password) {

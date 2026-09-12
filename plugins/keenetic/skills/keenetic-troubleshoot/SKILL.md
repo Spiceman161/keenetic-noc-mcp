@@ -143,6 +143,17 @@ connections, which is worth chasing.
 ## "Something changed and now it does not work"
 
 ```
+get_recent_changes
+```
+
+If local snapshots have been captured, start with their bounded aggregate
+history. Treat reported changes as correlation between sparse observations,
+not proof that a change caused the incident. Use `compare_router_state` with
+exact timestamps when one earlier baseline needs a direct comparison.
+
+Then inspect the live configuration state:
+
+```
 get_config_state
 ```
 

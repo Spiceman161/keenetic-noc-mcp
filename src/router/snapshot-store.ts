@@ -25,7 +25,12 @@ export const DEFAULT_SNAPSHOT_LIMITS: SnapshotStoreLimits = {
 };
 
 export interface SnapshotWriteResult { path: string; bytes: number; pruned: number }
-export interface SnapshotListResult { snapshots: RouterSnapshotV1[]; skipped: number }
+export interface SnapshotListResult {
+  snapshots: RouterSnapshotV1[];
+  skipped: number;
+  /** Count only; future schema identifiers and payloads are never exposed. */
+  unsupportedVersions?: number;
+}
 export interface SnapshotStore {
   readonly directory: string;
   write(snapshot: RouterSnapshotV1, now?: Date, validate?: () => Promise<void>): Promise<SnapshotWriteResult>;
@@ -397,6 +402,7 @@ export function createSnapshotStore(
     if (!info.isDirectory() || info.isSymbolicLink()) return { snapshots: [], skipped: 1 };
     const snapshots: RouterSnapshotV1[] = [];
     let skipped = 0;
+    let unsupportedVersions = 0;
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); }
     catch (error) {
@@ -412,14 +418,23 @@ export function createSnapshotStore(
         const current = await handle.stat();
         if (!current.isFile() || current.nlink !== 1 || current.size > limits.maxFileBytes ||
             (current.mode & 0o077) !== 0) { skipped += 1; continue; }
-        const canonical = canonicalSnapshot(JSON.parse(await handle.readFile('utf8')));
+        const parsed: unknown = JSON.parse(await handle.readFile('utf8'));
+        const parsedRecord = record(parsed);
+        if (parsedRecord !== null && Number.isInteger(parsedRecord['schemaVersion']) &&
+            Number(parsedRecord['schemaVersion']) > 1) {
+          skipped += 1;
+          unsupportedVersions += 1;
+          continue;
+        }
+        const canonical = canonicalSnapshot(parsed);
         if (canonical === null) { skipped += 1; continue; }
         snapshots.push(canonical);
       } catch { skipped += 1; }
       finally { await handle?.close().catch(() => undefined); }
     }
     snapshots.sort((a, b) => a.at.localeCompare(b.at));
-    return { snapshots, skipped };
+    return { snapshots, skipped,
+      ...(unsupportedVersions > 0 ? { unsupportedVersions } : {}) };
   }
 
   async function removeAll(finalize?: () => Promise<void>): Promise<void> {

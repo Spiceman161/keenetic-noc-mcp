@@ -914,7 +914,12 @@ Do not store raw logs or complete config by default. Implement bounded retention
 
 ## Slice C2 - State comparison tools
 
-**Progress:** Planned; gated on C1.
+**Progress:** Implemented in the current working diff. The two read-only MCP
+tools compare only retained privacy-minimized C1 observations and never read the
+live router or create snapshots. Two review-fix iterations used independent
+temporal-correctness, privacy/storage, and MCP-contract reviewers; all material
+findings are closed. Automated verification passes. No live router path exists
+for this slice, and no live smoke or mutation was performed.
 
 Candidate tools:
 

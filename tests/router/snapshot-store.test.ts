@@ -142,8 +142,12 @@ describe('snapshot store', () => {
       '2026-09-11T10:00:00.000Z', '2026-09-11T10:00:00.500Z'
     ]);
     await writeFile(join(store.directory, 'corrupt.json'), '{', { mode: 0o600 });
+    await writeFile(join(store.directory, 'invalid-version.json'), '{"schemaVersion":0}',
+      { mode: 0o600 });
+    await writeFile(join(store.directory, 'negative-version.json'), '{"schemaVersion":-1}',
+      { mode: 0o600 });
     await writeFile(join(store.directory, 'future.json'), '{"schemaVersion":2}', { mode: 0o600 });
-    expect((await store.list()).skipped).toBe(2);
+    expect(await store.list()).toMatchObject({ skipped: 4, unsupportedVersions: 1 });
   });
 
   it('serializes concurrent writers under the count limit', async () => {

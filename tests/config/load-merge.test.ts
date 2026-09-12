@@ -76,6 +76,9 @@ describe('loadConfig precedence', () => {
   it('rejects a nonsense --max-response-bytes', async () => {
     await expect(
       loadConfig(['--max-response-bytes', 'lots'], {} as NodeJS.ProcessEnv, STORED)
-    ).rejects.toThrow(/positive integer/);
+    ).rejects.toThrow(/integer of at least/);
+    await expect(
+      loadConfig(['--max-response-bytes', '511'], {} as NodeJS.ProcessEnv, STORED)
+    ).rejects.toThrow(/at least 512/);
   });
 });

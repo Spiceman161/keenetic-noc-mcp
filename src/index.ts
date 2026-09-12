@@ -31,6 +31,8 @@ import { createAuditWriter } from './security/audit.js';
 import { stateDir } from './router/backup.js';
 import { resolveProfile } from './profiles/registry.js';
 import { createProfileSecretStore } from './profiles/secrets.js';
+import { createSnapshotStore } from './router/snapshot-store.js';
+import { registerStateComparisonTools } from './tools/state-comparison.js';
 
 export function createServer(ctx: ToolContext): McpServer {
   const server = new McpServer({ name: 'keenetic', version: resolveVersion() });
@@ -48,6 +50,7 @@ export function createServer(ctx: ToolContext): McpServer {
   registerLogTools(server, ctx);
   registerSegmentTools(server, { ...ctx, readOnly: true });
   registerConfigTools(server, ctx);
+  registerStateComparisonTools(server, ctx);
   registerRawTool(server, ctx);
   return server;
 }
@@ -169,6 +172,9 @@ async function main(): Promise<void> {
       routerId: config.routerId,
       connection: { mode: config.mode, endpoint: config.endpoint },
       audit: createAuditWriter(stateDir(process.platform, process.env), config.routerId),
+      ...(profile ? { snapshotHistory: createSnapshotStore(
+        stateDir(process.platform, process.env), profile.id
+      ) } : {}),
       protectedInterfaces: new Set((process.env['KEENETIC_PROTECTED_INTERFACES'] ?? '').split(',').map(v => v.trim()).filter(Boolean)),
       allowDestructive: process.env['KEENETIC_ALLOW_DESTRUCTIVE']?.toLowerCase() === 'true'
     };

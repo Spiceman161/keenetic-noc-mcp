@@ -74,6 +74,11 @@ but no configuration lines, logs, addresses, device names, SSIDs or interface
 identifiers. Per-router history is limited to 96 snapshots, 30 days and 1 MiB.
 Removing a profile also removes its local snapshots after confirmation.
 
+The read-only MCP tools `compare_router_state` and `get_recent_changes` compare
+these retained local summaries. They do not contact the router or capture new
+state. Their output is bounded and reports differences between sparse
+observations as correlation, never as proof of causality or continuous history.
+
 For an unattended deployment, configure a single process explicitly:
 
 ~~~sh
@@ -192,6 +197,11 @@ npx -y keenetic-noc-mcp router add
 DNS, VPN, Wi-Fi, устройств и системы, а также checksums конфигурации. Строки
 конфигурации, логи, адреса, имена устройств, SSID и идентификаторы интерфейсов
 не сохраняются. На роутер действует retention: 96 снимков, 30 дней и 1 MiB.
+
+Read-only MCP-инструменты `compare_router_state` и `get_recent_changes`
+сравнивают эти локальные снимки. Они не обращаются к роутеру и не создают новые
+снимки. Ограниченный ответ описывает корреляцию между отдельными наблюдениями,
+но не доказывает причинность или непрерывность истории.
 
 Для отдельного пользователя роутера включите право **HTTP Proxy**. Для режима
 только чтения дополнительно включите **Запретить сохранять настройки системы**.
