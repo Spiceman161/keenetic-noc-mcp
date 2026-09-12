@@ -1,6 +1,6 @@
 import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
-import { capList } from '../shape/budget.js';
+import { boundedArrayEnvelope } from '../shape/config.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -19,7 +19,7 @@ export function registerNetworkTools(server: ToolRegistrar, ctx: ToolContext): v
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => {
+    guard(ctx, async () => {
       const s = asRecord(await ctx.client.rci.get('show/internet/status'));
       return ok({
         internet: s['internet'] === true,
@@ -50,19 +50,15 @@ export function registerNetworkTools(server: ToolRegistrar, ctx: ToolContext): v
       },
       annotations: READ_ONLY
     },
-    guard(async ({ kind, limit }) => {
+    guard(ctx, async ({ kind, limit }) => {
       const raw = await ctx.client.rci.get('show/ip/route');
       const routes = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
       const selected =
         kind === 'default' ? routes.filter(r => r['destination'] === '0.0.0.0/0') : routes;
 
-      const capped = capList(selected, limit ?? 100, ctx.maxResponseBytes);
-      return ok({
-        routes: capped.items,
-        shown: capped.shown,
-        total: capped.total,
-        ...(capped.note ? { note: capped.note } : {})
-      }, ctx.maxResponseBytes);
+      const total = selected.length;
+      return ok(boundedArrayEnvelope({}, 'routes', selected.slice(0, limit ?? 100),
+        ctx.maxResponseBytes, total), ctx.maxResponseBytes);
     })
   );
 
@@ -77,7 +73,7 @@ export function registerNetworkTools(server: ToolRegistrar, ctx: ToolContext): v
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => {
+    guard(ctx, async () => {
       const raw = asRecord(await ctx.client.rci.get('ip/policy'));
       const policies = Object.entries(raw).map(([name, value]) => {
         const policy = asRecord(value);
@@ -106,7 +102,7 @@ export function registerNetworkTools(server: ToolRegistrar, ctx: ToolContext): v
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => {
+    guard(ctx, async () => {
       const [ifaceRaw, assocRaw] = await Promise.all([
         ctx.client.rci.get('show/interface'),
         ctx.client.rci.get('show/associations')

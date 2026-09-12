@@ -20,12 +20,10 @@ export interface SecretStore {
 /**
  * How the secret reaches the keychain tool.
  *
- * `stdin` is preferred, because argv is readable by other processes of the same
- * user. macOS leaves no choice: `security add-generic-password` takes the
- * password as an argument, and its interactive mode re-tokenises the line, which
- * silently truncates any password containing a quote or a space.
+ * Secrets are accepted only through stdin. Commands that cannot do that are
+ * unavailable, because argv is observable through process inspection.
  */
-export type SecretChannel = 'argv' | 'stdin';
+export type SecretChannel = 'stdin' | 'none';
 
 export interface KeychainCommand {
   command: string;
@@ -52,24 +50,18 @@ export function keychainCommand(
   account: string
 ): KeychainCommand | null {
   if (platform === 'darwin') {
-    if (op === 'save') {
-      return {
-        command: 'security',
-        args: ['add-generic-password', '-U', '-a', account, '-s', SERVICE, '-w'],
-        secretVia: 'argv'
-      };
-    }
+    if (op === 'save') return null;
     if (op === 'read') {
       return {
         command: 'security',
         args: ['find-generic-password', '-a', account, '-s', SERVICE, '-w'],
-        secretVia: 'argv'
+        secretVia: 'none'
       };
     }
     return {
       command: 'security',
       args: ['delete-generic-password', '-a', account, '-s', SERVICE],
-      secretVia: 'argv'
+      secretVia: 'none'
     };
   }
 
@@ -77,8 +69,9 @@ export function keychainCommand(
     const verb = op === 'save' ? 'Write' : op === 'read' ? 'Read' : 'Remove';
     return {
       command: 'powershell',
-      args: ['-NoProfile', '-Command', `${verb}-KeeneticSecret -Account '${account}'`],
-      secretVia: 'stdin'
+      args: ['-NoProfile', '-Command',
+        `& { param([string]$Account) ${verb}-KeeneticSecret -Account $Account }`, account],
+      secretVia: op === 'save' ? 'stdin' : 'none'
     };
   }
 
@@ -93,13 +86,13 @@ export function keychainCommand(
     return {
       command: 'secret-tool',
       args: ['lookup', 'service', SERVICE, 'account', account],
-      secretVia: 'stdin'
+      secretVia: 'none'
     };
   }
   return {
     command: 'secret-tool',
     args: ['clear', 'service', SERVICE, 'account', account],
-    secretVia: 'stdin'
+    secretVia: 'none'
   };
 }
 
@@ -145,9 +138,8 @@ export function createSecretStore(
       const cmd = keychainCommand(platform, 'save', account);
       if (cmd) {
         try {
-          const args = cmd.secretVia === 'argv' ? [...cmd.args, secret] : cmd.args;
           const stdin = cmd.secretVia === 'stdin' ? secret : undefined;
-          const { code } = await run(cmd.command, args, stdin);
+          const { code } = await run(cmd.command, cmd.args, stdin);
           // Exit code 0 is not proof: an earlier version reported success while
           // storing an empty string. Confirm by reading the value back.
           if (code === 0 && (await readKeychain(account)) === secret) {
@@ -197,8 +189,8 @@ export function createKeychainStore(platform: NodeJS.Platform, run: Runner): Sec
   async function execute(op: 'save' | 'read' | 'remove', account: string, secret?: string): Promise<{ code: number; stdout: string }> {
     const cmd = keychainCommand(platform, op, account);
     if (!cmd) throw new Error('No system keychain adapter is available');
-    const args = op === 'save' && cmd.secretVia === 'argv' ? [...cmd.args, secret ?? ''] : cmd.args;
-    return run(cmd.command, args, op === 'save' && cmd.secretVia === 'stdin' ? secret : undefined);
+    return run(cmd.command, cmd.args,
+      op === 'save' && cmd.secretVia === 'stdin' ? secret : undefined);
   }
   return {
     async save(account, secret) {

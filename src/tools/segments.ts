@@ -25,7 +25,7 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async (): Promise<ToolResult> => {
+    guard(ctx, async (): Promise<ToolResult> => {
       const inventory = await readInventory(ctx.client.rci);
       const segments = [];
       for (const number of inventory.bridgeNumbers) {
@@ -97,7 +97,7 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
     },
-    guard(
+    guard(ctx,
       async ({
         name,
         ssid,
@@ -110,13 +110,14 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
       }): Promise<ToolResult> => {
         if ((ssid === undefined) !== (psk === undefined)) {
           return fail(
-            new ValidationError('ssid and psk go together: give both, or neither for a wired segment.')
+            new ValidationError('ssid and psk go together: give both, or neither for a wired segment.'),
+            ctx.maxResponseBytes
           );
         }
 
         if (dry_run !== false) return ok({ dryRun: true, planned: { name, wifi: ssid ?? null,
           subnet: subnet ?? 'auto', permitInterfaces: permit_interfaces ?? [] }, risk: 'high' }, ctx.maxResponseBytes);
-        if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'));
+        if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'), ctx.maxResponseBytes);
 
         const snapshot = await ctx.backup.ensure();
         const inventory = await readInventory(ctx.client.rci);
@@ -127,7 +128,7 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
               'No switch ports were found, so a VLAN cannot be trunked and the segment ' +
                 'would not appear in the web interface. Call list_segments to see what ' +
                 'this router reports.'
-            )
+            ), ctx.maxResponseBytes
           );
         }
 
@@ -183,22 +184,22 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
     },
-    guard(async ({ bridge, dry_run, confirm }): Promise<ToolResult> => {
+    guard(ctx, async ({ bridge, dry_run, confirm }): Promise<ToolResult> => {
       if (bridge === HOME_BRIDGE) {
         return fail(
           new ValidationError(
             `${HOME_BRIDGE} is the home segment that carries the local network and, most ` +
               'likely, this management session. It cannot be removed here.'
-          )
+          ), ctx.maxResponseBytes
         );
       }
 
       if (dry_run !== false) return ok({ dryRun: true, planned: { remove: bridge }, risk: 'high' }, ctx.maxResponseBytes);
-      if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'));
+      if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'), ctx.maxResponseBytes);
 
       const state = await readSegment(ctx.client.rci, bridge);
       if (state === null) {
-        return fail(new ValidationError(`There is no ${bridge} on this router.`));
+        return fail(new ValidationError(`There is no ${bridge} on this router.`), ctx.maxResponseBytes);
       }
 
       const snapshot = await ctx.backup.ensure();
@@ -221,7 +222,7 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
           new VerificationError(
             `${bridge} still exists after the removal. Left to clean up by hand: ` +
               `${failed.join('; ') || 'nothing reported as failed'}.`
-          )
+          ), ctx.maxResponseBytes
         );
       }
 

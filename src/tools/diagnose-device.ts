@@ -191,7 +191,7 @@ export function registerDeviceDiagnosticTool(server: ToolRegistrar, ctx: ToolCon
       inputSchema: deviceSelectorSchema,
       annotations: READ_ONLY
     },
-    guard(async selector => {
+    guard(ctx, async selector => {
       const evidence = await collectDeviceDiagnosticEvidence(ctx, selector);
       return ok(budgetDeviceDiagnostic(buildDeviceDiagnostic(evidence), ctx.maxResponseBytes), ctx.maxResponseBytes);
     })

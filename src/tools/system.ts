@@ -10,7 +10,7 @@ export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): vo
   server.registerTool(
     'get_connection_status',
     { title: 'Connection status', description: 'Safely tests RCI reachability and authentication without exposing credentials.', inputSchema: {}, annotations: READ_ONLY },
-    guard(async () => {
+    guard(ctx, async () => {
       const started = performance.now();
       const [caps, measured] = await Promise.all([
         ctx.client.capabilities(),
@@ -51,7 +51,7 @@ export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): vo
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => {
+    guard(ctx, async () => {
       const [caps, system] = await Promise.all([
         ctx.client.capabilities(),
         ctx.client.rci.get('show/system')
@@ -87,6 +87,6 @@ export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): vo
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => ok(await readConfigState(ctx.client.rci), ctx.maxResponseBytes))
+    guard(ctx, async () => ok(await readConfigState(ctx.client.rci), ctx.maxResponseBytes))
   );
 }

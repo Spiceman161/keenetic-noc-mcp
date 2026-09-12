@@ -94,6 +94,15 @@ describe('remote Digest authentication', () => {
 });
 
 describe('remote failure policy', () => {
+  it('does not start a cold request when the caller signal is already aborted', async () => {
+    const fetch = vi.fn();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(new RemoteSession({ ...opts, fetch }).request(
+      'GET', '/rci/show/version', undefined, { signal: controller.signal }
+    )).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it.each([401, 403])('classifies HTTP %s as auth and does not retry', async status => {
     const fetch = vi.fn().mockResolvedValue(new Response('', { status }));
     await expect(new RemoteSession({ ...opts, fetch }).request('GET', '/rci/show/version')).rejects.toBeInstanceOf(AuthError);

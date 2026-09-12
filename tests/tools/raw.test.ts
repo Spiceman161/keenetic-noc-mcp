@@ -4,17 +4,24 @@ import { registerRawTool } from '../../src/tools/raw.js';
 import type { ToolContext, ToolResult } from '../../src/tools/registry.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import { stubBackup } from '../helpers/backup.js';
+import { RciError } from '../../src/router/errors.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
-function harness(readOnly = false, payload: unknown = { title: '5.1.3' }) {
-  const get = vi.fn(async () => payload);
-  const post = vi.fn(async () => payload);
+function harness(readOnly = false, payload: unknown = { title: '5.1.3' },
+  audit?: ToolContext['audit']) {
+  const respond = async (): Promise<unknown> => {
+    if (payload instanceof Error) throw payload;
+    return payload;
+  };
+  const get = vi.fn(respond);
+  const post = vi.fn(respond);
   const client = {
     rci: { get, post, getText: vi.fn() },
     capabilities: vi.fn()
   } as unknown as KeeneticClient;
-  const ctx: ToolContext = { client, maxResponseBytes: 2_000, readOnly, backup: stubBackup() };
+  const ctx: ToolContext = { client, maxResponseBytes: 2_000, readOnly, backup: stubBackup(),
+    ...(audit === undefined ? {} : { audit }) };
 
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const handlers: Record<string, Handler> = {};
@@ -39,26 +46,26 @@ describe('rci_call', () => {
   it('performs a GET against any path, with no blocklist', async () => {
     const { handlers, get } = harness();
     const result = await handlers['rci_call']!({ method: 'GET', path: 'show/version' });
-    expect(get).toHaveBeenCalledWith('show/version');
+    expect(get).toHaveBeenCalledWith('show/version', 2_000);
     expect(JSON.parse(text(result))).toMatchObject({ title: '5.1.3' });
   });
 
   it('reaches a path no curated tool covers', async () => {
     const { handlers, get } = harness();
     await handlers['rci_call']!({ method: 'GET', path: 'show/processes' });
-    expect(get).toHaveBeenCalledWith('show/processes');
+    expect(get).toHaveBeenCalledWith('show/processes', 2_000);
   });
 
   it('performs a POST with the given body', async () => {
     const { handlers, post } = harness();
     await handlers['rci_call']!({ method: 'POST', body: { show: { version: {} } }, dry_run: false, confirm: true });
-    expect(post).toHaveBeenCalledWith({ show: { version: {} } });
+    expect(post).toHaveBeenCalledWith({ show: { version: {} } }, 2_000);
   });
 
   it('posts an array body unchanged, for a batch', async () => {
     const { handlers, post } = harness();
     await handlers['rci_call']!({ method: 'POST', body: [{ parse: 'show version' }], dry_run: false, confirm: true });
-    expect(post).toHaveBeenCalledWith([{ parse: 'show version' }]);
+    expect(post).toHaveBeenCalledWith([{ parse: 'show version' }], 2_000);
   });
 
   // A client with no `type` to go on may serialise the body to a string. Sent
@@ -67,13 +74,13 @@ describe('rci_call', () => {
   it('decodes a body that arrived as a JSON string', async () => {
     const { handlers, post } = harness();
     await handlers['rci_call']!({ method: 'POST', body: '{"show":{"version":{}}}', dry_run: false, confirm: true });
-    expect(post).toHaveBeenCalledWith({ show: { version: {} } });
+    expect(post).toHaveBeenCalledWith({ show: { version: {} } }, 2_000);
   });
 
   it('decodes a stringified array body', async () => {
     const { handlers, post } = harness();
     await handlers['rci_call']!({ method: 'POST', body: '[{"parse":"show version"}]', dry_run: false, confirm: true });
-    expect(post).toHaveBeenCalledWith([{ parse: 'show version' }]);
+    expect(post).toHaveBeenCalledWith([{ parse: 'show version' }], 2_000);
   });
 
   it('refuses a string body that is not JSON, instead of sending it', async () => {
@@ -130,5 +137,59 @@ describe('rci_call', () => {
     expect(Buffer.byteLength(wide, 'utf8')).toBeLessThanOrEqual(2_000);
     expect(JSON.parse(tight)).toMatchObject({ truncated: true });
     expect(JSON.parse(wide)).toMatchObject({ truncated: true });
+  });
+
+  it('passes the effective byte ceiling into the router read', async () => {
+    const setup = harness();
+    await setup.handlers['rci_call']!({ method: 'GET', path: 'show/version', max_bytes: 400 });
+    expect(setup.get).toHaveBeenCalledWith('show/version', 400);
+  });
+
+  it('bounds router errors to the per-call max_bytes ceiling', async () => {
+    const error = new RciError('response exceeds 200 byte safety limit', {
+      path: 'response', code: 'response-too-large', ident: 'rci'
+    });
+    const result = await harness(false, error).handlers['rci_call']!({
+      method: 'GET', path: 'show/large', max_bytes: 200
+    });
+    expect(result.isError).toBe(true);
+    expect(Buffer.byteLength(text(result), 'utf8')).toBeLessThanOrEqual(200);
+  });
+
+  it('reports a failed response after raw POST as uncertain and unsafe to retry', async () => {
+    const error = new RciError('response exceeds 200 byte safety limit', {
+      path: 'response', code: 'response-too-large', ident: 'rci'
+    });
+    const write = vi.fn().mockResolvedValue(undefined);
+    const result = await harness(false, error, { write }).handlers['rci_call']!({
+      method: 'POST', body: { interface: { Test0: { up: true } } },
+      max_bytes: 200, dry_run: false, confirm: true
+    });
+    expect(result.isError).toBeUndefined();
+    expect(Buffer.byteLength(text(result), 'utf8')).toBeLessThanOrEqual(200);
+    expect(JSON.parse(text(result))).toMatchObject({ applied: 'unknown', retrySafe: false });
+  });
+
+  it('does not mask an applied mutation when final audit outcome logging fails', async () => {
+    const write = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('audit unavailable'));
+    const setup = harness(false, { applied: true }, { write });
+    const result = await setup.handlers['rci_call']!({
+      method: 'POST', body: { show: { version: {} } }, dry_run: false, confirm: true
+    });
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(text(result))).toMatchObject({ auditRecorded: false });
+    expect(setup.post).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed before mutation when the audit attempt cannot be recorded', async () => {
+    const setup = harness(false, {}, { write: vi.fn(async () => { throw new Error('audit unavailable'); }) });
+    const result = await setup.handlers['rci_call']!({
+      method: 'POST', body: { show: { version: {} } }, dry_run: false, confirm: true
+    });
+    expect(result.isError).toBe(true);
+    expect(setup.post).not.toHaveBeenCalled();
   });
 });

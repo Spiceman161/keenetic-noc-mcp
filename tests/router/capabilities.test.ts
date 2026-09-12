@@ -31,6 +31,12 @@ describe('parseCapabilities', () => {
     expect(caps.features.size).toBe(0);
     expect(caps.firmware).toBe('2.16');
   });
+
+  it.each([{}, [], 'ok', { title: '5.1.3' }])(
+    'rejects a response that does not identify a router: %j', value => {
+      expect(() => parseCapabilities(value)).toThrow(/show\/version/i);
+    }
+  );
 });
 
 describe('client capability caching', () => {

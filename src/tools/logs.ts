@@ -23,6 +23,9 @@ export interface LogFilters {
   aliases?: readonly string[] | undefined;
 }
 
+const LOG_RESPONSE_MAX_BYTES = 2_000_000;
+const HOTSPOT_RESPONSE_MAX_BYTES = 256_000;
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -42,27 +45,37 @@ function scalar(value: unknown): string | undefined {
  * date-like value supplied by a device.
  */
 export function logEntries(raw: unknown): LogEntry[] {
-  if (typeof raw === 'string') {
-    return raw.split(/\r?\n/).filter(Boolean).map(line => ({
-      timestamp: timestampPrefix(line), ident: null, level: null, label: null, line
-    }));
+  const entries: LogEntry[] = [];
+  const pending: unknown[] = [raw];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (typeof node === 'string') {
+      for (const line of node.split(/\r?\n/).filter(Boolean)) entries.push({
+        timestamp: timestampPrefix(line), ident: null, level: null, label: null, line
+      });
+      continue;
+    }
+    if (Array.isArray(node)) {
+      for (let index = node.length - 1; index >= 0; index -= 1) pending.push(node[index]);
+      continue;
+    }
+    const root = record(node);
+    const message = root['message'];
+    const detail = record(message);
+    const text = typeof message === 'string' ? message : scalar(detail['message']);
+    if (text !== undefined) {
+      const timestamp = scalar(root['timestamp']) ?? null;
+      const ident = scalar(root['ident']) ?? null;
+      const level = scalar(detail['level']) ?? null;
+      const label = scalar(detail['label']) ?? null;
+      const fields = [timestamp, ident, level, label, text];
+      entries.push({ timestamp, ident, level, label, line: fields.filter(Boolean).join(' ') });
+      continue;
+    }
+    const children = root['log'] !== undefined ? [root['log']] : Object.values(root);
+    for (let index = children.length - 1; index >= 0; index -= 1) pending.push(children[index]);
   }
-  if (Array.isArray(raw)) return raw.flatMap(logEntries);
-
-  const root = record(raw);
-  const message = root['message'];
-  const detail = record(message);
-  const text = typeof message === 'string' ? message : scalar(detail['message']);
-  if (text !== undefined) {
-    const timestamp = scalar(root['timestamp']) ?? null;
-    const ident = scalar(root['ident']) ?? null;
-    const level = scalar(detail['level']) ?? null;
-    const label = scalar(detail['label']) ?? null;
-    const fields = [timestamp, ident, level, label, text];
-    return [{ timestamp, ident, level, label, line: fields.filter(Boolean).join(' ') }];
-  }
-  if (root['log'] !== undefined) return logEntries(root['log']);
-  return Object.values(root).flatMap(logEntries);
+  return entries;
 }
 
 /** Kept as the compact output contract used by existing callers. */
@@ -162,7 +175,7 @@ function publicEntry(entry: LogEntry): Record<string, string | null> {
 }
 
 async function hosts(rci: Rci): Promise<Array<Record<string, unknown>>> {
-  const raw = await rci.get('show/ip/hotspot');
+  const raw = await rci.get('show/ip/hotspot', HOTSPOT_RESPONSE_MAX_BYTES);
   return hotspotHosts(raw) ?? [];
 }
 
@@ -185,7 +198,7 @@ function responseFilters(args: { filter?: string | undefined; since?: string | u
 
 async function selectLogs(ctx: ToolContext, args: LogFilters & { device?: string | undefined }): Promise<{ all: LogEntry[]; selected: LogEntry[]; aliases?: string[] }> {
   const aliases = args.device === undefined ? undefined : await resolveDeviceAliases(ctx.client.rci, args.device);
-  const all = await readLogEntries(ctx);
+  const all = await readLogEntries(ctx, LOG_RESPONSE_MAX_BYTES);
   const selected = filterLogEntries(all, { ...args, ...(aliases === undefined ? {} : { aliases }) })
     .slice(-Math.min(args.lines ?? 100, 1000));
   return aliases === undefined ? { all, selected } : { all, selected, aliases };
@@ -200,7 +213,7 @@ export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void 
       inputSchema: { ...filtersSchema, device: z.string().trim().min(1).max(256).optional().describe('MAC, IP, registered name or hostname; all known aliases are matched.') },
       annotations: READ_ONLY
     },
-    guard(async args => {
+    guard(ctx, async args => {
       const { all, selected, aliases } = await selectLogs(ctx, args);
       return ok({
         lines: selected.map(entry => entry.line),
@@ -222,7 +235,7 @@ export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void 
       inputSchema: { device: z.string().trim().min(1).max(256), ...filtersSchema },
       annotations: READ_ONLY
     },
-    guard(async args => {
+    guard(ctx, async args => {
       const { all, selected, aliases } = await selectLogs(ctx, args);
       return ok({
         device: args.device,

@@ -31,6 +31,7 @@ import {
   diffConfigLines
 } from '../shape/config-diff.js';
 import { READ_ONLY } from './registry.js';
+import { writeAuditOutcome } from '../security/audit.js';
 
 const sectionSchema = z.enum(['dns', 'interfaces', 'routing', 'wifi', 'vpn', 'users', 'system', 'all']);
 const formatSchema = z.enum(['cli', 'structured']).optional().default('cli');
@@ -104,14 +105,14 @@ function registerConfigReadTools(server: ToolRegistrar, ctx: ToolContext): void 
     description: 'Returns a bounded, secret-redacted section of the active running configuration without changing the router.',
     inputSchema: { ...common, format: formatSchema },
     annotations: READ_ONLY
-  }, guard(async args => getConfig(ctx, 'running', args)));
+  }, guard(ctx, async args => getConfig(ctx, 'running', args)));
 
   server.registerTool('get_startup_config', {
     title: 'Read startup configuration',
     description: 'Returns a bounded, secret-redacted CLI section saved for reboot, or an explicit measured capability result.',
     inputSchema: { ...common, format: z.literal('cli').optional().default('cli') },
     annotations: READ_ONLY
-  }, guard(async args => getConfig(ctx, 'startup', args)));
+  }, guard(ctx, async args => getConfig(ctx, 'startup', args)));
 
   server.registerTool('search_config', {
     title: 'Search router configuration',
@@ -125,7 +126,7 @@ function registerConfigReadTools(server: ToolRegistrar, ctx: ToolContext): void 
       context: z.number().int().min(0).max(5).optional().default(2)
     },
     annotations: READ_ONLY
-  }, guard(async ({ source, query, section, limit, context }) => {
+  }, guard(ctx, async ({ source, query, section, limit, context }) => {
     const read = await readCliConfig(ctx.client, source);
     if (!read.available) return ok(unavailableEnvelope(source, 'cli', section, read), ctx.maxResponseBytes);
     const corpus = selectConfigSection(redactConfigLines(read.lines), section);
@@ -150,7 +151,7 @@ function registerConfigReadTools(server: ToolRegistrar, ctx: ToolContext): void 
         .describe('Maximum changed lines to include when include_diff is true.')
     },
     annotations: READ_ONLY
-  }, guard(async ({ include_diff, limit }) => {
+  }, guard(ctx, async ({ include_diff, limit }) => {
     const capabilities = await ctx.client.probedCapabilities();
     const startupAccess = capabilities.config.startup;
     if (startupAccess.state === 'unavailable') {
@@ -243,8 +244,8 @@ export function registerConfigTools(server: ToolRegistrar, ctx: ToolContext): vo
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
     },
-    guard(async ({ path, dry_run, confirm }): Promise<ToolResult> => {
-      if (!isAbsolute(path)) return fail(new ValidationError('Backup destination must be an absolute path.'));
+    guard(ctx, async ({ path, dry_run, confirm }): Promise<ToolResult> => {
+      if (!isAbsolute(path)) return fail(new ValidationError('Backup destination must be an absolute path.'), ctx.maxResponseBytes);
       if (dry_run !== false) return ok({ dryRun: true, path, effect: 'create owner-only startup-config backup; existing files are refused' }, ctx.maxResponseBytes);
       if (!confirm) throw new GuardError('Writing a local backup requires confirm=true together with dry_run=false.');
       const text = await ctx.client.rci.getText(STARTUP_CONFIG);
@@ -256,7 +257,7 @@ export function registerConfigTools(server: ToolRegistrar, ctx: ToolContext): vo
           new Error(
             `Could not create "${path}": ${(error as Error).message} ` +
               'Give an unused absolute path in a directory that exists.'
-          )
+          ), ctx.maxResponseBytes
         );
       }
       return ok({ path, bytes: Buffer.byteLength(text, 'utf8') }, ctx.maxResponseBytes);
@@ -274,21 +275,26 @@ export function registerConfigTools(server: ToolRegistrar, ctx: ToolContext): vo
       inputSchema: { dry_run: z.boolean().optional().default(true), confirm: z.boolean().optional().default(false) },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
     },
-    guard(async ({ dry_run, confirm }): Promise<ToolResult> => {
+    guard(ctx, async ({ dry_run, confirm }): Promise<ToolResult> => {
       const planned = { system: { configuration: { save: {} } } };
       const base = { tool: 'save_config', dryRun: dry_run, confirmed: confirm, risk: 'high', target: 'startup configuration', planned };
       if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequest: planned, expectedVerification: 'saved checksum equals running checksum', risk: 'high' }, ctx.maxResponseBytes); }
       if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real save requires confirm=true.'); }
+      await ctx.audit?.write({ ...base, phase: 'started', success: null });
       // Taken before the command so the poll can tell the router has acted.
       const before = await readLastChange(ctx.client.rci);
       try {
         const snapshot = await ctx.backup.ensure();
         await ctx.client.rci.post(planned);
         if (!(await waitForSaved(ctx, before))) throw new VerificationError('The save command was accepted but the router still reports unsaved changes. Call get_config_state before retrying.');
-        await ctx.audit?.write({ ...base, before, verified: true, saved: true, success: true });
-        return ok({ saved: true, backup: snapshot.path, note: 'The running configuration is now the startup configuration.' }, ctx.maxResponseBytes);
+        const auditRecorded = await writeAuditOutcome(ctx.audit, { ...base, before, verified: true, saved: true,
+          success: true });
+        return ok({ saved: true, backup: snapshot.path, auditRecorded,
+          ...(auditRecorded ? {} : { auditWarning: 'Final audit outcome could not be recorded.' }),
+          note: 'The running configuration is now the startup configuration.' }, ctx.maxResponseBytes);
       } catch (error) {
-        await ctx.audit?.write({ ...base, before, verified: false, saved: false, success: false, error: (error as Error).message });
+        await writeAuditOutcome(ctx.audit, { ...base, before, verified: false, saved: false,
+          success: false, error: (error as Error).message });
         throw error;
       }
     })

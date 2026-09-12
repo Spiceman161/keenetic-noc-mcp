@@ -1,4 +1,5 @@
 import type { Rci } from './rci.js';
+import { RciError } from './errors.js';
 
 export interface Capabilities {
   model: string;
@@ -25,20 +26,30 @@ function readString(source: Record<string, unknown>, key: string): string {
 
 /** Shapes `show/version` into the capability set the tool registry gates on. */
 export function parseCapabilities(version: unknown): Capabilities {
-  const root = (typeof version === 'object' && version !== null ? version : {}) as Record<
-    string,
-    unknown
-  >;
+  if (typeof version !== 'object' || version === null || Array.isArray(version)) {
+    throw new RciError('show/version returned an unexpected response', {
+      path: 'show/version', code: 'unexpected-response', ident: 'rci'
+    });
+  }
+  const root = version as Record<string, unknown>;
   const ndwRaw = root['ndw'];
   const ndw = (typeof ndwRaw === 'object' && ndwRaw !== null ? ndwRaw : {}) as Record<
     string,
     unknown
   >;
 
+  const model = readString(root, 'model');
+  const hwId = readString(root, 'hw_id');
+  const firmware = readString(root, 'title');
+  if (firmware.trim() === '' || model.trim() === '' && hwId.trim() === '') {
+    throw new RciError('show/version did not identify a Keenetic router and firmware', {
+      path: 'show/version', code: 'unexpected-response', ident: 'rci'
+    });
+  }
   return {
-    model: readString(root, 'model'),
-    hwId: readString(root, 'hw_id'),
-    firmware: readString(root, 'title'),
+    model,
+    hwId,
+    firmware,
     components: splitList(ndw['components']),
     features: splitList(ndw['features'])
   };

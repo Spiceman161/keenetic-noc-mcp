@@ -1,10 +1,11 @@
 import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
-import { capList } from '../shape/budget.js';
+import { boundedArrayEnvelope } from '../shape/config.js';
 import { projectInterface } from '../shape/project.js';
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 import { describeWrite, verifiedWrite } from './write.js';
 import { GuardError, KeeneticError, VerificationError } from '../router/errors.js';
+import { writeAuditOutcome } from '../security/audit.js';
 
 type InterfaceKind = 'all' | 'wan' | 'lan' | 'wifi' | 'vpn' | 'bridge';
 
@@ -68,7 +69,7 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
       },
       annotations: READ_ONLY
     },
-    guard(async ({ kind, detail, limit }) => {
+    guard(ctx, async ({ kind, detail, limit }) => {
       const raw = await ctx.client.rci.get('show/interface');
       const all = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
 
@@ -85,13 +86,9 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
           ? selected.map(([id, record]) => ({ id, ...(record as Record<string, unknown>) }))
           : selected.map(([id, record]) => projectInterface(id, record));
 
-      const capped = capList(shaped, limit ?? 100, ctx.maxResponseBytes);
-      return ok({
-        interfaces: capped.items,
-        shown: capped.shown,
-        total: capped.total,
-        ...(capped.note ? { note: capped.note } : {})
-      }, ctx.maxResponseBytes);
+      const total = shaped.length;
+      return ok(boundedArrayEnvelope({}, 'interfaces', shaped.slice(0, limit ?? 100),
+        ctx.maxResponseBytes, total), ctx.maxResponseBytes);
     })
   );
 
@@ -103,20 +100,21 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
         'Every field for a single interface, including protocol-specific detail such as ' +
         'WireGuard peers or PPPoE session state. Get the exact name from list_interfaces first.',
       inputSchema: {
-        name: z.string().describe('Interface id, for example Bridge0 or Wireguard3.')
+        name: z.string().trim().min(1).max(256)
+          .describe('Interface id, for example Bridge0 or Wireguard3.')
       },
       annotations: READ_ONLY
     },
-    guard(async ({ name }): Promise<ToolResult> => {
+    guard(ctx, async ({ name }): Promise<ToolResult> => {
       try {
         return ok(await readInterface(ctx, name), ctx.maxResponseBytes);
       } catch (error) {
-        if (error instanceof KeeneticError) return fail(error);
+        if (error instanceof KeeneticError) return fail(error, ctx.maxResponseBytes);
         return fail(
           new Error(
             `Could not read interface "${name}": ${(error as Error).message} ` +
               'Call list_interfaces to see the exact ids available on this router.'
-          )
+          ), ctx.maxResponseBytes
         );
       }
     })
@@ -141,7 +139,7 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
     },
-    guard(async ({ name, state, dry_run, confirm }): Promise<ToolResult> => {
+    guard(ctx, async ({ name, state, dry_run, confirm }): Promise<ToolResult> => {
       const body =
         state === 'up'
           ? { interface: { [name]: { up: true } } }
@@ -150,14 +148,19 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
       if (ctx.protectedInterfaces?.has(name)) { await ctx.audit?.write({ ...base, success: false, error: 'protected interface' }); throw new GuardError(`Interface "${name}" is protected.`); }
       if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true, verified: false }); return ok({ dryRun: true, target: name, plannedRciRequest: body, expectedVerification: `state=${state}`, risk: base.risk }, ctx.maxResponseBytes); }
       if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real mutation requires confirm=true.'); }
+      await ctx.audit?.write({ ...base, phase: 'started', success: null });
       try {
         const before = await readInterface(ctx, name);
         if (state === 'down' && before['defaultgw'] === true && !ctx.allowDestructive) throw new GuardError(`Disabling default-gateway interface "${name}" requires KEENETIC_ALLOW_DESTRUCTIVE=true.`);
         const snapshot = await ctx.backup.ensure();
         const after = await verifiedWrite({ apply: () => ctx.client.rci.post(body), readBack: () => readInterface(ctx, name), check: r => r['state'] === state, what: `${name} state=${state}` });
-        await ctx.audit?.write({ ...base, before, after, verified: true, saved: false, backupPath: snapshot.path, success: true });
-        return ok(describeWrite({ interface: name, state }, snapshot.path), ctx.maxResponseBytes);
-      } catch (error) { await ctx.audit?.write({ ...base, verified: false, success: false, error: (error as Error).message }); throw error; }
+        const auditRecorded = await writeAuditOutcome(ctx.audit, { ...base, before, after, verified: true,
+          saved: false, backupPath: snapshot.path, success: true });
+        return ok({ ...describeWrite({ interface: name, state }, snapshot.path), auditRecorded,
+          ...(auditRecorded ? {} : { auditWarning: 'Final audit outcome could not be recorded.' }) },
+        ctx.maxResponseBytes);
+      } catch (error) { await writeAuditOutcome(ctx.audit, { ...base, verified: false,
+        success: false, error: (error as Error).message }); throw error; }
     })
   );
 
@@ -165,12 +168,13 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
     title: 'Restart an interface', description: 'Bounded down/up cycle with verification. Previewed by default.',
     inputSchema: { name: z.string(), dry_run: z.boolean().optional().default(true), confirm: z.boolean().optional().default(false) },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
-  }, guard(async ({ name, dry_run, confirm }) => {
+  }, guard(ctx, async ({ name, dry_run, confirm }) => {
     const planned = [{ interface: { [name]: { up: { no: true } } } }, { interface: { [name]: { up: true } } }];
     const base = { tool: 'restart_interface', dryRun: dry_run, confirmed: confirm, risk: 'high', target: name, planned };
     if (ctx.protectedInterfaces?.has(name)) { await ctx.audit?.write({ ...base, success: false, error: 'protected interface' }); throw new GuardError(`Interface "${name}" is protected.`); }
     if (dry_run !== false) { await ctx.audit?.write({ ...base, success: true }); return ok({ dryRun: true, plannedRciRequests: planned, expectedVerification: 'down then final state up', risk: 'high' }, ctx.maxResponseBytes); }
     if (!confirm) { await ctx.audit?.write({ ...base, success: false, error: 'confirmation required' }); throw new GuardError('Real mutation requires confirm=true.'); }
+    await ctx.audit?.write({ ...base, phase: 'started', success: null });
     let backupPath: string | null = null;
     try { const before = await readInterface(ctx, name);
       if (before['defaultgw'] === true && !ctx.allowDestructive) throw new GuardError(`Restarting default-gateway interface "${name}" requires KEENETIC_ALLOW_DESTRUCTIVE=true.`);
@@ -178,7 +182,12 @@ export function registerInterfaceTools(server: ToolRegistrar, ctx: ToolContext):
       await ctx.client.rci.post(planned[0]); if ((await readInterface(ctx, name))['state'] !== 'down') throw new VerificationError(`${name} did not go down.`);
       await new Promise(resolve => setTimeout(resolve, 500)); await ctx.client.rci.post(planned[1]); const after = await readInterface(ctx, name);
       if (after['state'] !== 'up') throw new VerificationError(`${name} did not return up.`);
-      await ctx.audit?.write({ ...base, after, verified: true, saved: false, backupPath, success: true }); return ok(describeWrite({ interface: name, action: 'restart' }, backupPath), ctx.maxResponseBytes);
-    } catch (error) { await ctx.audit?.write({ ...base, success: false, error: (error as Error).message, backupPath }); throw error; }
+      const auditRecorded = await writeAuditOutcome(ctx.audit, { ...base, after, verified: true,
+        saved: false, backupPath, success: true });
+      return ok({ ...describeWrite({ interface: name, action: 'restart' }, backupPath), auditRecorded,
+        ...(auditRecorded ? {} : { auditWarning: 'Final audit outcome could not be recorded.' }) },
+      ctx.maxResponseBytes);
+    } catch (error) { await writeAuditOutcome(ctx.audit, { ...base, success: false,
+      error: (error as Error).message, backupPath }); throw error; }
   }));
 }

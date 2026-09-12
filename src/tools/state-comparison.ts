@@ -380,7 +380,7 @@ export function registerStateComparisonTools(server: ToolRegistrar, ctx: ToolCon
       domains: domainsSchema.describe('Optional allowlist of state domains to compare; defaults to every snapshot domain.')
     },
     annotations: READ_ONLY
-  }, guard(async ({ from_at, to_at, domains }): Promise<ToolResult> => {
+  }, guard(ctx, async ({ from_at, to_at, domains }): Promise<ToolResult> => {
     const from = normalizeTimestamp(from_at);
     const to = normalizeTimestamp(to_at);
     if (from !== null && to !== null && from >= to) {
@@ -404,7 +404,7 @@ export function registerStateComparisonTools(server: ToolRegistrar, ctx: ToolCon
       domains: domainsSchema.describe('Optional allowlist of state domains to compare; defaults to every snapshot domain.')
     },
     annotations: READ_ONLY
-  }, guard(async ({ since, until, limit, domains }): Promise<ToolResult> => {
+  }, guard(ctx, async ({ since, until, limit, domains }): Promise<ToolResult> => {
     const normalizedSince = normalizeTimestamp(since);
     const normalizedUntil = normalizeTimestamp(until);
     if (normalizedSince !== null && normalizedUntil !== null && normalizedSince > normalizedUntil) {

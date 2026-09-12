@@ -44,37 +44,21 @@ interface reads - is computed, not written:
 
 You never set those fields. If they are empty, the VLAN is missing.
 
-## Use the tool
-
-`create_segment` does all of it, picks free identifiers, verifies the result
-against `iseg`, and rolls the whole thing back if any step fails:
-
-```
-create_segment { "name": "iot", "ssid": "…", "psk": "…" }
-create_segment { "name": "vpn", "permit_interfaces": ["Wireguard1"] }
-create_segment { "name": "wired-lab", "subnet": 40 }
-```
+## Current tool boundary
 
 `list_segments` shows what exists and, per bridge, whether `uiVisible` is true.
 Run it first: a bridge that is already there but not visible has the same
 missing VLAN, and is worth mentioning to the user.
 
-Everything below is for doing it by hand through `rci_call`, which is worth
-reading anyway, because it is what the tool is doing.
+The shipped server does not currently advertise `create_segment` or
+`delete_segment`, because their live write shapes have not completed the safety
+bar. Treat the remainder as planning context only. Do not execute it through
+`rci_call`; give the operator a reviewable plan instead.
 
-## Doing it by hand
+## Planning the underlying Keenetic change
 
-Commands go through `parse`, which takes a CLI line:
-
-```
-rci_call { "method": "POST", "body": { "parse": "interface Bridge2 up" } }
-```
-
-An array executes several in order:
-
-```
-rci_call { "method": "POST", "body": [ { "parse": "…" }, { "parse": "…" } ] }
-```
+The examples below describe the router CLI operations needed for review; they
+are not instructions to send raw MCP writes.
 
 ### 1. Find what is free
 
@@ -230,7 +214,8 @@ Read `show/rc/mws/wlan` and `show/rc/ip/dhcp` first and match on
 `bind.interface` rather than assuming the names: a segment made in the web
 interface will not be called what this skill calls it.
 
-`delete_segment` does the whole list, in order, and refuses Bridge0.
+Deletion must perform the whole list in order and must refuse Bridge0. No
+curated deletion tool is currently advertised.
 
 A policy is shared configuration. Leave it unless nothing else references it.
 

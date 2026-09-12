@@ -58,8 +58,11 @@ async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array>
 }
 
 async function readResponse(res: Response, maxBytes?: number): Promise<Uint8Array> {
-  return maxBytes === undefined ? new Uint8Array(await res.arrayBuffer()) : readBounded(res, maxBytes);
+  return readBounded(res, maxBytes ?? DEFAULT_RESPONSE_MAX_BYTES);
 }
+
+/** Safety ceiling used when a caller has no narrower, endpoint-specific bound. */
+export const DEFAULT_RESPONSE_MAX_BYTES = 2_000_000;
 
 export interface RciStatus {
   status: string;
@@ -123,13 +126,14 @@ async function cancellationConfirmed(response: Response): Promise<boolean> {
  */
 export function collectStatuses(value: unknown): RciStatus[] {
   const found: RciStatus[] = [];
-
-  const walk = (node: unknown): void => {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const node = pending.pop();
     if (Array.isArray(node)) {
-      for (const item of node) walk(item);
-      return;
+      for (let index = node.length - 1; index >= 0; index -= 1) pending.push(node[index]);
+      continue;
     }
-    if (!isRecord(node)) return;
+    if (!isRecord(node)) continue;
 
     const block = node['status'];
     if (Array.isArray(block)) {
@@ -140,13 +144,12 @@ export function collectStatuses(value: unknown): RciStatus[] {
       }
     }
 
-    for (const [key, child] of Object.entries(node)) {
-      if (key === 'status') continue;
-      walk(child);
+    const children = Object.entries(node);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const entry = children[index];
+      if (entry?.[0] !== 'status') pending.push(entry?.[1]);
     }
-  };
-
-  walk(value);
+  }
   return found;
 }
 

@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,5 +24,20 @@ describe('JSONL audit', () => {
     await createAuditWriter(dir, 'lab').write({ tool: 'test' });
     expect((await stat(dir)).mode & 0o777).toBe(0o700);
     expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  it.each(['symbolic', 'hard'] as const)('refuses a %s link without changing its target', async kind => {
+    const root = await mkdtemp(join(tmpdir(), 'kn-audit-'));
+    const dir = join(root, 'state');
+    await mkdir(dir);
+    const sentinel = join(root, 'sentinel');
+    await writeFile(sentinel, 'unchanged', { mode: 0o644 });
+    const target = join(dir, 'audit.jsonl');
+    if (kind === 'symbolic') await symlink(sentinel, target);
+    else await link(sentinel, target);
+
+    await expect(createAuditWriter(dir, 'lab').write({ tool: 'test' })).rejects.toThrow();
+    expect(await readFile(sentinel, 'utf8')).toBe('unchanged');
+    expect((await stat(sentinel)).mode & 0o777).toBe(0o644);
   });
 });

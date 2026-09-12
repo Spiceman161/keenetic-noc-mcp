@@ -1,19 +1,34 @@
-const SENSITIVE_KEY = /^(authorization|cookie|password|passwd|passphrase|private[-_]?key|preshared[-_]?key|wpa[-_]?psk|psk|token|secret|key)$/i;
+const SENSITIVE_KEY_PART = /(?:^|[-_])(?:authorization|cookie|password|passwd|passphrase|private[-_]?key|preshared[-_]?key|shared[-_]?secret|auth[-_]?key|wpa[-_]?psk|psk|token|secret|community|key)(?:$|[-_])/i;
+const PUBLIC_KEY = /(?:^|[-_])public[-_]?key$/i;
+
+function sensitiveKey(key: string): boolean {
+  const normalized = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  if (PUBLIC_KEY.test(normalized)) {
+    const prefix = normalized.replace(/(?:^|[-_])public[-_]?key$/i, '');
+    if (!SENSITIVE_KEY_PART.test(prefix)) return false;
+  }
+  return SENSITIVE_KEY_PART.test(normalized);
+}
 const LONG_KEY = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g;
+const LABELLED_VALUE = /\b([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/g;
 
 export function redact<T>(value: T): T {
   const seen = new WeakSet<object>();
   const visit = (node: unknown): unknown => {
     if (typeof node === 'string') {
       return node
-        .replace(/\b(authorization|cookie|password|passwd|passphrase|wpa[-_]?psk|psk|token|secret|key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=[REDACTED]')
+        .replace(LABELLED_VALUE, (match, label: string) =>
+          sensitiveKey(label) ? `${label}=[REDACTED]` : match)
         .replace(LONG_KEY, '[REDACTED_KEY]');
     }
     if (!node || typeof node !== 'object') return node;
     if (seen.has(node)) return '[CIRCULAR]';
     seen.add(node);
     if (Array.isArray(node)) return node.map(visit);
-    return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, SENSITIVE_KEY.test(key) ? '[REDACTED]' : visit(child)]));
+    return Object.fromEntries(Object.entries(node).map(([key, child]) => [key,
+      sensitiveKey(key) ? '[REDACTED]' : visit(child)]));
   };
   return visit(value) as T;
 }
@@ -39,8 +54,6 @@ export const redactText = (value: string): string => redact(value
   .replace(URL_TOKEN, sanitizeUrl));
 
 const CLI_SECRET = /\b(password|passwd|passphrase|psk|wpa-psk|private-key|preshared-key|secret|token|key)(\s+)(.+)$/i;
-const CONFIG_SENSITIVE_KEY = /(?:authorization|cookie|password|passwd|passphrase|private[-_]?key|preshared[-_]?key|shared[-_]?secret|auth[-_]?key|wpa[-_]?psk|psk|token|secret|community|key)$/i;
-
 /** Redacts positional secrets used by Keenetic's saved CLI syntax. */
 export function redactConfigLines(lines: readonly string[]): string[] {
   let privateBlock = false;
@@ -84,7 +97,7 @@ export function redactStructuredConfig<T>(value: T): T {
     seen.add(node);
     if (Array.isArray(node)) return node.map(visit);
     return Object.fromEntries(Object.entries(node).map(([key, child]) =>
-      [key, CONFIG_SENSITIVE_KEY.test(key) ? '[REDACTED]' : visit(child)]));
+      [key, sensitiveKey(key) ? '[REDACTED]' : visit(child)]));
   };
   return visit(value) as T;
 }

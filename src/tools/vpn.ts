@@ -34,8 +34,8 @@ async function all(ctx: ToolContext): Promise<Array<Record<string, unknown>>> {
 }
 
 export function registerVpnTools(server: ToolRegistrar, ctx: ToolContext): void {
-  server.registerTool('list_vpn', { title: 'List VPN interfaces', description: 'Compact status for VPN interfaces and WireGuard peers. Secrets are always redacted.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok({ vpn: await all(ctx) }, ctx.maxResponseBytes)));
-  server.registerTool('get_vpn', { title: 'Get one VPN interface', description: 'Detailed projected state and protocol-specific runtime fields for one named VPN interface.', inputSchema: { name: z.string() }, annotations: READ_ONLY }, guard(async ({ name }) => {
+  server.registerTool('list_vpn', { title: 'List VPN interfaces', description: 'Compact status for VPN interfaces and WireGuard peers. Secrets are always redacted.', inputSchema: {}, annotations: READ_ONLY }, guard(ctx, async () => ok({ vpn: await all(ctx) }, ctx.maxResponseBytes)));
+  server.registerTool('get_vpn', { title: 'Get one VPN interface', description: 'Detailed projected state and protocol-specific runtime fields for one named VPN interface.', inputSchema: { name: z.string() }, annotations: READ_ONLY }, guard(ctx, async ({ name }) => {
     const found = (await all(ctx)).find(item => item['name'] === name);
     if (!found) throw new ValidationError(`VPN interface "${name}" was not found. Call list_vpn.`);
     return ok(found, ctx.maxResponseBytes);

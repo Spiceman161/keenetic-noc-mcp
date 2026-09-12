@@ -165,4 +165,11 @@ describe('get_device', () => {
     const result = await harness()['get_device']!({});
     expect(result.isError).toBe(true);
   });
+
+  it('rejects multiple or oversized selectors at the handler boundary', async () => {
+    expect((await harness()['get_device']!({
+      mac: '02:00:00:00:00:01', ip: '192.0.2.5'
+    })).isError).toBe(true);
+    expect((await harness()['get_device']!({ name: 'x'.repeat(257) })).isError).toBe(true);
+  });
 });

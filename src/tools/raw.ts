@@ -2,6 +2,7 @@ import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { GuardError, ValidationError } from '../router/errors.js';
 import { fail, guard, ok, type ToolContext, type ToolResult } from './registry.js';
+import { writeAuditOutcome } from '../security/audit.js';
 
 type RawBody = string | Record<string, unknown> | unknown[];
 
@@ -94,49 +95,67 @@ export function registerRawTool(server: ToolRegistrar, ctx: ToolContext): void {
         ? { readOnlyHint: true, openWorldHint: false }
         : { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
     },
-    guard(async ({ method, path, body, max_bytes, dry_run, confirm }): Promise<ToolResult> => {
+    guard(ctx, async ({ method, path, body, max_bytes, dry_run, confirm }): Promise<ToolResult> => {
       let payload: unknown;
+      const ceiling = Math.min(ctx.maxResponseBytes, max_bytes ?? ctx.maxResponseBytes);
 
       if (method === 'GET') {
         if (path === undefined || path.length === 0) {
-          return fail(new ValidationError('GET needs a path, for example "show/version".'));
+          return fail(new ValidationError('GET needs a path, for example "show/version".'), ceiling);
         }
       } else {
         if (ctx.readOnly) {
           return fail(
             new GuardError(
               'This server is running read-only, so raw POST is refused.'
-            )
+            ), ceiling
           );
         }
         if (ctx.allowRawWrite === false) {
-          return fail(new GuardError('Raw POST is disabled. Set KEENETIC_ALLOW_RAW_WRITE=true to enable its guarded use.'));
+          return fail(new GuardError('Raw POST is disabled. Set KEENETIC_ALLOW_RAW_WRITE=true to enable its guarded use.'), ceiling);
         }
         if (body === undefined) {
-          return fail(new ValidationError('POST needs a body, for example {"show": {"version": {}}}.'));
+          return fail(new ValidationError('POST needs a body, for example {"show": {"version": {}}}.'), ceiling);
         }
         const decoded = decodeBody(body);
-        if (!decoded.ok) return fail(new ValidationError(decoded.message));
+        if (!decoded.ok) return fail(new ValidationError(decoded.message), ceiling);
         payload = decoded.body;
-        if (unsafeRaw(payload)) return fail(new GuardError('Raw POST refused: payload touches an auth, crypto, security, user, or HTTP proxy branch.'));
-        if (dry_run !== false) return ok({ dryRun: true, plannedRciRequest: payload, risk: 'high', expectedVerification: 'manual narrow GET read-back required' }, ctx.maxResponseBytes);
-        if (!confirm) return fail(new GuardError('Raw POST requires confirm=true together with dry_run=false.'));
+        if (unsafeRaw(payload)) return fail(new GuardError('Raw POST refused: payload touches an auth, crypto, security, user, or HTTP proxy branch.'), ceiling);
+        if (dry_run !== false) return ok({ dryRun: true, plannedRciRequest: payload,
+          risk: 'high', expectedVerification: 'manual narrow GET read-back required' }, ceiling);
+        if (!confirm) return fail(new GuardError('Raw POST requires confirm=true together with dry_run=false.'), ceiling);
+        await ctx.audit?.write({ tool: 'rci_call', dryRun: false, confirmed: true,
+          risk: 'high', target: 'raw RCI', planned: payload, phase: 'started', success: null });
         await ctx.backup.ensure();
       }
 
       let result: unknown;
+      let auditRecorded = true;
       try {
-        result = method === 'GET' ? await ctx.client.rci.get(path as string) : await ctx.client.rci.post(payload);
-        if (method === 'POST') await ctx.audit?.write({ tool: 'rci_call', dryRun: false, confirmed: true, risk: 'high', target: 'raw RCI', planned: payload, verified: false, saved: false, success: true });
+        result = method === 'GET'
+          ? await ctx.client.rci.get(path as string, ceiling)
+          : await ctx.client.rci.post(payload, ceiling);
+        if (method === 'POST') auditRecorded = await writeAuditOutcome(ctx.audit, { tool: 'rci_call',
+          dryRun: false, confirmed: true, risk: 'high', target: 'raw RCI', planned: payload,
+          verified: false, saved: false, success: true });
       } catch (error) {
-        if (method === 'POST') await ctx.audit?.write({ tool: 'rci_call', dryRun: false, confirmed: true, risk: 'high', target: 'raw RCI', planned: payload, verified: false, saved: false, success: false, error: (error as Error).message });
-        throw error;
+        if (method === 'POST') {
+          const auditRecorded = await writeAuditOutcome(ctx.audit, { tool: 'rci_call',
+            dryRun: false, confirmed: true, risk: 'high', target: 'raw RCI', planned: payload,
+            verified: false, saved: false, success: null, uncertain: true,
+            error: (error as Error).message });
+          return ok({ applied: 'unknown', verified: false, retrySafe: false, auditRecorded,
+            note: 'Read current state; do not retry blindly.' }, ceiling);
+        }
+        if (method === 'GET') return fail(error, ceiling);
       }
 
       // max_bytes may only tighten the ceiling: a tool argument must not be able
       // to overrun the budget the operator configured with --max-response-bytes.
-      const ceiling = Math.min(ctx.maxResponseBytes, max_bytes ?? ctx.maxResponseBytes);
-      return ok(result, ceiling);
+      return ok(method === 'POST' && !auditRecorded
+        ? { auditRecorded: false, auditWarning: 'Final audit outcome could not be recorded.',
+            resultIncluded: false }
+        : result, ceiling);
     })
   );
 }

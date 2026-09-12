@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
 import { registerSystemTools } from '../../src/tools/system.js';
-import { fail, ok, type ToolContext, type ToolResult } from '../../src/tools/registry.js';
+import { fail, getToolResultTelemetry, guard, ok, type ToolContext, type ToolResult } from '../../src/tools/registry.js';
 import { AuthError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import { stubBackup } from '../helpers/backup.js';
@@ -79,6 +79,16 @@ describe('result helpers', () => {
     const result = fail('something odd');
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain('something odd');
+  });
+
+  it('bounds guarded errors to the configured response ceiling', async () => {
+    const handler = guard({ maxResponseBytes: 512 }, async () => {
+      throw new Error(`router failure ${'x '.repeat(5_000)}`);
+    });
+    const result = await handler({}, {} as never);
+    expect(Buffer.byteLength(textOf(result), 'utf8')).toBeLessThanOrEqual(512);
+    expect(textOf(result)).toContain('truncated');
+    expect(getToolResultTelemetry(result)?.outputTruncated).toBe(true);
   });
 });
 

@@ -94,7 +94,7 @@ export function registerInternetDiagnosticTool(server: ToolRegistrar, ctx: ToolC
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => {
+    guard(ctx, async () => {
       // This is the whole-router sentinel. Authentication or transport failure
       // here means none of the later partial evidence can be trusted as current.
       let capabilities: Capabilities;
@@ -107,7 +107,9 @@ export function registerInternetDiagnosticTool(server: ToolRegistrar, ctx: ToolC
         versionAvailable = Boolean(capabilities.model || capabilities.hwId || capabilities.firmware);
       } catch (error) {
         if (error instanceof AuthError || error instanceof TransportError) throw error;
-        capabilities = parseCapabilities({});
+        capabilities = {
+          model: '', hwId: '', firmware: '', components: new Set(), features: new Set()
+        };
       }
       let sessionFailure: TransportError | null = null;
       const poll = async <T>(operation: () => Promise<T>): Promise<PromiseSettledResult<T>> => {

@@ -114,7 +114,7 @@ export function registerWifiDiagnosticTools(server: ToolRegistrar, ctx: ToolCont
     title: 'Diagnose Wi-Fi health',
     description: 'Aggregates bounded radio, access-point, association and signal health without exposing client identifiers, SSIDs or BSSIDs.',
     inputSchema: {}, annotations: READ_ONLY
-  }, guard(async () => compactOk(
+  }, guard(ctx, async () => compactOk(
     budgetWifiDiagnostic(await collectWifiDiagnostic(ctx), ctx.maxResponseBytes), ctx.maxResponseBytes
   )));
 
@@ -122,7 +122,7 @@ export function registerWifiDiagnosticTools(server: ToolRegistrar, ctx: ToolCont
     title: 'Diagnose one Wi-Fi client',
     description: 'Resolves exactly one known device and reports its bounded Wi-Fi association, signal, access-point and radio evidence without active traffic.',
     inputSchema: selectorSchema, annotations: READ_ONLY
-  }, guard(async selector => compactOk(
+  }, guard(ctx, async selector => compactOk(
     budgetWifiClientHealth(await collectWifiClientHealth(ctx, selector), ctx.maxResponseBytes), ctx.maxResponseBytes
   )));
 }

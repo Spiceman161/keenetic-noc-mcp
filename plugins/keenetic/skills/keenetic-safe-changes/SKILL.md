@@ -44,14 +44,11 @@ In writable mode, `backup_config` takes one on demand after a preview and
 explicit confirmation. It creates an owner-only file and refuses an existing
 destination.
 
-## Order matters for devices
+## Device changes are not currently exposed
 
-A device must be registered before its access, policy, schedule or priority can
-be set. Setting a `name` registers it, so if you are configuring a device the
-router has only seen and not registered, set the name in the same
-`update_device` call. The tool already applies name first.
-
-Symptom of getting this wrong: `host "..." is unregistered`.
+The shipped MCP registry intentionally does not advertise `update_device`.
+Use `get_device` or `diagnose_device` to inspect the current state and describe
+the intended change, but do not fall back to a raw POST to apply it.
 
 ## What can cut off your own access
 

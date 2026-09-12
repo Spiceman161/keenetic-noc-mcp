@@ -89,6 +89,9 @@ export class RemoteSession {
     const deadline = this.now() + this.effectiveTimeoutMs(
       controls.timeoutMs ?? Number.POSITIVE_INFINITY
     );
+    if (controls.signal?.aborted) {
+      throw this.transportError('request cancelled before it started', method, url);
+    }
 
     if (this.authorization === null) {
       const existing = this.handshake;
@@ -214,6 +217,9 @@ export class RemoteSession {
 
   private async withinDeadline<T>(promise: Promise<T>, deadline: number, method: string, url: URL,
     signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) {
+      throw this.transportError('request cancelled while waiting for authentication', method, url);
+    }
     const remaining = deadline - this.now();
     if (remaining <= 0) throw this.transportError('request deadline exceeded while waiting for authentication', method, url);
     let timer: ReturnType<typeof setTimeout> | undefined;

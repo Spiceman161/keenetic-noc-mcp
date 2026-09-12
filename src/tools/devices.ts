@@ -1,7 +1,7 @@
 import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { GuardError, ValidationError } from '../router/errors.js';
-import { capList } from '../shape/budget.js';
+import { boundedArrayEnvelope } from '../shape/config.js';
 import { projectDevice } from '../shape/project.js';
 import {
   hotspotHosts,
@@ -64,7 +64,7 @@ export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): vo
       },
       annotations: READ_ONLY
     },
-    guard(async ({ filter, sort, limit }) => {
+    guard(ctx, async ({ filter, sort, limit }) => {
       const hosts = await fetchHosts(ctx);
       let devices = hosts.map(projectDevice);
 
@@ -100,13 +100,9 @@ export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): vo
           break;
       }
 
-      const capped = capList(devices, limit ?? 50, ctx.maxResponseBytes);
-      return ok({
-        devices: capped.items,
-        shown: capped.shown,
-        total: capped.total,
-        ...(capped.note ? { note: capped.note } : {})
-      }, ctx.maxResponseBytes);
+      const total = devices.length;
+      return ok(boundedArrayEnvelope({}, 'devices', devices.slice(0, limit ?? 50),
+        ctx.maxResponseBytes, total), ctx.maxResponseBytes);
     })
   );
 
@@ -117,26 +113,22 @@ export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): vo
       description:
         'Every field the router holds for a single device: DHCP lease, Wi-Fi rate and mode, ' +
         'access policy, traffic shaping, first and last seen. Identify it by MAC, IP or name.',
-      inputSchema: {
-        mac: z.string().optional().describe('MAC address, any case.'),
-        ip: z.string().optional().describe('Current IPv4 address.'),
-        name: z.string().optional().describe('Registered name or hostname.')
-      },
+      inputSchema: z.union([
+        z.strictObject({ mac: z.string().trim().min(1).max(64).describe('MAC address, any case.') }),
+        z.strictObject({ ip: z.string().trim().min(1).max(64).describe('Current IPv4 address.') }),
+        z.strictObject({ name: z.string().trim().min(1).max(256).describe('Registered name or hostname.') })
+      ]),
       annotations: READ_ONLY
     },
-    guard(async ({ mac, ip, name }): Promise<ToolResult> => {
-      if (!mac && !ip && !name) {
-        return fail(new ValidationError('Supply one of mac, ip or name to identify the device.'));
-      }
-
+    guard(ctx, async (selector): Promise<ToolResult> => {
       const hosts = await fetchHosts(ctx);
-      const match = resolveDeviceRecord(hosts, { mac, ip, name });
+      const match = resolveDeviceRecord(hosts, selector, true);
 
       if (!match) {
         return fail(
           new ValidationError(
             'No device matched. Call list_devices to find its exact name, IP or MAC address.'
-          )
+          ), ctx.maxResponseBytes
         );
       }
       return ok(match, ctx.maxResponseBytes);
@@ -166,7 +158,7 @@ export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): vo
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
     },
-    guard(async ({ mac, name, access, policy, schedule, priority, dry_run, confirm }): Promise<ToolResult> => {
+    guard(ctx, async ({ mac, name, access, policy, schedule, priority, dry_run, confirm }): Promise<ToolResult> => {
       if (
         name === undefined &&
         access === undefined &&
@@ -177,7 +169,7 @@ export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): vo
         return fail(
           new ValidationError(
             'Nothing to change. Supply at least one of name, access, policy, schedule or priority.'
-          )
+          ), ctx.maxResponseBytes
         );
       }
 
@@ -185,7 +177,7 @@ export function registerDeviceTools(server: ToolRegistrar, ctx: ToolContext): vo
         ...(policy === undefined ? {} : { policy }), ...(schedule === undefined ? {} : { schedule }),
         ...(priority === undefined ? {} : { priority }) };
       if (dry_run !== false) return ok({ dryRun: true, planned, risk: 'high' }, ctx.maxResponseBytes);
-      if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'));
+      if (!confirm) return fail(new GuardError('Real mutation requires confirm=true together with dry_run=false.'), ctx.maxResponseBytes);
 
       const snapshot = await ctx.backup.ensure();
       const applied: Record<string, unknown> = {};

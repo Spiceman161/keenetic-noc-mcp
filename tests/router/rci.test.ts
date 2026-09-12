@@ -37,6 +37,12 @@ describe('collectStatuses', () => {
   it('returns nothing for a clean response', () => {
     expect(collectStatuses({ title: '5.1.3', ndw: { components: 'base,ip6' } })).toEqual([]);
   });
+
+  it('handles deeply nested bounded input without overflowing the stack', () => {
+    let value: unknown = { status: [{ status: 'error', code: 'deep' }] };
+    for (let depth = 0; depth < 7_000; depth += 1) value = { child: value };
+    expect(collectStatuses(value)).toMatchObject([{ code: 'deep' }]);
+  });
 });
 
 describe('Rci.get', () => {
@@ -91,10 +97,10 @@ describe('Rci.get', () => {
     expect(cancelled).toBe(true);
   });
 
-  it('preserves the legacy unbounded default outside explicit preflight reads', async () => {
-    const body = JSON.stringify({ value: 'x'.repeat(1_000_100) });
+  it('applies a default ceiling when the caller omits an endpoint-specific bound', async () => {
+    const body = JSON.stringify({ value: 'x'.repeat(2_000_100) });
     const rci = new Rci(sessionReturning(body));
-    await expect(rci.get<{ value: string }>('show/large')).resolves.toMatchObject({ value: expect.any(String) });
+    await expect(rci.get('show/large')).rejects.toMatchObject({ code: 'response-too-large' });
   });
 });
 

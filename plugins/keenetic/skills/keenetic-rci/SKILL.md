@@ -142,6 +142,7 @@ The `get_interface` tool already does this.
 
 ## Before you write anything
 
-Read [keenetic-safe-changes](../keenetic-safe-changes/SKILL.md). Writes through
-`rci_call` skip the verification and the automatic backup that the curated tools
-provide, so prefer `update_device` and `set_interface_state` whenever they fit.
+Read [keenetic-safe-changes](../keenetic-safe-changes/SKILL.md). Raw writes skip
+curated read-back verification. Use only write tools actually advertised by the
+connected server; currently prefer `set_interface_state` or `restart_interface`
+when they fit, and do not emulate unavailable curated tools with a raw POST.

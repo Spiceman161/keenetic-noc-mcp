@@ -14,6 +14,50 @@ describe('redaction', () => {
     });
     expect(redactText('passphrase="two words" key=short')).toBe('passphrase=[REDACTED] key=[REDACTED]');
   });
+  it('uses the strict secret-key policy for every object output', () => {
+    const output = redact({ snmp: { community: 'community-value' },
+      radius: { 'shared-secret': 'shared-value', 'auth-key': 'auth-value' },
+      oauth: { 'client-secret': 'client-value', 'api-token': 'token-value',
+        'password-hash': 'hash-value', 'secret-key': 'secret-value',
+        clientSecret: 'camel-client', apiToken: 'camel-token', passwordHash: 'camel-hash',
+        secretKey: 'camel-secret', 'public-key': 'public-value', publicKey: 'camel-public' } });
+    expect(JSON.stringify(output)).not.toMatch(/community-value|shared-value|auth-value|client-value|token-value|hash-value|secret-value|camel-client|camel-token|camel-hash|camel-secret/);
+    expect(output.oauth['public-key']).toBe('public-value');
+    expect(output.oauth.publicKey).toBe('camel-public');
+  });
+  it('does not let a public-key suffix override an earlier sensitive component', () => {
+    const output = redact({ 'password-public-key': 'first-secret',
+      privateKeyPublicKey: 'second-secret', 'wireguard-public-key': 'public-value' });
+    expect(JSON.stringify(output)).not.toMatch(/first-secret|second-secret/);
+    expect(output['wireguard-public-key']).toBe('public-value');
+  });
+  it('redacts strict key variants in free-form errors', () => {
+    const output = redactText('shared-secret=one auth_key:two community=three');
+    expect(output).not.toMatch(/one|two|three/);
+  });
+  it('redacts camelCase labels and quoted values in free-form errors', () => {
+    const output = redactText(
+      'clientSecret=one apiToken:"two words" passwordHash=three secretKey=\'four words\''
+    );
+    expect(output).not.toMatch(/one|two words|three|four words/);
+  });
+  it('redacts arbitrary key labels without masking public-key labels or safe words', () => {
+    const output = redactText(
+      'apiKey=one accessKey:"two words" signingKey=three publicKey=four ' +
+      'wireguard-public-key=five monkey=six hockey=seven'
+    );
+    expect(output).not.toMatch(/one|two words|three/);
+    expect(output).toContain('publicKey=four');
+    expect(output).toContain('wireguard-public-key=five');
+    expect(output).toContain('monkey=six');
+    expect(output).toContain('hockey=seven');
+  });
+  it('redacts acronym-prefixed key labels in objects and free-form text', () => {
+    const object = redact({ APIKey: 'one', HMACKey: 'two', SSHKey: 'three' });
+    expect(JSON.stringify(object)).not.toMatch(/one|two|three/);
+    const text = redactText('APIKey=one HMACKey:"two words" SSHKey=three');
+    expect(text).not.toMatch(/one|two words|three/);
+  });
   it('removes URL credentials, query secrets, fragments and complete authorization values', () => {
     const output = redactText(
       'https://alice:swordfish@example.test/path?token=private#fragment Authorization: Bearer short-secret'

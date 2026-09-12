@@ -29,23 +29,26 @@ describe('keychainCommand', () => {
     expect(cmd?.command).toBe('powershell');
   });
 
-  // stdin is preferred because argv is readable by other processes of the same
-  // user. macOS leaves no choice: `security` takes the password as an argument,
-  // and its interactive mode re-tokenises the line, truncating any password
-  // containing a quote. Verified against the real tool.
   it('declares stdin wherever the tool supports it', () => {
     expect(keychainCommand('linux', 'save', 'a')?.secretVia).toBe('stdin');
     expect(keychainCommand('win32', 'save', 'a')?.secretVia).toBe('stdin');
   });
 
-  it('declares argv on macOS, where the tool gives no alternative', () => {
-    expect(keychainCommand('darwin', 'save', 'a')?.secretVia).toBe('argv');
+  it('does not expose a macOS save command that would require the secret in argv', () => {
+    expect(keychainCommand('darwin', 'save', 'a')).toBeNull();
+  });
+
+  it('passes a hostile Windows account as data rather than PowerShell source', () => {
+    const account = "x'; Write-Output injected; #'";
+    const cmd = keychainCommand('win32', 'read', account)!;
+    expect(cmd.args.at(-1)).toBe(account);
+    expect(cmd.args[2]).not.toContain(account);
   });
 
   it('never bakes the secret into the template itself', () => {
     for (const platform of ['darwin', 'linux', 'win32'] as NodeJS.Platform[]) {
       const cmd = keychainCommand(platform, 'save', 'admin@192.0.2.1');
-      expect(cmd?.args.join(' '), `${platform} template contains a secret`).not.toContain('hunter2');
+      expect(cmd?.args.join(' ') ?? '', `${platform} template contains a secret`).not.toContain('hunter2');
     }
   });
 });
@@ -74,14 +77,14 @@ describe('createSecretStore', () => {
     expect(stdin).toBe('hunter2');
   });
 
-  it('appends the secret as the final argument on macOS', async () => {
+  it('never passes a saved secret in argv on any platform', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-sec-'));
-    const spy = vi.fn().mockResolvedValue({ code: 0, stdout: 'hunter2\n' });
-    const store = createSecretStore('darwin', spy as unknown as Runner, dir);
-    await store.save('admin@192.0.2.1', 'hunter2');
-
-    const [, args] = spy.mock.calls[0]!;
-    expect((args as string[]).at(-1)).toBe('hunter2');
+    for (const platform of ['darwin', 'linux', 'win32'] as NodeJS.Platform[]) {
+      const spy = vi.fn().mockResolvedValue({ code: 0, stdout: 'hunter2\n' });
+      await createSecretStore(platform, spy as unknown as Runner, dir)
+        .save(`admin-${platform}@192.0.2.1`, 'hunter2');
+      for (const call of spy.mock.calls) expect((call[1] as string[]).join(' ')).not.toContain('hunter2');
+    }
   });
 
   // An earlier version reported success while storing an empty string, because
@@ -89,7 +92,7 @@ describe('createSecretStore', () => {
   it('falls back to the file when the keychain claims success but stored nothing', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-sec-'));
     const lying = vi.fn().mockResolvedValue({ code: 0, stdout: '' });
-    const store = createSecretStore('darwin', lying as unknown as Runner, dir);
+    const store = createSecretStore('linux', lying as unknown as Runner, dir);
 
     await expect(store.save('admin@192.0.2.1', 'hunter2')).resolves.toMatch(/file/i);
     await expect(store.read('admin@192.0.2.1')).resolves.toBe('hunter2');
@@ -110,7 +113,7 @@ describe('createSecretStore', () => {
 
   it('says where the secret went so the wizard can report it', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-sec-'));
-    const store = createSecretStore('darwin', runner({ code: 0, stdout: 'hunter2\n' }), dir);
+    const store = createSecretStore('linux', runner({ code: 0, stdout: 'hunter2\n' }), dir);
     await expect(store.save('admin@192.0.2.1', 'hunter2')).resolves.toMatch(/keychain/i);
   });
 
@@ -126,7 +129,7 @@ describe('createSecretStore', () => {
     const dir = await mkdtemp(join(tmpdir(), 'kn-sec-'));
     // Echoing the secret back is what makes the keychain "working": the store
     // confirms the value rather than trusting the exit code.
-    const store = createSecretStore('darwin', runner({ code: 0, stdout: 'hunter2\n' }), dir);
+    const store = createSecretStore('linux', runner({ code: 0, stdout: 'hunter2\n' }), dir);
     await store.save('admin@192.0.2.1', 'hunter2');
     await expect(readFile(join(dir, 'secrets.json'), 'utf8')).rejects.toThrow();
   });

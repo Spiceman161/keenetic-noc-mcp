@@ -44,6 +44,11 @@ Passwords, authorization, cookies, private keys, PSKs, tokens and long key
 material are redacted from tool output and audit. Restrict state-directory
 permissions and retain backups appropriately.
 
+Confirmed mutations fail closed if their initial audit record cannot be
+written. If only the final outcome append fails after a verified change, the
+tool keeps the applied result and returns `auditRecorded: false` with a warning,
+so the caller is not encouraged to repeat an already-applied operation.
+
 When enabled, technical call records are appended separately to owner-only
 `mcp-calls.jsonl`. Telemetry failure is fail-open for the MCP call, and the
 journal contains controlled metadata only. It is not a mutation audit, user

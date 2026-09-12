@@ -51,7 +51,9 @@ const WRITE_TOOLS = [
 
 function context(readOnly: boolean): ToolContext {
   const client = {
-    rci: { get: vi.fn(async () => ({})), post: vi.fn(), getText: vi.fn() },
+    rci: { get: vi.fn(async (path: string) => path === 'show/version'
+      ? { title: '5.1.3', model: 'Keenetic Model (KN-0000)', hw_id: 'KN-0000' }
+      : {}), post: vi.fn(), getText: vi.fn() },
     capabilities: vi.fn(async () => ({
       model: 'Keenetic Model (KN-0000)',
       hwId: 'KN-0000',

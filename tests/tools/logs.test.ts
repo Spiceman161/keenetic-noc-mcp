@@ -55,7 +55,7 @@ describe('log tools', () => {
       timestamp: '00:02', ident: 'Hotspot', level: 'info', label: 'Host',
       line: '00:02 Hotspot info Host 192.0.2.5 joined'
     }]);
-    expect(post).toHaveBeenCalledWith({ show: { log: {} } });
+    expect(post).toHaveBeenCalledWith({ show: { log: {} } }, 2_000_000);
   });
 
   it('resolves normalized device names to log aliases', async () => {
@@ -110,6 +110,12 @@ describe('log tools', () => {
     expect(logEntries('00:01 ready')[0]).toEqual({
       timestamp: '00:01', ident: null, level: null, label: null, line: '00:01 ready'
     });
+  });
+
+  it('walks deeply nested responses without overflowing the stack', () => {
+    let raw: unknown = { timestamp: '00:01', message: 'ready' };
+    for (let depth = 0; depth < 7_000; depth += 1) raw = { log: raw };
+    expect(logEntries(raw).map(entry => entry.line)).toEqual(['00:01 ready']);
   });
 
   it('accepts the combined filters through the device-specific MCP tool', async () => {

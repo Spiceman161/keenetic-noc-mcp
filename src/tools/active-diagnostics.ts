@@ -34,7 +34,7 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
       timeout_ms: z.number().int().min(1_000).max(15_000).optional().default(5_000)
     },
     annotations: ACTIVE
-  }, guard(async ({ target, family, count, timeout_ms }, request) => {
+  }, guard(ctx, async ({ target, family, count, timeout_ms }, request) => {
     const command = pingCommand(target, family, count);
     return coordinator.run(async () => {
       const result = await ctx.client.rci.runContinued(command.path, command.body, INPUT_BYTES, {
@@ -58,7 +58,7 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
       timeout_ms: z.number().int().min(1_000).max(30_000).optional().default(15_000)
     },
     annotations: ACTIVE
-  }, guard(async ({ target, max_hops, timeout_ms }, request) => {
+  }, guard(ctx, async ({ target, max_hops, timeout_ms }, request) => {
     const command = tracerouteCommand(target, max_hops);
     return coordinator.run(async () => {
       const result = await ctx.client.rci.runContinued(command.path, command.body, INPUT_BYTES, {

@@ -41,7 +41,7 @@ export function projectDns(raw: unknown): Record<string, unknown> {
     errors: proxy['error'] ?? proxy['errors'] ?? [] };
 }
 export function registerDnsTools(server: ToolRegistrar, ctx: ToolContext): void {
-  server.registerTool('get_dns_status', { title: 'DNS proxy status', description: 'Compact DNS proxy state, upstream resolvers, encrypted-DNS metadata, static host count, and relevant errors.', inputSchema: {}, annotations: READ_ONLY }, guard(async () => ok(projectDns(await ctx.client.rci.get('show/dns-proxy', 128_000)), ctx.maxResponseBytes)));
+  server.registerTool('get_dns_status', { title: 'DNS proxy status', description: 'Compact DNS proxy state, upstream resolvers, encrypted-DNS metadata, static host count, and relevant errors.', inputSchema: {}, annotations: READ_ONLY }, guard(ctx, async () => ok(projectDns(await ctx.client.rci.get('show/dns-proxy', 128_000)), ctx.maxResponseBytes)));
 
   server.registerTool('list_dns_upstreams', {
     title: 'List DNS upstreams',
@@ -51,7 +51,7 @@ export function registerDnsTools(server: ToolRegistrar, ctx: ToolContext): void 
         .describe('Maximum upstream observations. Defaults to 50.')
     },
     annotations: READ_ONLY
-  }, guard(async ({ limit }) => {
+  }, guard(ctx, async ({ limit }) => {
     const sources: Record<string, { status: 'available' | 'unavailable'; reason: SafeReason | null }> = {};
     const upstreams: DnsUpstreamObservation[] = [];
     try {

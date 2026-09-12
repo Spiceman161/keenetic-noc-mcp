@@ -154,7 +154,7 @@ export function registerDnsDiagnosticTool(server: ToolRegistrar, ctx: ToolContex
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(async () => {
+    guard(ctx, async () => {
       const evidence = await collectDnsDiagnosticEvidence(ctx);
       return ok(budgetDnsDiagnostic(buildDnsDiagnostic(evidence), ctx.maxResponseBytes), ctx.maxResponseBytes);
     })

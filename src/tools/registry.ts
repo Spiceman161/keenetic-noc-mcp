@@ -6,6 +6,7 @@ import { redact, redactText } from '../security/redact.js';
 import type { AuditWriter } from '../security/audit.js';
 import type { SnapshotStore } from '../router/snapshot-store.js';
 import { normalizeErrorCode } from '../telemetry/record.js';
+import { capText } from '../shape/budget.js';
 
 export interface ToolContext {
   client: KeeneticClient;
@@ -88,27 +89,40 @@ export function compactOk(payload: unknown, maxBytes: number): ToolResult {
  * Every handler funnels failures through here. The text is read by a model, so
  * it must say what happened and what to do next - never a bare stack trace.
  */
-export function fail(error: unknown): ToolResult {
-  const text =
+export function fail(error: unknown, maxBytes = 25_000): ToolResult {
+  const fullText =
     error instanceof KeeneticError
       ? redactText(error.message)
       : error instanceof Error
         ? `${redactText(error.message)} Retry, or call get_system_info to check connectivity.`
         : `${redactText(String(error))} Retry, or call get_system_info to check connectivity.`;
+  const text = capText(fullText, maxBytes);
   const result: ToolResult = { content: [{ type: 'text', text }], isError: true };
-  resultTelemetry.set(result, { errorCode: normalizeErrorCode(error), outputTruncated: false });
+  resultTelemetry.set(result, {
+    errorCode: normalizeErrorCode(error), outputTruncated: text !== fullText
+  });
   return result;
 }
 
 /** Wraps a handler so it can never reject - the SDK expects a result, not a throw. */
+type ToolHandler<A> = (args: A, context: ServerContext) => Promise<ToolResult>;
+
+export function guard<A>(handler: ToolHandler<A>): ToolHandler<A>;
+export function guard<A>(ctx: Pick<ToolContext, 'maxResponseBytes'>,
+  handler: ToolHandler<A>): ToolHandler<A>;
 export function guard<A>(
-  handler: (args: A, context: ServerContext) => Promise<ToolResult>
-): (args: A, context: ServerContext) => Promise<ToolResult> {
+  ctxOrHandler: Pick<ToolContext, 'maxResponseBytes'> | ToolHandler<A>,
+  suppliedHandler?: ToolHandler<A>
+): ToolHandler<A> {
+  const handler = typeof ctxOrHandler === 'function' ? ctxOrHandler : suppliedHandler!;
+  const maxResponseBytes = typeof ctxOrHandler === 'function'
+    ? 25_000
+    : ctxOrHandler.maxResponseBytes;
   return async (args: A, context: ServerContext) => {
     try {
       return await handler(args, context);
     } catch (error) {
-      return fail(error);
+      return fail(error, maxResponseBytes);
     }
   };
 }
