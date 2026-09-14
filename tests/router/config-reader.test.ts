@@ -4,7 +4,8 @@ import { readCliConfig, readStructuredRunningConfig } from '../../src/router/con
 import { RciError, TransportError } from '../../src/router/errors.js';
 
 function client(options: {
-  startup?: { state: 'available' | 'unavailable' | 'unknown'; method: 'rci-more' | 'ci-file' | null;
+  startup?: { state: 'available' | 'unavailable' | 'unknown';
+    method: 'rci-more' | 'ci-file' | 'future-method' | null;
     reason: 'not-found' | 'not-probed' | null };
   value?: unknown;
 } = {}) {
@@ -46,6 +47,20 @@ describe('configuration reader', () => {
     expect(read).toMatchObject({ available: true, method: 'ci-file' });
     expect(fixture.getText).toHaveBeenCalledWith('/ci/startup-config.txt', 256_000);
     expect(fixture.getConfig).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrecognized available startup method without reading either source', async () => {
+    const fixture = client({
+      startup: { state: 'available', method: 'future-method', reason: null }
+    });
+    await expect(readCliConfig(fixture.result, 'startup')).rejects.toMatchObject({
+      name: 'RciError',
+      path: 'configuration',
+      code: 'unexpected-response',
+      ident: 'capability'
+    });
+    expect(fixture.getConfig).not.toHaveBeenCalled();
+    expect(fixture.getText).not.toHaveBeenCalled();
   });
 
   it('returns unavailable metadata without reading another source', async () => {

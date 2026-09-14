@@ -30,7 +30,7 @@ const CONFIG = configText(STALE_CHECKSUM);
 function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvailable?: boolean;
   runningAvailable?: boolean; maxResponseBytes?: number; configLines?: string[];
   runningLines?: string[]; startupLines?: string[]; structuredData?: Record<string, unknown>;
-  changeDuringDiff?: boolean } = {}) {
+  changeDuringDiff?: boolean; verificationStartupText?: string } = {}) {
   const posts: unknown[] = [];
   const events: string[] = [];
   let savedChecksum = STALE_CHECKSUM;
@@ -49,7 +49,7 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvai
   });
   const getText = vi.fn(async (path: string) => {
     events.push(`getText:${path}`);
-    return configText(savedChecksum);
+    return opts.verificationStartupText ?? configText(savedChecksum);
   });
   const configLines = opts.configLines ?? [
     'system',
@@ -366,6 +366,22 @@ describe('save_config', () => {
     expect(result.isError).toBe(true);
     expect(result.content.map(p => p.text).join('')).toMatch(/still reports unsaved/i);
   }, 10_000);
+
+  it('fails closed when save read-back contains conflicting strict headers', async () => {
+    const verificationStartupText = [
+      `! $$$ Md5 checksum: ${RUNNING_CHECKSUM}`,
+      `! $$$ Md5 checksum: ${STALE_CHECKSUM}`,
+      'system synthetic'
+    ].join('\n');
+    const { handlers, backup, events, getText, getConfig } = harness({ verificationStartupText });
+
+    const result = await handlers['save_config']!({ dry_run: false, confirm: true });
+    expect(result.isError).toBe(true);
+    expect(events).toEqual(['backup', 'post', 'getText:/ci/startup-config.txt']);
+    expect(backup.ensure).toHaveBeenCalledOnce();
+    expect(getText).toHaveBeenCalledWith('/ci/startup-config.txt', undefined);
+    expect(getConfig).not.toHaveBeenCalled();
+  });
 
   // The startup config is ~17 KB. Polling the confirmation rather than the
   // cheap endpoint turned one save into roughly 100 KB of traffic.

@@ -12,6 +12,31 @@ describe('saved configuration checksum parser', () => {
       .toBe(checksum.toLowerCase());
   });
 
+  it('normalizes uppercase hexadecimal digits under the canonical label', () => {
+    const checksum = 'ABCDEF0123456789ABCDEF0123456789';
+    expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}`)).toBe(checksum.toLowerCase());
+  });
+
+  it.each([
+    'md5 checksum:',
+    'MD5 checksum:',
+    'Md5 CHECKSUM:'
+  ])('rejects the noncanonical label casing %j', label => {
+    const checksum = 'abcdef0123456789abcdef0123456789';
+    expect(parseSavedChecksum(`! $$$ ${label} ${checksum}`)).toBeNull();
+  });
+
+  it.each([
+    ['identical', 'abcdef0123456789abcdef0123456789'],
+    ['conflicting', '0123456789abcdef0123456789abcdef']
+  ])('rejects %s duplicate strict generated headers', (_kind, secondChecksum) => {
+    const checksum = 'abcdef0123456789abcdef0123456789';
+    expect(parseSavedChecksum([
+      `! $$$ Md5 checksum: ${checksum}`,
+      `! $$$ Md5 checksum: ${secondChecksum}`
+    ])).toBeNull();
+  });
+
   it('rejects malformed and non-header values', () => {
     expect(parseSavedChecksum('password=' + 'a'.repeat(32))).toBeNull();
     expect(parseSavedChecksum(`! $$$ Md5 checksum: ${'g'.repeat(32)}`)).toBeNull();

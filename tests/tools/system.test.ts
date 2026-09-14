@@ -285,6 +285,21 @@ describe('get_config_state', () => {
     expect(getText).not.toHaveBeenCalled();
   });
 
+  it('normalizes uppercase hexadecimal digits under the canonical label', async () => {
+    const getText = vi.fn(async () => {
+      throw new Error('the LAN startup path must not be read');
+    });
+    const getConfig = vi.fn(async () => ({
+      value: { result: [`! $$$ Md5 checksum: ${RUNNING.toUpperCase()}`] }, bytes: 100
+    }));
+    const ctx = contextWith(lastChange, getText, getConfig);
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: RUNNING, unsavedChanges: false });
+    expect(getConfig).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
+    expect(getText).not.toHaveBeenCalled();
+  });
+
   it('reports a LAN ci-file checksum mismatch without consulting rci-more', async () => {
     const getText = vi.fn(startupWith(STALE));
     const getConfig = vi.fn(async () => {
@@ -347,6 +362,25 @@ describe('get_config_state', () => {
     expect(getConfig).not.toHaveBeenCalled();
   });
 
+  it('keeps an unrecognized available startup method unknown without a fallback', async () => {
+    const getText = vi.fn(async () => {
+      throw new Error('startup input must not be read');
+    });
+    const getConfig = vi.fn(async () => {
+      throw new Error('startup input must not be read');
+    });
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.client.probedCapabilities = async () => ({ config: {
+      ...PROBED.config,
+      startup: { state: 'available', method: 'future-method', reason: null }
+    } }) as never;
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
+    expect(getText).not.toHaveBeenCalled();
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['missing generated header', ['system synthetic']],
     ['malformed generated header', ['! $$$ Md5 checksum: short', 'system synthetic']],
@@ -360,7 +394,18 @@ describe('get_config_state', () => {
     ['Unicode paragraph-separator suffix', [`! $$$ Md5 checksum: ${RUNNING}\u2029unexpected`, 'system synthetic']],
     ['header split after the exclamation mark', ['!', `$$$ Md5 checksum: ${RUNNING}`]],
     ['header split after the dollar marker', ['! $$$', `Md5 checksum: ${RUNNING}`]],
-    ['header split after the label', ['! $$$ Md5 checksum:', RUNNING]]
+    ['header split after the label', ['! $$$ Md5 checksum:', RUNNING]],
+    ['lowercase Md5 label', [`! $$$ md5 checksum: ${RUNNING}`]],
+    ['uppercase Md5 label', [`! $$$ MD5 checksum: ${RUNNING}`]],
+    ['uppercase checksum label', [`! $$$ Md5 CHECKSUM: ${RUNNING}`]],
+    ['identical duplicate strict headers', [
+      `! $$$ Md5 checksum: ${RUNNING}`,
+      `! $$$ Md5 checksum: ${RUNNING}`
+    ]],
+    ['conflicting duplicate strict headers', [
+      `! $$$ Md5 checksum: ${RUNNING}`,
+      `! $$$ Md5 checksum: ${STALE}`
+    ]]
   ])('keeps %s unknown without returning startup lines', async (_name, lines) => {
     const getConfig = vi.fn(async () => ({ value: { result: lines }, bytes: 100 }));
     const ctx = contextWith(lastChange, async () => {

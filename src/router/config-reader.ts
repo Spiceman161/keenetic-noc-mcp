@@ -84,8 +84,13 @@ export async function readCliConfig(
     const result = await client.rci.getConfig('more?filename=startup-config', maxBytes);
     return { available: true, method: 'rci-more', lines: unwrapLines(result.value) };
   }
-  const text = await client.rci.getText(STARTUP_CONFIG, maxBytes);
-  return { available: true, method: 'ci-file', lines: splitLines(text) };
+  if (access.method === 'ci-file') {
+    const text = await client.rci.getText(STARTUP_CONFIG, maxBytes);
+    return { available: true, method: 'ci-file', lines: splitLines(text) };
+  }
+  throw new RciError('configuration capability has an unexpected available method', {
+    path: 'configuration', code: 'unexpected-response', ident: 'capability'
+  });
 }
 
 const STRUCTURED_PATHS: Record<Exclude<StructuredSection, 'all'>, string[]> = {
