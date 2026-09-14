@@ -5,11 +5,17 @@ import { AuthError, TransportError } from './errors.js';
 export const STARTUP_CONFIG = '/ci/startup-config.txt';
 
 /** The router stamps the saved configuration with its own checksum, in a header comment. */
-const SAVED_CHECKSUM = /^![ \t]*\$+[ \t]*Md5 checksum:[ \t]*([0-9a-f]{32})[ \t]*\r?$/im;
+const SAVED_CHECKSUM = /^![ \t]*(?:\$){3}[ \t]*Md5 checksum:[ \t]*([0-9a-f]{32})[ \t]*$/i;
 
 /** Extracts only the router-generated saved checksum, never configuration content. */
 export function parseSavedChecksum(value: string | readonly string[]): string | null {
-  return SAVED_CHECKSUM.exec(typeof value === 'string' ? value : value.join('\n'))?.[1]?.toLowerCase() ?? null;
+  const lines = (typeof value === 'string' ? value : value.join('\n')).split(/\r?\n/);
+  for (const line of lines) {
+    const match = SAVED_CHECKSUM.exec(line);
+    // `$` also recognizes several non-reader line terminators, so require the whole reader-defined line.
+    if (match?.[0] === line) return match[1]?.toLowerCase() ?? null;
+  }
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

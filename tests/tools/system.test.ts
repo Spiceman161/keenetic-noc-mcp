@@ -352,6 +352,12 @@ describe('get_config_state', () => {
     ['malformed generated header', ['! $$$ Md5 checksum: short', 'system synthetic']],
     ['extra hexadecimal checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}a`, 'system synthetic']],
     ['non-whitespace checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}!`, 'system synthetic']],
+    ['one-dollar marker', [`! $ Md5 checksum: ${RUNNING}`, 'system synthetic']],
+    ['two-dollar marker', [`! $$ Md5 checksum: ${RUNNING}`, 'system synthetic']],
+    ['four-dollar marker', [`! $$$$ Md5 checksum: ${RUNNING}`, 'system synthetic']],
+    ['bare carriage-return suffix', [`! $$$ Md5 checksum: ${RUNNING}\runexpected`, 'system synthetic']],
+    ['Unicode line-separator suffix', [`! $$$ Md5 checksum: ${RUNNING}\u2028unexpected`, 'system synthetic']],
+    ['Unicode paragraph-separator suffix', [`! $$$ Md5 checksum: ${RUNNING}\u2029unexpected`, 'system synthetic']],
     ['header split after the exclamation mark', ['!', `$$$ Md5 checksum: ${RUNNING}`]],
     ['header split after the dollar marker', ['! $$$', `Md5 checksum: ${RUNNING}`]],
     ['header split after the label', ['! $$$ Md5 checksum:', RUNNING]]

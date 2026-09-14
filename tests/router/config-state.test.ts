@@ -23,6 +23,20 @@ describe('saved configuration checksum parser', () => {
     expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}!`)).toBeNull();
   });
 
+  it.each(['$', '$$', '$$$$'])('rejects the non-exact marker %j', marker => {
+    const checksum = 'abcdef0123456789abcdef0123456789';
+    expect(parseSavedChecksum(`! ${marker} Md5 checksum: ${checksum}`)).toBeNull();
+  });
+
+  it.each([
+    ['bare carriage return', '\r'],
+    ['Unicode line separator', '\u2028'],
+    ['Unicode paragraph separator', '\u2029']
+  ])('rejects a valid header prefix followed by %s and a suffix', (_name, separator) => {
+    const checksum = 'abcdef0123456789abcdef0123456789';
+    expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}${separator}unexpected`)).toBeNull();
+  });
+
   it.each([
     ['after the exclamation mark', `!\n$$$ Md5 checksum: abcdef0123456789abcdef0123456789`],
     ['after the dollar marker', `! $$$\nMd5 checksum: abcdef0123456789abcdef0123456789`],
