@@ -223,7 +223,8 @@ async function waitForSaved(
     if (lastChangeMoved(before, await readLastChange(ctx.client.rci))) break;
     await new Promise(resolve => setTimeout(resolve, delayMs));
   }
-  return (await readConfigState(ctx.client.rci)).unsavedChanges === false;
+  return (await readConfigState(ctx.client.rci,
+    maxBytes => ctx.client.rci.getText(STARTUP_CONFIG, maxBytes))).unsavedChanges === false;
 }
 
 export function registerConfigTools(server: ToolRegistrar, ctx: ToolContext): void {

@@ -70,18 +70,28 @@ function setup(options: {
     if (options.startupError) throw options.startupError;
     return options.startup ?? '! $$$ Md5 checksum: aa4bc868709b49cb803db0fd3cc43f6f\n';
   });
+  const getConfig = vi.fn(async () => ({ value: { result: [] }, bytes: 0 }));
   const client = {
     rci: {
       get,
       post,
-      getText
+      getText,
+      getConfig
     },
     // Deliberately remains successful when the fresh show/version request
     // fails: production caches this method, so it cannot be the sentinel.
     capabilities: vi.fn(async () => ({
       model: 'Cached Keenetic', hwId: 'KN-0000', firmware: 'old',
       components: new Set<string>(), features: new Set<string>()
-    }))
+    })),
+    probedCapabilities: vi.fn(async () => ({ config: {
+      runningCli: { state: 'available', method: 'rci-show', reason: null },
+      runningStructured: { state: 'unknown', method: null, reason: 'not-probed' },
+      startup: options.connectionMode === 'remote'
+        ? { state: 'available', method: 'rci-more', reason: null }
+        : { state: 'available', method: 'ci-file', reason: null },
+      backup: { state: 'available', method: 'ci-file', reason: null }
+    } }))
   } as unknown as KeeneticClient;
   const ctx: ToolContext = {
     client,
@@ -109,6 +119,7 @@ function setup(options: {
     config: configs['diagnose_internet']!,
     get,
     getText,
+    getConfig,
     post
   };
 }
@@ -587,6 +598,7 @@ describe('diagnose_internet', () => {
     const setupResult = setup({ connectionMode: 'remote' });
     const out = payload(await setupResult.handler({}));
     expect(setupResult.getText).not.toHaveBeenCalled();
+    expect(setupResult.getConfig).not.toHaveBeenCalled();
     expect(out.evidence.configuration.data.unsavedChanges).toBeNull();
     expect(out.complete).toBe(false);
   });

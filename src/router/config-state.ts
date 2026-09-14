@@ -44,11 +44,12 @@ export interface ConfigState {
 export interface ConfigStateReadLimits {
   lastChangeBytes?: number;
   startupBytes?: number;
-  /** Remote profiles must not send credentials to the auxiliary /ci/ surface. */
-  skipStartup?: boolean;
   /** Composite callers can stop later reads when the shared session is lost. */
   propagateSessionErrors?: boolean;
 }
+
+/** Supplies only transient startup input for checksum extraction. */
+type StartupChecksumInput = (maxBytes?: number) => Promise<string | readonly string[] | null>;
 
 /**
  * The cheap half: a small JSON document, against ~17 KB for the startup config.
@@ -75,6 +76,10 @@ export function lastChangeMoved(before: LastChange, after: LastChange): boolean 
   return before.checksum !== after.checksum || before.date !== after.date;
 }
 
+function normalizeChecksum(value: string | null): string | null {
+  return value !== null && /^[0-9a-f]{32}$/i.test(value) ? value.toLowerCase() : null;
+}
+
 /**
  * Whether the running configuration still differs from the one in flash.
  *
@@ -89,14 +94,17 @@ export function lastChangeMoved(before: LastChange, after: LastChange): boolean 
  */
 export async function readConfigState(
   rci: Rci,
+  readStartup: StartupChecksumInput | null,
   limits: ConfigStateReadLimits = {}
 ): Promise<ConfigState> {
   const last = await readLastChange(rci, limits.lastChangeBytes);
+  const runningChecksum = normalizeChecksum(last.checksum);
 
   let savedChecksum: string | null = null;
-  if (limits.skipStartup !== true) {
+  if (readStartup !== null) {
     try {
-      savedChecksum = parseSavedChecksum(await rci.getText(STARTUP_CONFIG, limits.startupBytes));
+      const startup = await readStartup(limits.startupBytes);
+      savedChecksum = startup === null ? null : parseSavedChecksum(startup);
     } catch (error) {
       if (limits.propagateSessionErrors === true &&
           (error instanceof AuthError || error instanceof TransportError)) {
@@ -111,10 +119,10 @@ export async function readConfigState(
     lastChangedAt: last.date,
     lastChangedBy: last.user,
     lastChangedVia: last.agent,
-    runningChecksum: last.checksum,
+    runningChecksum,
     savedChecksum,
     unsavedChanges:
-      last.checksum === null || savedChecksum === null ? null : last.checksum !== savedChecksum,
+      runningChecksum === null || savedChecksum === null ? null : runningChecksum !== savedChecksum,
     failSafe: last.failSafe
   };
 }

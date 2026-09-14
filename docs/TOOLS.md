@@ -213,6 +213,14 @@ Search defaults to `section=all`, `limit=50` matches, and two context lines.
 only matching lines actually retained in the returned groups. `shown` and
 `total` describe context groups rather than matches.
 
+`get_config_state` compares only the running checksum with the generated saved
+checksum. Its startup input follows the same measured read-only source as
+`get_startup_config`, including remote `rci-more`; unavailable or malformed
+checksum evidence remains unknown. It does not run a configuration diff or
+return configuration lines. This read capability remains separate from
+backup-before-write, which still requires the LAN `/ci/startup-config.txt`
+path.
+
 `get_config_diff` compares startup CLI configuration with running CLI
 configuration. It defaults to a complete semantic summary without returning
 configuration lines. Set `include_diff=true` to include up to `limit` changed

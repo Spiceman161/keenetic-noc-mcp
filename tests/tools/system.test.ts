@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
 import { registerSystemTools } from '../../src/tools/system.js';
 import { fail, getToolResultTelemetry, guard, ok, type ToolContext, type ToolResult } from '../../src/tools/registry.js';
-import { AuthError } from '../../src/router/errors.js';
+import { AuthError, RciError, TransportError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import { stubBackup } from '../helpers/backup.js';
 
@@ -31,10 +31,13 @@ const PROBED = {
 
 function contextWith(
   get: (path: string) => Promise<unknown>,
-  getText: (path: string) => Promise<string> = async () => ''
+  getText: (path: string) => Promise<string> = async () => '',
+  getConfig: (path: string, maxBytes: number) => Promise<unknown> = async () => ({
+    value: { result: [await getText('more?filename=startup-config')] }, bytes: 100
+  })
 ): ToolContext {
   const client = {
-    rci: { get, post: vi.fn(), getText: vi.fn(getText) },
+    rci: { get, post: vi.fn(), getText: vi.fn(getText), getConfig: vi.fn(getConfig) },
     capabilities: async () => CAPS,
     probedCapabilities: async () => PROBED
   } as unknown as KeeneticClient;
@@ -234,5 +237,146 @@ describe('get_config_state', () => {
     const payload = JSON.parse(textOf(await handlers['get_config_state']!({})));
     expect(payload.unsavedChanges).toBeNull();
     expect(payload.savedChecksum).toBeNull();
+  });
+
+  it('uses measured remote rci-more input when the LAN-only startup file is unavailable', async () => {
+    const getText = vi.fn(async () => {
+      throw new Error('the LAN startup path must not be read');
+    });
+    const getConfig = vi.fn(async (path: string, maxBytes: number) => {
+      expect(path).toBe('more?filename=startup-config');
+      expect(maxBytes).toBe(256_000);
+      return { value: { result: [`! $$$ Md5 checksum: ${RUNNING}`, 'system synthetic'] }, bytes: 100 };
+    });
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
+    ctx.client.probedCapabilities = async () => ({ config: {
+      ...PROBED.config,
+      backup: { state: 'unavailable', method: null, reason: 'not-found' }
+    } });
+
+    const registered = capture(ctx);
+    const payload = JSON.parse(textOf(await registered.handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: RUNNING, unsavedChanges: false });
+    expect(JSON.stringify(payload)).not.toContain('system synthetic');
+    expect(getConfig).toHaveBeenCalledOnce();
+    expect(getText).not.toHaveBeenCalled();
+    expect(ctx.backup.ensure).not.toHaveBeenCalled();
+    expect(ctx.client.rci.post).not.toHaveBeenCalled();
+    expect(registered.configs['get_config_state']?.annotations?.readOnlyHint).toBe(true);
+
+    const status = JSON.parse(textOf(await capture(ctx).handlers['get_connection_status']!({})));
+    expect(status.startupConfigCapability).toBe('rci-more');
+    expect(status.backupBeforeWrite).toBe('requires-lan-profile');
+  });
+
+  it('reports unsaved changes from a measured remote rci-more checksum mismatch', async () => {
+    const getText = vi.fn(async () => {
+      throw new Error('the LAN startup path must not be read');
+    });
+    const getConfig = vi.fn(async () => ({
+      value: { result: [`! $$$ Md5 checksum: ${STALE}`] }, bytes: 100
+    }));
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ runningChecksum: RUNNING, savedChecksum: STALE, unsavedChanges: true });
+    expect(getText).not.toHaveBeenCalled();
+  });
+
+  it('retains LAN ci-file startup reads without consulting rci-more', async () => {
+    const getText = vi.fn(startupWith(RUNNING));
+    const getConfig = vi.fn(async () => {
+      throw new Error('rci-more must not be read for a measured ci-file source');
+    });
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.client.probedCapabilities = async () => ({ config: {
+      ...PROBED.config,
+      startup: { state: 'available', method: 'ci-file', reason: null }
+    } });
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload.unsavedChanges).toBe(false);
+    expect(getText).toHaveBeenCalledWith('/ci/startup-config.txt', 256_000);
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps malformed running checksums unknown even when startup input is valid', async () => {
+    const malformedLastChange = async () => ({
+      ...(await lastChange()), checksum: 'not-a-checksum'
+    });
+    const { handlers } = capture(contextWith(malformedLastChange, startupWith(RUNNING)));
+
+    const payload = JSON.parse(textOf(await handlers['get_config_state']!({})));
+    expect(payload.runningChecksum).toBeNull();
+    expect(payload.savedChecksum).toBe(RUNNING);
+    expect(payload.unsavedChanges).toBeNull();
+  });
+
+  it.each([
+    ['unavailable', { state: 'unavailable', method: null, reason: 'denied' }],
+    ['unknown', { state: 'unknown', method: null, reason: 'not-probed' }]
+  ] as const)('keeps %s startup capability evidence unknown without a fallback', async (_name, startup) => {
+    const getText = vi.fn(async () => {
+      throw new Error('startup input must not be read');
+    });
+    const getConfig = vi.fn(async () => {
+      throw new Error('startup input must not be read');
+    });
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.client.probedCapabilities = async () => ({ config: { ...PROBED.config, startup } });
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
+    expect(getText).not.toHaveBeenCalled();
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing generated header', ['system synthetic']],
+    ['malformed generated header', ['! $$$ Md5 checksum: short', 'system synthetic']]
+  ])('keeps %s unknown without returning startup lines', async (_name, lines) => {
+    const getConfig = vi.fn(async () => ({ value: { result: lines }, bytes: 100 }));
+    const ctx = contextWith(lastChange, async () => {
+      throw new Error('the LAN startup path must not be read');
+    }, getConfig);
+    ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
+    expect(JSON.stringify(payload)).not.toContain('system synthetic');
+  });
+
+  it.each([
+    new AuthError('credentials rejected'),
+    new TransportError('connection lost'),
+    new RciError('response exceeds limit', { path: 'configuration', code: 'response-too-large', ident: 'rci' })
+  ])('keeps startup read failures unknown at the MCP boundary', async error => {
+    const getText = vi.fn(async () => {
+      throw new Error('the LAN startup path must not be read');
+    });
+    const getConfig = vi.fn(async () => {
+      throw error;
+    });
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
+    expect(getText).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unexpected bounded rci-more shape unknown without a /ci fallback', async () => {
+    const getText = vi.fn(async () => {
+      throw new Error('the LAN startup path must not be read');
+    });
+    const getConfig = vi.fn(async () => ({ value: { first: ['system'], second: ['synthetic'] }, bytes: 100 }));
+    const ctx = contextWith(lastChange, getText, getConfig);
+    ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
+
+    const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
+    expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
+    expect(getText).not.toHaveBeenCalled();
   });
 });

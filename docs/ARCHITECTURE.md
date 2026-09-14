@@ -106,7 +106,9 @@ Configuration reads use a separate 256 KB input-bounded reader whose errors
 never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never
 cached or audited. Running and startup source selection follows the measured
-session capability; remote startup reads do not broaden LAN-only write backup.
+session capability. Checksum-only configuration state uses that same measured
+startup read only to extract the generated saved checksum; it remains separate
+from diffing and remote startup reads do not broaden LAN-only write backup.
 The configuration boundary keeps an indented WireGuard `preshared-key` value
 as credential material and hides the single token on a measured `wireguard
 peer <key>` line as a project privacy-sensitive identifier. This does not add

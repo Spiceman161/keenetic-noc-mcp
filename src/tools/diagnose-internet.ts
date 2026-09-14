@@ -1,6 +1,7 @@
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { parseCapabilities, type Capabilities } from '../router/capabilities.js';
 import { readConfigState } from '../router/config-state.js';
+import { readCliConfig } from '../router/config-reader.js';
 import { AuthError, NotSupportedError, RciError, TransportError } from '../router/errors.js';
 import {
   available,
@@ -136,10 +137,12 @@ export function registerInternetDiagnosticTool(server: ToolRegistrar, ctx: ToolC
       const dnsResult = await poll(() =>
         ctx.client.rci.get<Record<string, unknown>>('show/dns-proxy', INPUT_LIMITS.dns));
       const configurationResult = await poll(() =>
-        readConfigState(ctx.client.rci, {
+        readConfigState(ctx.client.rci, ctx.connection?.mode === 'remote' ? null : async maxBytes => {
+          const startup = await readCliConfig(ctx.client, 'startup', maxBytes);
+          return startup.available ? startup.lines : null;
+        }, {
           lastChangeBytes: INPUT_LIMITS.lastChange,
           startupBytes: INPUT_LIMITS.startup,
-          skipStartup: ctx.connection?.mode === 'remote',
           propagateSessionErrors: true
         }));
 

@@ -69,21 +69,22 @@ function unwrapLines(value: unknown): string[] {
 
 export async function readCliConfig(
   client: KeeneticClient,
-  source: ConfigSource
+  source: ConfigSource,
+  maxBytes = CONFIG_INPUT_BYTES
 ): Promise<CliConfigRead | ConfigUnavailable> {
   const measured = await client.probedCapabilities();
   const access = source === 'running' ? measured.config.runningCli : measured.config.startup;
   if (access.state !== 'available' || access.method === null) return unavailable(access);
 
   if (source === 'running') {
-    const result = await client.rci.getConfig('show/running-config', CONFIG_INPUT_BYTES);
+    const result = await client.rci.getConfig('show/running-config', maxBytes);
     return { available: true, method: 'rci-show', lines: unwrapLines(result.value) };
   }
   if (access.method === 'rci-more') {
-    const result = await client.rci.getConfig('more?filename=startup-config', CONFIG_INPUT_BYTES);
+    const result = await client.rci.getConfig('more?filename=startup-config', maxBytes);
     return { available: true, method: 'rci-more', lines: unwrapLines(result.value) };
   }
-  const text = await client.rci.getText(STARTUP_CONFIG, CONFIG_INPUT_BYTES);
+  const text = await client.rci.getText(STARTUP_CONFIG, maxBytes);
   return { available: true, method: 'ci-file', lines: splitLines(text) };
 }
 

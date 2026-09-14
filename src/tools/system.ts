@@ -1,5 +1,6 @@
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { readConfigState } from '../router/config-state.js';
+import { readCliConfig } from '../router/config-reader.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -87,6 +88,9 @@ export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): vo
       inputSchema: {},
       annotations: READ_ONLY
     },
-    guard(ctx, async () => ok(await readConfigState(ctx.client.rci), ctx.maxResponseBytes))
+    guard(ctx, async () => ok(await readConfigState(ctx.client.rci, async maxBytes => {
+      const startup = await readCliConfig(ctx.client, 'startup', maxBytes);
+      return startup.available ? startup.lines : null;
+    }), ctx.maxResponseBytes))
   );
 }
