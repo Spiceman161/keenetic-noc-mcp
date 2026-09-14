@@ -84,6 +84,37 @@ describe('configuration redaction', () => {
     expect(lines[0]).toContain('short-secret');
   });
 
+  it('redacts the exact indented WireGuard peer token without changing measured controls', () => {
+    const lines = [
+      '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY',
+      '    wireguard asc 5 10 50 132 86',
+      '        endpoint 192.0.2.10:12345',
+      '        keepalive-interval 25',
+      '        allow-ips 0.0.0.0 0.0.0.0',
+      '        connect',
+      '    https upstream https://resolver.example.test/synthetic-private-looking-path/dns-query dnsm on GigabitEthernet0/Vlan2',
+      '    description wireguard peer example'
+    ];
+    const output = redactConfigLines(lines);
+    expect(output).toEqual([
+      '    wireguard peer [REDACTED]',
+      ...lines.slice(1)
+    ]);
+    expect(output.join('\n')).not.toContain('SYNTHETIC_PUBLIC_PEER_KEY');
+  });
+
+  it('is byte-idempotent for exact WireGuard peer and preshared-key output', () => {
+    const once = redactConfigLines([
+      '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY',
+      '        preshared-key SYNTHETIC_SECRET'
+    ]);
+    expect(once).toEqual([
+      '    wireguard peer [REDACTED]',
+      '        preshared-key [REDACTED]'
+    ]);
+    expect(redactConfigLines(once)).toEqual(once);
+  });
+
   it('redacts complete private-key blocks', () => {
     const output = redactConfigLines([
       '-----BEGIN PRIVATE KEY-----',
@@ -118,5 +149,15 @@ describe('configuration redaction', () => {
     const output = redactStructuredConfig({ snmp: { community: 'community-value' },
       radius: { 'shared-secret': 'shared-value', 'auth-key': 'auth-value' } });
     expect(JSON.stringify(output)).not.toMatch(/community-value|shared-value|auth-value/);
+  });
+
+  it('redacts structured WireGuard peer keys and preshared keys without changing controls or input', () => {
+    const input = { wireguard: { peer: [{ key: 'SYNTHETIC_PUBLIC_PEER_KEY',
+      endpoint: 'resolver.example.test:12345', 'keepalive-interval': 25,
+      'allow-ips': ['192.0.2.0/24'] }], 'preshared-key': 'SYNTHETIC_SECRET' } };
+    expect(redactStructuredConfig(input)).toEqual({ wireguard: { peer: [{ key: '[REDACTED]',
+      endpoint: 'resolver.example.test:12345', 'keepalive-interval': 25,
+      'allow-ips': ['192.0.2.0/24'] }], 'preshared-key': '[REDACTED]' } });
+    expect(input.wireguard.peer[0]?.key).toBe('SYNTHETIC_PUBLIC_PEER_KEY');
   });
 });

@@ -73,6 +73,42 @@ describe('configuration diff', () => {
     ]);
   });
 
+  it('keeps WireGuard PSK-only changes visible to diff identity but not rendering', () => {
+    const result = diff(['interface Wireguard1', '        preshared-key SYNTHETIC_SECRET_OLD'],
+      ['interface Wireguard1', '        preshared-key SYNTHETIC_SECRET_NEW']);
+    expect(result).toMatchObject({ comparable: true, unsavedChanges: true, changedSections: ['vpn'],
+      added: 1, removed: 1, redactedChanges: 1 });
+    expect(JSON.stringify(result)).not.toMatch(/SYNTHETIC_SECRET_/);
+    if (result.comparable) expect(result.operations.map(operation => operation.text)).toEqual([
+      '        preshared-key [REDACTED]', '        preshared-key [REDACTED]'
+    ]);
+  });
+
+  it('keeps WireGuard peer-key-only changes visible to diff identity but not rendering', () => {
+    const result = diff(['interface Wireguard1', '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY_OLD'],
+      ['interface Wireguard1', '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY_NEW']);
+    expect(result).toMatchObject({ comparable: true, unsavedChanges: true, changedSections: ['vpn'],
+      added: 1, removed: 1, redactedChanges: 1 });
+    expect(JSON.stringify(result)).not.toMatch(/SYNTHETIC_PUBLIC_PEER_KEY_/);
+    if (result.comparable) expect(result.operations.map(operation => operation.text)).toEqual([
+      '    wireguard peer [REDACTED]', '    wireguard peer [REDACTED]'
+    ]);
+  });
+
+  it('keeps WireGuard ASC and DoH path changes visibly distinguishable', () => {
+    const result = diff([
+      'interface Wireguard1', '    wireguard asc 5 10 50 132 86',
+      'dns-proxy', '    https upstream https://resolver.example.test/synthetic-path-old/dns-query dnsm'
+    ], [
+      'interface Wireguard1', '    wireguard asc 6 10 50 132 86',
+      'dns-proxy', '    https upstream https://resolver.example.test/synthetic-path-new/dns-query dnsm'
+    ]);
+    expect(result).toMatchObject({ comparable: true, changedSections: ['dns', 'vpn'],
+      redactedChanges: 0 });
+    expect(JSON.stringify(result)).toMatch(/wireguard asc 5|wireguard asc 6|synthetic-path-old|synthetic-path-new/);
+    expect(JSON.stringify(result)).not.toContain('[REDACTED_URL]');
+  });
+
   it('does not expose changed Tweaked multiline private key material', () => {
     const startup = ['interface Wireguard1', '    -----BEGIN PRIVATE KEY-----',
       '    old-private-material', '    -----END PRIVATE KEY-----'];

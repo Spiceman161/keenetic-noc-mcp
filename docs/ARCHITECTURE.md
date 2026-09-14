@@ -107,12 +107,23 @@ never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never
 cached or audited. Running and startup source selection follows the measured
 session capability; remote startup reads do not broaden LAN-only write backup.
+The configuration boundary keeps an indented WireGuard `preshared-key` value
+as credential material and hides the single token on a measured `wireguard
+peer <key>` line as a project privacy-sensitive identifier. This does not add
+a general WireGuard grammar. ASC, endpoint, keepalive interval, allow-ips, and
+connect remain operationally visible unless a separate baseline rule applies.
+The project's NOC threat model also permits a DoH endpoint and opaque path to
+remain visible; that bounded policy does not make URL paths universally
+non-secret. A WireGuard private key was not observed in the characterized
+KeeneticOS 5.1.5 configuration surface and is not assumed absent elsewhere.
 
 Configuration diffing compares transient fingerprints of order-sensitive CLI
 lines and renders only separately redacted lines. Only the generated saved MD5
 header is ignored. A 10,000-line preprocessing ceiling and fixed LCS matrix
 budget bound CPU and memory; the tool returns an explicit comparison-limit
-result instead of approximate counts. Reads are bracketed by `show/last-change`
+result instead of approximate counts. This preserves counts for PSK and
+peer-key-only raw changes while their public rendered lines contain only the
+existing redaction marker. Reads are bracketed by `show/last-change`
 and discarded if the configuration moves during comparison. `get_config_state`
 remains separate and does not invoke the diff path.
 

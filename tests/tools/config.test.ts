@@ -29,7 +29,8 @@ const CONFIG = configText(STALE_CHECKSUM);
  */
 function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvailable?: boolean;
   runningAvailable?: boolean; maxResponseBytes?: number; configLines?: string[];
-  runningLines?: string[]; startupLines?: string[]; changeDuringDiff?: boolean } = {}) {
+  runningLines?: string[]; startupLines?: string[]; structuredData?: Record<string, unknown>;
+  changeDuringDiff?: boolean } = {}) {
   const posts: unknown[] = [];
   const events: string[] = [];
   let savedChecksum = STALE_CHECKSUM;
@@ -61,10 +62,11 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvai
   ];
   const runningLines = opts.runningLines ?? configLines;
   const startupLines = opts.startupLines ?? configLines;
+  const structuredData = opts.structuredData ?? { system: { hostname: 'safe-router' } };
   const getConfig = vi.fn(async (path: string) => ({
-    value: path === '' ? { system: { hostname: 'safe-router' } } :
+    value: path === '' ? structuredData : path === 'interface' ? structuredData :
       path === 'system' ? { hostname: 'safe-router' } :
-        { result: path === 'more?filename=startup-config' ? startupLines : runningLines },
+      { result: path === 'more?filename=startup-config' ? startupLines : runningLines },
     bytes: 100
   }));
   const post = vi.fn(async (body: unknown) => {
@@ -177,6 +179,68 @@ describe('configuration read tools', () => {
     expect(JSON.stringify(out)).not.toContain('SAFE-ROUTER');
   });
 
+  it('redacts measured WireGuard values before every public configuration boundary', async () => {
+    const lines = [
+      'interface Wireguard1',
+      '    wireguard asc 5 10 50 132 86',
+      '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY',
+      '        endpoint 192.0.2.10:12345',
+      '        keepalive-interval 25',
+      '        preshared-key SYNTHETIC_SECRET',
+      '        allow-ips 0.0.0.0 0.0.0.0',
+      '        connect',
+      'dns-proxy',
+      '    https upstream https://resolver.example.test/synthetic-private-looking-path/dns-query dnsm on GigabitEthernet0/Vlan2'
+    ];
+    const { handlers } = harness({ configLines: lines, structuredData: { wireguard: {
+      peer: [{ key: 'SYNTHETIC_PUBLIC_PEER_KEY', endpoint: 'resolver.example.test:12345',
+        'keepalive-interval': 25, 'allow-ips': ['192.0.2.0/24'] }],
+      'preshared-key': 'SYNTHETIC_SECRET' } } });
+    const running = payload(await handlers['get_running_config']!({ section: 'all', limit: 200 }));
+    const startup = payload(await handlers['get_startup_config']!({ section: 'all', limit: 200 }));
+    for (const result of [running, startup]) {
+      expect(JSON.stringify(result)).not.toMatch(/SYNTHETIC_SECRET|SYNTHETIC_PUBLIC_PEER_KEY/);
+      expect(result.lines).toEqual(expect.arrayContaining([
+        '    wireguard peer [REDACTED]',
+        '        preshared-key [REDACTED]',
+        '    wireguard asc 5 10 50 132 86',
+        '        endpoint 192.0.2.10:12345',
+        '        keepalive-interval 25',
+        '        allow-ips 0.0.0.0 0.0.0.0',
+        '        connect',
+        '    https upstream https://resolver.example.test/synthetic-private-looking-path/dns-query dnsm on GigabitEthernet0/Vlan2'
+      ]));
+    }
+    expect(running).toMatchObject({ source: 'running', method: 'rci-show', total: lines.length });
+    expect(startup).toMatchObject({ source: 'startup', method: 'rci-more', total: lines.length });
+
+    for (const [source, query] of [['running', 'SYNTHETIC_SECRET'], ['startup', 'SYNTHETIC_PUBLIC_PEER_KEY']] as const) {
+      const hidden = payload(await handlers['search_config']!({ source, query, section: 'all', limit: 50, context: 2 }));
+      expect(hidden.totalMatches).toBe(0);
+      expect(JSON.stringify(hidden)).not.toMatch(/SYNTHETIC_SECRET|SYNTHETIC_PUBLIC_PEER_KEY/);
+    }
+    const structural = payload(await handlers['search_config']!({ source: 'running',
+      query: 'wireguard peer', section: 'all', limit: 50, context: 2 }));
+    expect(structural.totalMatches).toBe(1);
+    expect(JSON.stringify(structural)).toContain('wireguard peer [REDACTED]');
+    for (const query of ['preshared-key', 'allow-ips']) {
+      const result = payload(await handlers['search_config']!({ source: 'running',
+        query, section: 'all', limit: 50, context: 2 }));
+      expect(result.totalMatches).toBe(1);
+      expect(JSON.stringify(result)).toContain(query === 'preshared-key'
+        ? 'preshared-key [REDACTED]'
+        : 'allow-ips 0.0.0.0 0.0.0.0');
+    }
+    const doh = payload(await handlers['search_config']!({ source: 'running',
+      query: 'synthetic-private-looking-path', section: 'all', limit: 50, context: 2 }));
+    expect(JSON.stringify(doh)).toContain('https://resolver.example.test/synthetic-private-looking-path/dns-query');
+
+    const structured = payload(await handlers['get_running_config']!({ section: 'interfaces', format: 'structured' }));
+    expect(structured.data.interface.wireguard).toEqual({ peer: [{ key: '[REDACTED]',
+      endpoint: 'resolver.example.test:12345', 'keepalive-interval': 25,
+      'allow-ips': ['192.0.2.0/24'] }], 'preshared-key': '[REDACTED]' });
+  });
+
   it('applies normalized CLI filters and reports limit counts', async () => {
     const { handlers } = harness({ configLines: ['system', '    description Café  Router',
       '    hostname Café Router'] });
@@ -232,6 +296,23 @@ describe('configuration read tools', () => {
       truncated: true, redactedChanges: 1 });
     expect(out.shownAdded + out.shownRemoved).toBe(out.shown);
     expect(JSON.stringify(out)).not.toMatch(/first-secret|second-secret/);
+  });
+
+  it('keeps WireGuard raw diff identities while returning marker-only peer and PSK lines', async () => {
+    const { handlers } = harness({
+      startupLines: ['interface Wireguard1', '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY_OLD',
+        '        preshared-key SYNTHETIC_SECRET_OLD'],
+      runningLines: ['interface Wireguard1', '    wireguard peer SYNTHETIC_PUBLIC_PEER_KEY_NEW',
+        '        preshared-key SYNTHETIC_SECRET_NEW']
+    });
+    const out = payload(await handlers['get_config_diff']!({ include_diff: true, limit: 20 }));
+    expect(out).toMatchObject({ comparable: true, unsavedChanges: true, changedSections: ['vpn'],
+      added: 2, removed: 2, redactedChanges: 2 });
+    expect(out.diff).toEqual([
+      '-     wireguard peer [REDACTED]', '-         preshared-key [REDACTED]',
+      '+     wireguard peer [REDACTED]', '+         preshared-key [REDACTED]'
+    ]);
+    expect(JSON.stringify(out)).not.toMatch(/SYNTHETIC_PUBLIC_PEER_KEY_|SYNTHETIC_SECRET_/);
   });
 
   it('returns a capability result without reading either config when startup is unavailable', async () => {

@@ -54,6 +54,7 @@ export const redactText = (value: string): string => redact(value
   .replace(URL_TOKEN, sanitizeUrl));
 
 const CLI_SECRET = /\b(password|passwd|passphrase|psk|wpa-psk|private-key|preshared-key|secret|token|key)(\s+)(.+)$/i;
+const WIREGUARD_PEER = /^([ \t]+wireguard[ \t]+peer[ \t]+)\S+([ \t]*)$/i;
 /** Redacts positional secrets used by Keenetic's saved CLI syntax. */
 export function redactConfigLines(lines: readonly string[]): string[] {
   let privateBlock = false;
@@ -82,6 +83,9 @@ export function redactConfigLines(lines: readonly string[]): string[] {
       if ((quote === '"' || quote === "'") && !new RegExp(`(?:^|[^\\\\])\\${quote}`, 'g')
         .test(value.slice(1))) continuedQuote = quote;
       return redactText(line.replace(CLI_SECRET, '$1$2[REDACTED]'));
+    }
+    if (WIREGUARD_PEER.test(line)) {
+      return redactText(line.replace(WIREGUARD_PEER, '$1[REDACTED]$2'));
     }
     return redactText(line);
   });

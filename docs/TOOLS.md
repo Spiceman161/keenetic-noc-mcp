@@ -186,6 +186,17 @@ requires an explicit `limit` of at least 200 and remains subject to the global
 response ceiling. Startup configuration is CLI-only and is never substituted
 with running state.
 
+WireGuard `preshared-key` values are redacted as credential material. A
+measured indented `wireguard peer <key>` CLI line hides its peer public key as
+a project privacy choice, rather than treating that public key as an
+authentication secret. WireGuard operational configuration including ASC,
+endpoint, keepalive interval, allow-ips, and connect remains visible unless an
+independent baseline redaction rule applies. Under this project's NOC threat
+model, a DoH endpoint and its opaque path also remain visible; this does not
+declare URL paths universally non-secret. A WireGuard private key was not
+observed in the characterized KeeneticOS 5.1.5 configuration surface, which is
+not a guarantee for other models, versions, or future firmware.
+
 Running configuration additionally supports structured reads for `system`,
 `users`, `dns`, `routing`, `interfaces`, and explicit `all`. Wi-Fi and VPN use
 CLI because no stable dedicated RCI configuration branch has been measured.
@@ -211,7 +222,9 @@ budget. `added` and `removed` count the complete diff; `shownAdded`,
 
 The comparison preserves CLI ordering, whitespace, comments, and case. It
 ignores only the measured generated MD5 checksum header. Secret-only changes
-are counted while all returned lines remain redacted. If either source is
+are counted while all returned lines remain redacted. Raw values are used only
+for transient change identities, so PSK and peer-key changes retain their
+counts while rendered lines contain markers. If either source is
 unavailable, the tool returns `comparable=false` with the measured source,
 state, and reason. It never substitutes running configuration for startup.
 Inputs over 10,000 lines or the comparison work budget return
