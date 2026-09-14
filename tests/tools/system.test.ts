@@ -351,7 +351,10 @@ describe('get_config_state', () => {
     ['missing generated header', ['system synthetic']],
     ['malformed generated header', ['! $$$ Md5 checksum: short', 'system synthetic']],
     ['extra hexadecimal checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}a`, 'system synthetic']],
-    ['non-whitespace checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}!`, 'system synthetic']]
+    ['non-whitespace checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}!`, 'system synthetic']],
+    ['header split after the exclamation mark', ['!', `$$$ Md5 checksum: ${RUNNING}`]],
+    ['header split after the dollar marker', ['! $$$', `Md5 checksum: ${RUNNING}`]],
+    ['header split after the label', ['! $$$ Md5 checksum:', RUNNING]]
   ])('keeps %s unknown without returning startup lines', async (_name, lines) => {
     const getConfig = vi.fn(async () => ({ value: { result: lines }, bytes: 100 }));
     const ctx = contextWith(lastChange, async () => {
@@ -362,6 +365,7 @@ describe('get_config_state', () => {
     const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
     expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
     expect(JSON.stringify(payload)).not.toContain('system synthetic');
+    expect(getConfig).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
     expect(ctx.client.rci.getText).not.toHaveBeenCalled();
   });
 

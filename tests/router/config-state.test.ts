@@ -8,6 +8,8 @@ describe('saved configuration checksum parser', () => {
       .toBe(checksum.toLowerCase());
     expect(parseSavedChecksum(['header', `! $$$ Md5 checksum: ${checksum}`]))
       .toBe(checksum.toLowerCase());
+    expect(parseSavedChecksum(`! \t$$$\tMd5 checksum:\t${checksum}\t\r\ninterface private`))
+      .toBe(checksum.toLowerCase());
   });
 
   it('rejects malformed and non-header values', () => {
@@ -19,5 +21,20 @@ describe('saved configuration checksum parser', () => {
     const checksum = 'abcdef0123456789abcdef0123456789';
     expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}a`)).toBeNull();
     expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}!`)).toBeNull();
+  });
+
+  it.each([
+    ['after the exclamation mark', `!\n$$$ Md5 checksum: abcdef0123456789abcdef0123456789`],
+    ['after the dollar marker', `! $$$\nMd5 checksum: abcdef0123456789abcdef0123456789`],
+    ['after the label', `! $$$ Md5 checksum:\nabcdef0123456789abcdef0123456789`]
+  ])('rejects a header split across lines %s', (_where, value) => {
+    expect(parseSavedChecksum(value)).toBeNull();
+  });
+
+  it.each(['\r', '\n', '\v', '\f'])('rejects vertical whitespace %j inside the header', whitespace => {
+    const checksum = 'abcdef0123456789abcdef0123456789';
+    expect(parseSavedChecksum(`!${whitespace}$$$ Md5 checksum: ${checksum}`)).toBeNull();
+    expect(parseSavedChecksum(`! $$$${whitespace}Md5 checksum: ${checksum}`)).toBeNull();
+    expect(parseSavedChecksum(`! $$$ Md5 checksum:${whitespace}${checksum}`)).toBeNull();
   });
 });
