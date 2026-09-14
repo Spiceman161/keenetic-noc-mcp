@@ -5,7 +5,7 @@ import { AuthError, TransportError } from './errors.js';
 export const STARTUP_CONFIG = '/ci/startup-config.txt';
 
 /** The router stamps the saved configuration with its own checksum, in a header comment. */
-const SAVED_CHECKSUM = /^!\s*\$+\s*Md5 checksum:\s*([0-9a-f]{32})/im;
+const SAVED_CHECKSUM = /^!\s*\$+\s*Md5 checksum:\s*([0-9a-f]{32})[ \t]*\r?$/im;
 
 /** Extracts only the router-generated saved checksum, never configuration content. */
 export function parseSavedChecksum(value: string | readonly string[]): string | null {

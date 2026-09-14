@@ -285,8 +285,8 @@ describe('get_config_state', () => {
     expect(getText).not.toHaveBeenCalled();
   });
 
-  it('retains LAN ci-file startup reads without consulting rci-more', async () => {
-    const getText = vi.fn(startupWith(RUNNING));
+  it('reports a LAN ci-file checksum mismatch without consulting rci-more', async () => {
+    const getText = vi.fn(startupWith(STALE));
     const getConfig = vi.fn(async () => {
       throw new Error('rci-more must not be read for a measured ci-file source');
     });
@@ -297,15 +297,29 @@ describe('get_config_state', () => {
     } });
 
     const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
-    expect(payload.unsavedChanges).toBe(false);
+    expect(payload).toMatchObject({
+      runningChecksum: RUNNING,
+      savedChecksum: STALE,
+      unsavedChanges: true
+    });
     expect(getText).toHaveBeenCalledWith('/ci/startup-config.txt', 256_000);
     expect(getConfig).not.toHaveBeenCalled();
   });
 
-  it('keeps malformed running checksums unknown even when startup input is valid', async () => {
-    const malformedLastChange = async () => ({
-      ...(await lastChange()), checksum: 'not-a-checksum'
-    });
+  it.each([
+    ['missing', undefined],
+    ['non-string', 42],
+    ['short', 'abc'],
+    ['non-hex', 'not-a-checksum']
+  ])('keeps a %s running checksum unknown even when startup input is valid', async (_name, checksum) => {
+    const malformedLastChange = async () => {
+      const current = await lastChange();
+      if (checksum === undefined) {
+        const { checksum: _ignored, ...withoutChecksum } = current;
+        return withoutChecksum;
+      }
+      return { ...current, checksum };
+    };
     const { handlers } = capture(contextWith(malformedLastChange, startupWith(RUNNING)));
 
     const payload = JSON.parse(textOf(await handlers['get_config_state']!({})));
@@ -335,7 +349,9 @@ describe('get_config_state', () => {
 
   it.each([
     ['missing generated header', ['system synthetic']],
-    ['malformed generated header', ['! $$$ Md5 checksum: short', 'system synthetic']]
+    ['malformed generated header', ['! $$$ Md5 checksum: short', 'system synthetic']],
+    ['extra hexadecimal checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}a`, 'system synthetic']],
+    ['non-whitespace checksum suffix', [`! $$$ Md5 checksum: ${RUNNING}!`, 'system synthetic']]
   ])('keeps %s unknown without returning startup lines', async (_name, lines) => {
     const getConfig = vi.fn(async () => ({ value: { result: lines }, bytes: 100 }));
     const ctx = contextWith(lastChange, async () => {
@@ -346,6 +362,7 @@ describe('get_config_state', () => {
     const payload = JSON.parse(textOf(await capture(ctx).handlers['get_config_state']!({})));
     expect(payload).toMatchObject({ savedChecksum: null, unsavedChanges: null });
     expect(JSON.stringify(payload)).not.toContain('system synthetic');
+    expect(ctx.client.rci.getText).not.toHaveBeenCalled();
   });
 
   it.each([

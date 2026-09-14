@@ -47,7 +47,10 @@ function harness(opts: { unsavedAfter?: boolean; readOnly?: boolean; startupAvai
       'fail-safe': { unsaved: false, rollback: false, 'time-left': 0 }
     };
   });
-  const getText = vi.fn(async () => configText(savedChecksum));
+  const getText = vi.fn(async (path: string) => {
+    events.push(`getText:${path}`);
+    return configText(savedChecksum);
+  });
   const configLines = opts.configLines ?? [
     'system',
     '    hostname safe-router',
@@ -346,11 +349,13 @@ describe('configuration read tools', () => {
 
 describe('save_config', () => {
   it('sends the save command and confirms afterwards', async () => {
-    const { handlers, posts, backup, events } = harness();
+    const { handlers, posts, backup, events, getText, getConfig } = harness();
     const out = payload(await handlers['save_config']!({ dry_run: false, confirm: true }));
-    expect(events.slice(0, 2)).toEqual(['backup', 'post']);
+    expect(events).toEqual(['backup', 'post', 'getText:/ci/startup-config.txt']);
     expect(backup.ensure).toHaveBeenCalledOnce();
     expect(posts).toContainEqual({ system: { configuration: { save: {} } } });
+    expect(getText).toHaveBeenCalledWith('/ci/startup-config.txt', undefined);
+    expect(getConfig).not.toHaveBeenCalled();
     expect(out.saved).toBe(true);
     expect(out.backup).toBeTruthy();
   });

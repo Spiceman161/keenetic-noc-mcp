@@ -51,6 +51,9 @@ function setup(options: {
   startup?: string;
   startupError?: Error;
   connectionMode?: 'lan' | 'remote';
+  startupMethod?: 'ci-file' | 'rci-more';
+  rciMoreStartup?: string;
+  rciMoreStartupError?: Error;
 } = {}) {
   const values = { ...HEALTHY, ...options.values };
   const get = vi.fn(async (path: string, _maxBytes?: number) => {
@@ -70,7 +73,14 @@ function setup(options: {
     if (options.startupError) throw options.startupError;
     return options.startup ?? '! $$$ Md5 checksum: aa4bc868709b49cb803db0fd3cc43f6f\n';
   });
-  const getConfig = vi.fn(async () => ({ value: { result: [] }, bytes: 0 }));
+  const getConfig = vi.fn(async (path: string, _maxBytes?: number) => {
+    if (path === 'more?filename=startup-config') {
+      if (options.rciMoreStartupError) throw options.rciMoreStartupError;
+      return { value: { result: [options.rciMoreStartup ??
+        '! $$$ Md5 checksum: aa4bc868709b49cb803db0fd3cc43f6f\n'] }, bytes: 100 };
+    }
+    return { value: { result: [] }, bytes: 0 };
+  });
   const client = {
     rci: {
       get,
@@ -87,9 +97,8 @@ function setup(options: {
     probedCapabilities: vi.fn(async () => ({ config: {
       runningCli: { state: 'available', method: 'rci-show', reason: null },
       runningStructured: { state: 'unknown', method: null, reason: 'not-probed' },
-      startup: options.connectionMode === 'remote'
-        ? { state: 'available', method: 'rci-more', reason: null }
-        : { state: 'available', method: 'ci-file', reason: null },
+      startup: { state: 'available', method: options.startupMethod ??
+        (options.connectionMode === 'remote' ? 'rci-more' : 'ci-file'), reason: null },
       backup: { state: 'available', method: 'ci-file', reason: null }
     } }))
   } as unknown as KeeneticClient;
@@ -242,6 +251,48 @@ describe('diagnose_internet', () => {
     const result = await setupResult.handler({});
 
     expect(result.isError).toBe(true);
+    expect(setupResult.post).not.toHaveBeenCalled();
+  });
+
+  it('uses measured LAN rci-more startup input without a /ci read', async () => {
+    const setupResult = setup({ connectionMode: 'lan', startupMethod: 'rci-more' });
+
+    const out = payload(await setupResult.handler({}));
+
+    expect(out.evidence.configuration.data).toMatchObject({
+      savedChecksum: 'aa4bc868709b49cb803db0fd3cc43f6f',
+      unsavedChanges: false
+    });
+    expect(setupResult.getConfig).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
+    expect(setupResult.getText).not.toHaveBeenCalled();
+  });
+
+  it('latches a LAN rci-more startup transport failure before reading logs', async () => {
+    const setupResult = setup({ connectionMode: 'lan', startupMethod: 'rci-more',
+      rciMoreStartupError: new TransportError('startup transport unavailable') });
+
+    const out = payload(await setupResult.handler({}));
+
+    expect(setupResult.getConfig).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
+    expect(setupResult.getText).not.toHaveBeenCalled();
+    expect(setupResult.post).not.toHaveBeenCalled();
+    expect(out.evidence.configuration).toMatchObject({
+      status: 'unavailable', reason: 'transport-error'
+    });
+    expect(out.evidence.logs).toMatchObject({
+      status: 'unavailable', reason: 'transport-error'
+    });
+  });
+
+  it('treats LAN rci-more startup authentication loss as fatal before logs', async () => {
+    const setupResult = setup({ connectionMode: 'lan', startupMethod: 'rci-more',
+      rciMoreStartupError: new AuthError('startup credentials rejected') });
+
+    const result = await setupResult.handler({});
+
+    expect(result.isError).toBe(true);
+    expect(setupResult.getConfig).toHaveBeenCalledWith('more?filename=startup-config', 256_000);
+    expect(setupResult.getText).not.toHaveBeenCalled();
     expect(setupResult.post).not.toHaveBeenCalled();
   });
 

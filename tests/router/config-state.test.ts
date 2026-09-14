@@ -14,4 +14,10 @@ describe('saved configuration checksum parser', () => {
     expect(parseSavedChecksum('password=' + 'a'.repeat(32))).toBeNull();
     expect(parseSavedChecksum(`! $$$ Md5 checksum: ${'g'.repeat(32)}`)).toBeNull();
   });
+
+  it('rejects checksum prefixes with an appended token suffix', () => {
+    const checksum = 'abcdef0123456789abcdef0123456789';
+    expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}a`)).toBeNull();
+    expect(parseSavedChecksum(`! $$$ Md5 checksum: ${checksum}!`)).toBeNull();
+  });
 });
