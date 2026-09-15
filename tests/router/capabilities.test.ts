@@ -83,6 +83,20 @@ describe('parseCapabilities', () => {
     expect(caps.sandbox).toBe(' Sandbox Mixed Case \n');
   });
 
+  it.each([
+    { field: 'release', release: '', sandbox: 'synthetic-sandbox' },
+    { field: 'sandbox', release: 'synthetic-release', sandbox: '' }
+  ] as const)(
+    'preserves an empty-string $field independently from its optional sibling', value => {
+      const caps = parseCapabilities({ ...VERSION, title: '5.1.5', ...value });
+      const sibling = value.field === 'release' ? 'sandbox' : 'release';
+
+      expect(caps.firmware).toBe('5.1.5');
+      expect(caps).toHaveProperty(value.field, '');
+      expect(caps[sibling]).toBe(value[sibling]);
+    }
+  );
+
   it.each(['stable', 'main', 'preview', 'dev', 'lts', 'experimental', 'unknown-value'])(
     'keeps adversarial sandbox vocabulary as the exact raw string: %s', sandbox => {
       const caps = parseCapabilities({ ...VERSION, sandbox });

@@ -149,6 +149,24 @@ describe('get_system_info', () => {
     expect(releasePayload).not.toHaveProperty('sandbox');
   });
 
+  it.each([
+    { field: 'release', release: '', sandbox: 'synthetic-sandbox' },
+    { field: 'sandbox', release: 'synthetic-release', sandbox: '' }
+  ] as const)(
+    'presents an empty-string $field independently from its optional sibling', async value => {
+      const caps = parseCapabilities({
+        title: '5.1.5', model: 'Keenetic Model (KN-0000)', hw_id: 'KN-0000', ...value
+      });
+      const { handlers } = capture(contextWith(async () => system(), async () => '', undefined, caps));
+      const payload = JSON.parse(textOf(await handlers['get_system_info']!({})));
+      const sibling = value.field === 'release' ? 'sandbox' : 'release';
+
+      expect(payload.firmware).toBe('5.1.5');
+      expect(payload).toHaveProperty(value.field, '');
+      expect(payload[sibling]).toBe(value[sibling]);
+    }
+  );
+
   it.each(['release', 'sandbox'] as const)(
     'omits every malformed %s value after capability parsing without failing the tool', async field => {
       for (const value of [null, 42, { value: 'synthetic' }, ['synthetic']]) {
