@@ -1,4 +1,5 @@
 import { RciError, ValidationError } from './errors.js';
+import { isIP } from 'node:net';
 import type { Rci } from './rci.js';
 
 /** The home segment. Never allocated to a new network, never torn down. */
@@ -96,12 +97,54 @@ export async function readSwitchPorts(rci: Rci): Promise<SwitchPort[]> {
 export interface RouterInventory {
   ports: SwitchPort[];
   bridgeNumbers: number[];
-  /** Third octet of every 192.168.x.0/24 already in use, from bridges and pools. */
-  subnets: number[];
+  /** Exact IPv4 prefixes observed from bridge address-and-mask pairs. */
+  subnets: IPv4Prefix[];
+  /** Whether all subnet-relevant bridge and DHCP evidence was interpretable. */
+  subnetsStatus: 'observed' | 'unknown';
   vlanIds: number[];
   policies: string[];
   pools: string[];
   wlanKeys: string[];
+}
+
+interface IPv4Prefix {
+  cidr: string;
+  start: number;
+  end: number;
+  prefixLength: number;
+}
+
+function ipv4ToNumber(value: string): number | null {
+  if (isIP(value) !== 4) return null;
+  const parts = value.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part))) return null;
+  return ((parts[0]! * 0x1000000) + (parts[1]! * 0x10000) + (parts[2]! * 0x100) + parts[3]!) >>> 0;
+}
+
+function numberToIpv4(value: number): string {
+  return `${value >>> 24}.${(value >>> 16) & 255}.${(value >>> 8) & 255}.${value & 255}`;
+}
+
+function prefixLengthForMask(mask: number): number | null {
+  const inverted = (~mask) >>> 0;
+  if ((inverted & (inverted + 1)) !== 0) return null;
+  return Math.clz32(inverted);
+}
+
+function ipv4Prefix(address: unknown, mask: unknown): IPv4Prefix | null {
+  if (typeof address !== 'string' || typeof mask !== 'string') return null;
+  const addressNumber = ipv4ToNumber(address);
+  const maskNumber = ipv4ToNumber(mask);
+  if (addressNumber === null || maskNumber === null) return null;
+  const prefixLength = prefixLengthForMask(maskNumber);
+  if (prefixLength === null) return null;
+  const start = (addressNumber & maskNumber) >>> 0;
+  const end = start + (0xffffffff - maskNumber);
+  return { cidr: `${numberToIpv4(start)}/${prefixLength}`, start, end, prefixLength };
+}
+
+function rangesOverlap(left: IPv4Prefix, right: IPv4Prefix): boolean {
+  return left.start <= right.end && right.start <= left.end;
 }
 
 /** Everything the allocator needs, so nothing is handed out twice. */
@@ -109,21 +152,30 @@ export async function readInventory(rci: Rci): Promise<RouterInventory> {
   const ports = await readSwitchPorts(rci);
 
   const bridgeNumbers: number[] = [];
-  const subnets = new Set<number>();
+  const subnets = new Map<string, IPv4Prefix>();
+  let subnetsStatus: 'observed' | 'unknown' = 'observed';
   for (let index = 0; index < PROBE_LIMIT; index += 1) {
     const raw = await readOptional(rci, `show/rc/interface/Bridge${index}`);
     if (raw === null) continue;
     bridgeNumbers.push(index);
-    const address = asRecord(asRecord(raw['ip'])['address'])['address'];
-    const octet = typeof address === 'string' ? Number(address.split('.')[2]) : NaN;
-    if (Number.isInteger(octet)) subnets.add(octet);
+    const addressRecord = asRecord(asRecord(raw['ip'])['address']);
+    const address = addressRecord['address'];
+    if (address === undefined || address === null) continue;
+    const prefix = ipv4Prefix(address, addressRecord['mask']);
+    if (prefix === null) subnetsStatus = 'unknown';
+    else subnets.set(prefix.cidr, prefix);
   }
 
   const pools = asRecord((await readOptional(rci, 'show/rc/ip/dhcp'))?.['pool']);
   for (const pool of Object.values(pools)) {
-    const begin = asRecord(asRecord(pool)['range'])['begin'];
-    const octet = typeof begin === 'string' ? Number(begin.split('.')[2]) : NaN;
-    if (Number.isInteger(octet)) subnets.add(octet);
+    const rangeValue = asRecord(pool)['range'];
+    if (rangeValue === undefined || rangeValue === null) continue;
+    const range = asRecord(rangeValue);
+    const begin = typeof range['begin'] === 'string' ? ipv4ToNumber(range['begin']) : null;
+    const end = typeof range['end'] === 'string' ? ipv4ToNumber(range['end']) : null;
+    if (begin === null || end === null || begin > end || ![...subnets.values()].some(
+      subnet => subnet.start <= begin && end <= subnet.end
+    )) subnetsStatus = 'unknown';
   }
 
   const vlanIds = new Set<number>();
@@ -135,7 +187,10 @@ export async function readInventory(rci: Rci): Promise<RouterInventory> {
   return {
     ports,
     bridgeNumbers,
-    subnets: [...subnets].sort((a, b) => a - b),
+    subnets: [...subnets.values()].sort((left, right) =>
+      left.start - right.start || left.prefixLength - right.prefixLength
+    ),
+    subnetsStatus,
     vlanIds: [...vlanIds].sort((a, b) => a - b),
     policies: Object.keys(asRecord(await readOptional(rci, 'show/rc/ip/policy'))),
     pools: Object.keys(pools),
@@ -181,10 +236,22 @@ export interface AllocationRequest {
  */
 export function allocate(inventory: RouterInventory, request: AllocationRequest): Allocation {
   const bridgeNumber = firstFree(inventory.bridgeNumbers, 1, PROBE_LIMIT, 'bridge');
-  const subnet =
-    request.subnet ?? firstFree(inventory.subnets, 2, 250, '192.168.x.0/24 subnet');
+  if (inventory.subnetsStatus === 'unknown') {
+    throw new ValidationError(
+      'Cannot select a subnet because complete bridge address-and-mask evidence is unavailable.'
+    );
+  }
 
-  if (request.subnet !== undefined && inventory.subnets.includes(request.subnet)) {
+  const candidateFor = (subnet: number): IPv4Prefix =>
+    ipv4Prefix(`192.168.${subnet}.0`, '255.255.255.0')!;
+  const subnet = request.subnet ?? (() => {
+    for (let candidate = 2; candidate < 252; candidate += 1) {
+      if (!inventory.subnets.some(used => rangesOverlap(candidateFor(candidate), used))) return candidate;
+    }
+    throw new ValidationError('No free 192.168.x.0/24 subnet left on this router.');
+  })();
+
+  if (request.subnet !== undefined && inventory.subnets.some(used => rangesOverlap(candidateFor(subnet), used))) {
     throw new ValidationError(
       `192.168.${request.subnet}.0/24 is already in use on this router. ` +
         'Choose another subnet, or omit it and one will be allocated.'

@@ -15,7 +15,7 @@ const SWITCH: Record<string, unknown> = {
     switchport: { access: { vid: '1' }, trunk: [{ vid: '2' }] }
   },
   'show/rc/interface/GigabitEthernet0/1': { rename: '2', switchport: { access: { vid: '1' } } },
-  'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.1.1' } } },
+  'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.1.1', mask: '255.255.255.0' } } },
   'show/rc/ip/dhcp': { pool: {} },
   'show/rc/ip/policy': {},
   'show/rc/mws/wlan': {}
@@ -25,7 +25,7 @@ const SWITCH: Record<string, unknown> = {
 const BUILT = {
   description: 'iot',
   include: [{ interface: 'GigabitEthernet0/Vlan3' }],
-  ip: { address: { address: '192.168.2.1' } },
+  ip: { address: { address: '192.168.2.1', mask: '255.255.255.0' } },
   iseg: { vlan: '3', port: '1,2', 'vlan-port': '1,2' }
 };
 
@@ -116,7 +116,7 @@ describe('list_segments', () => {
       readOnly: true,
       paths: {
         'show/rc/interface/Bridge1': {
-          ip: { address: { address: '192.168.2.1' } },
+          ip: { address: { address: '192.168.2.1', mask: '255.255.255.0' } },
           iseg: { vlan: '', 'vlan-port': '' }
         }
       }
@@ -129,6 +129,40 @@ describe('list_segments', () => {
     expect(bridge1?.['address'], 'the network is configured').toBe('192.168.2.1');
     expect(bridge1?.['uiVisible'], 'and the web interface still will not list it').toBe(false);
     expect(body['switchPorts']).toHaveLength(2);
+  });
+
+  it('returns canonical observed CIDRs with an explicit inventory status and allocation scope', async () => {
+    const { handlers } = harness({
+      readOnly: true,
+      paths: {
+        'show/rc/interface/Bridge0': { ip: { address: { address: '10.20.30.40', mask: '255.0.0.0' } } },
+        'show/rc/interface/Bridge1': { ip: { address: { address: '172.20.30.40', mask: '255.240.0.0' } } },
+        'show/rc/interface/Bridge2': { ip: { address: { address: '192.168.4.129', mask: '255.255.255.128' } } },
+        'show/rc/ip/dhcp': { pool: {} }
+      }
+    });
+
+    const free = payload(await handlers['list_segments']!({}))['free'] as Record<string, unknown>;
+    expect(free['usedSubnets']).toEqual(['10.0.0.0/8', '172.16.0.0/12', '192.168.4.128/25']);
+    expect(free['usedSubnets']).not.toContain('192.168.30.0/24');
+    expect(free['usedSubnetsStatus']).toBe('observed');
+    expect(free['allocationScope']).toBe('192.168.x/24-only');
+  });
+
+  it('keeps established prefixes but reports unknown when bridge evidence is partial', async () => {
+    const { handlers } = harness({
+      readOnly: true,
+      paths: {
+        'show/rc/interface/Bridge0': { ip: { address: { address: '10.20.30.40', mask: '255.0.0.0' } } },
+        'show/rc/interface/Bridge1': { ip: { address: { address: '192.168.2.1' } } },
+        'show/rc/ip/dhcp': { pool: {} }
+      }
+    });
+
+    const free = payload(await handlers['list_segments']!({}))['free'] as Record<string, unknown>;
+    expect(free['usedSubnets']).toEqual(['10.0.0.0/8']);
+    expect(free['usedSubnetsStatus']).toBe('unknown');
+    expect(free['allocationScope']).toBe('192.168.x/24-only');
   });
 
   it('is the only segment tool registered in read-only mode', () => {
@@ -206,6 +240,28 @@ describe('create_segment', () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/192\.168\.1\.0\/24 is already in use/);
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before router mutation when subnet evidence is unknown or overlaps', async () => {
+    const unknown = harness({
+      paths: { 'show/rc/interface/Bridge1': { ip: { address: { address: '192.168.2.1' } } } }
+    });
+    const unknownResult = await unknown.handlers['create_segment']!({ name: 'iot', dry_run: false, confirm: true });
+    expect(unknownResult.isError).toBe(true);
+    expect(text(unknownResult)).toMatch(/complete bridge address-and-mask evidence is unavailable/);
+    expect(unknown.post).not.toHaveBeenCalled();
+
+    const overlap = harness({
+      paths: {
+        'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.1.1', mask: '255.255.0.0' } } }
+      }
+    });
+    const overlapResult = await overlap.handlers['create_segment']!({
+      name: 'iot', subnet: 2, dry_run: false, confirm: true
+    });
+    expect(overlapResult.isError).toBe(true);
+    expect(text(overlapResult)).toMatch(/192\.168\.2\.0\/24 is already in use/);
+    expect(overlap.post).not.toHaveBeenCalled();
   });
 });
 

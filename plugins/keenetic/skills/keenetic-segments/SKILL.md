@@ -77,6 +77,15 @@ Bridge0 and VLAN 1 are the home segment on every Keenetic. Start bridges at 1
 and VLAN ids at 2. A VLAN id is free if it is in no port's `trunk` list and is
 no port's `access.vid`.
 
+For subnet inventory, require a bridge IPv4 address and its contiguous mask,
+then use only the canonical CIDR those two values establish. A DHCP range is
+corroboration only: it does not imply a `/24` or any other prefix. If an
+address/mask pair is missing or malformed, or a DHCP range cannot be tied to
+an observed bridge prefix, treat the inventory as unknown and do not select a
+subnet. `list_segments.free.usedSubnetsStatus` communicates this distinction;
+its `allocationScope` remains `192.168.x/24-only`. The public tool is
+read-only, so do not attempt allocation or raw MCP writes from this guidance.
+
 ### 2. Build it
 
 ```

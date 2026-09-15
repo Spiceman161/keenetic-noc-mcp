@@ -147,12 +147,12 @@ describe('readSegment', () => {
 
 const INVENTORY = {
   ...PORTS,
-  'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.1.1' } } },
-  'show/rc/interface/Bridge1': { ip: { address: { address: '192.168.2.1' } } },
+  'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.1.1', mask: '255.255.255.0' } } },
+  'show/rc/interface/Bridge1': { ip: { address: { address: '192.168.2.1', mask: '255.255.255.0' } } },
   'show/rc/ip/dhcp': {
     pool: {
-      _WEBADMIN: { range: { begin: '192.168.1.50' }, bind: { interface: 'Bridge0' } },
-      _WEBADMIN_BRIDGE1: { range: { begin: '192.168.2.50' }, bind: { interface: 'Bridge1' } }
+      _WEBADMIN: { range: { begin: '192.168.1.50', end: '192.168.1.50' }, bind: { interface: 'Bridge0' } },
+      _WEBADMIN_BRIDGE1: { range: { begin: '192.168.2.50', end: '192.168.2.50' }, bind: { interface: 'Bridge1' } }
     }
   },
   'show/rc/ip/policy': { Policy0: { description: 'tunnel' } },
@@ -167,6 +167,10 @@ describe('allocate', () => {
     const inventory = await readInventory(rciWith(INVENTORY));
     const allocation = allocate(inventory, { withPolicy: true, withWifi: true });
 
+    expect(inventory.subnets.map(subnet => subnet.cidr), 'matching DHCP ranges do not duplicate bridge prefixes').toEqual([
+      '192.168.1.0/24',
+      '192.168.2.0/24'
+    ]);
     expect(allocation.bridge, 'Bridge0 and Bridge1 are taken').toBe('Bridge2');
     expect(allocation.vlanId, 'VLAN 1 is the home access vlan, 2 is trunked').toBe(3);
     expect(allocation.vlanInterface).toBe('GigabitEthernet0/Vlan3');
@@ -189,6 +193,90 @@ describe('allocate', () => {
     expect(() => allocate(inventory, { subnet: 2, withPolicy: false, withWifi: false })).toThrow(
       /192\.168\.2\.0\/24 is already in use/
     );
+  });
+
+  it('keeps exact observed prefixes and only skips overlapping 192.168 candidates', async () => {
+    const inventory = await readInventory(rciWith({
+      ...INVENTORY,
+      'show/rc/interface/Bridge0': { ip: { address: { address: '10.20.30.40', mask: '255.0.0.0' } } },
+      'show/rc/interface/Bridge1': { ip: { address: { address: '172.20.30.40', mask: '255.240.0.0' } } },
+      'show/rc/interface/Bridge2': { ip: { address: { address: '192.168.4.129', mask: '255.255.255.128' } } },
+      'show/rc/ip/dhcp': { pool: {} }
+    }));
+
+    expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual([
+      '10.0.0.0/8',
+      '172.16.0.0/12',
+      '192.168.4.128/25'
+    ]);
+    expect(allocate(inventory, { withPolicy: false, withWifi: false }).address).toBe('192.168.2.1');
+    expect(() => allocate(inventory, { subnet: 4, withPolicy: false, withWifi: false })).toThrow(
+      /192\.168\.4\.0\/24 is already in use/
+    );
+  });
+
+  it('preserves nested prefixes, rejects their overlap, and fails when none of the scoped candidates are free', async () => {
+    const inventory = await readInventory(rciWith({
+      ...INVENTORY,
+      'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.1.1', mask: '255.255.0.0' } } },
+      'show/rc/interface/Bridge1': { ip: { address: { address: '192.168.2.1', mask: '255.255.255.0' } } },
+      'show/rc/ip/dhcp': { pool: {} }
+    }));
+
+    expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.0.0/16', '192.168.2.0/24']);
+    expect(() => allocate(inventory, { subnet: 2, withPolicy: false, withWifi: false })).toThrow(/already in use/);
+    expect(() => allocate(inventory, { withPolicy: false, withWifi: false })).toThrow(/No free 192\.168/);
+  });
+
+  it('treats adjacent ranges as separate and exact boundaries as overlapping', async () => {
+    const inventory = await readInventory(rciWith({
+      ...INVENTORY,
+      'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.2.1', mask: '255.255.255.0' } } },
+      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/ip/dhcp': { pool: {} }
+    }));
+
+    expect(allocate(inventory, { subnet: 3, withPolicy: false, withWifi: false }).address).toBe('192.168.3.1');
+    expect(() => allocate(inventory, { subnet: 2, withPolicy: false, withWifi: false })).toThrow(/already in use/);
+  });
+
+  it('marks malformed bridge or DHCP evidence unknown without inventing a subnet and fails closed', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      { ip: { address: { address: '192.168.2.1' } } },
+      { ip: { address: { address: '192.168.2.1', mask: '255.0.255.0' } } },
+      { ip: { address: { address: 'not-an-ip', mask: '255.255.255.0' } } },
+      { ip: { address: { address: '2001:db8::1', mask: '255.255.255.0' } } }
+    ];
+
+    for (const bridge of cases) {
+      const inventory = await readInventory(rciWith({
+        ...INVENTORY,
+        'show/rc/interface/Bridge1': bridge,
+        'show/rc/ip/dhcp': { pool: {} }
+      }));
+      expect(inventory.subnetsStatus).toBe('unknown');
+      expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24']);
+      expect(() => allocate(inventory, { subnet: 2, withPolicy: false, withWifi: false })).toThrow(
+        /complete bridge address-and-mask evidence is unavailable/
+      );
+      expect(() => allocate(inventory, { withPolicy: false, withWifi: false })).toThrow(
+        /complete bridge address-and-mask evidence is unavailable/
+      );
+    }
+
+    for (const range of [
+      { begin: '192.168.1.50' },
+      { begin: '192.168.2.50', end: '192.168.2.49' },
+      { begin: 'not-an-ip', end: '192.168.1.50' },
+      { begin: '10.0.0.1', end: '10.0.0.2' }
+    ]) {
+      const inventory = await readInventory(rciWith({
+        ...INVENTORY,
+        'show/rc/ip/dhcp': { pool: { pool0: { range } } }
+      }));
+      expect(inventory.subnetsStatus).toBe('unknown');
+      expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24', '192.168.2.0/24']);
+    }
   });
 });
 

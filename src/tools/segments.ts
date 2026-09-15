@@ -21,7 +21,10 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
       description:
         'Every bridge on the router, and whether the web interface lists it as a segment. ' +
         'A bridge that carries an address but has no VLAN behind it works for traffic and ' +
-        'never appears under /access-points, so uiVisible is the field that matters.',
+        'never appears under /access-points, so uiVisible is the field that matters. Free ' +
+        'usedSubnets entries are observed IPv4 CIDRs; usedSubnetsStatus is unknown when ' +
+        'address-and-mask evidence is incomplete, and automatic allocation is limited to ' +
+        '192.168.x/24 candidates.',
       inputSchema: {},
       annotations: READ_ONLY
     },
@@ -43,7 +46,9 @@ export function registerSegmentTools(server: ToolRegistrar, ctx: ToolContext): v
         free: {
           nextBridge: `Bridge${inventory.bridgeNumbers.length === 0 ? 1 : Math.max(...inventory.bridgeNumbers) + 1}`,
           usedVlanIds: inventory.vlanIds,
-          usedSubnets: inventory.subnets.map(octet => `192.168.${octet}.0/24`),
+          usedSubnets: inventory.subnets.map(subnet => subnet.cidr),
+          usedSubnetsStatus: inventory.subnetsStatus,
+          allocationScope: '192.168.x/24-only',
           usedPolicies: inventory.policies
         }
       }, ctx.maxResponseBytes);

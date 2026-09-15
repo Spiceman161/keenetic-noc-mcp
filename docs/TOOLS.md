@@ -9,6 +9,17 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `get_wifi_client_health`, `compare_router_state`, `get_recent_changes`,
 and bounded raw `rci_call` GET.
 
+## Segment inventory
+
+`list_segments.free.usedSubnets` is a de-duplicated list of canonical observed
+IPv4 CIDRs derived only from bridge address-and-mask evidence. It can contain
+any observed IPv4 prefix, not only `192.168.x.0/24`; DHCP ranges never imply a
+CIDR. Read `usedSubnetsStatus` with the list: `observed` means all relevant
+bridge/DHCP evidence was interpretable, while `unknown` means the list may be
+partial. `allocationScope` is always `192.168.x/24-only`, describing the
+latent allocator's narrow candidate family rather than the observed inventory.
+The public segment surface remains read-only.
+
 ## Local state history
 
 `compare_router_state` compares two privacy-minimized snapshots stored by the
