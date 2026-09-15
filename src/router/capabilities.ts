@@ -5,6 +5,8 @@ export interface Capabilities {
   model: string;
   hwId: string;
   firmware: string;
+  release?: string;
+  sandbox?: string;
   components: ReadonlySet<string>;
   features: ReadonlySet<string>;
 }
@@ -41,6 +43,8 @@ export function parseCapabilities(version: unknown): Capabilities {
   const model = readString(root, 'model');
   const hwId = readString(root, 'hw_id');
   const firmware = readString(root, 'title');
+  const release = root['release'];
+  const sandbox = root['sandbox'];
   if (firmware.trim() === '' || model.trim() === '' && hwId.trim() === '') {
     throw new RciError('show/version did not identify a Keenetic router and firmware', {
       path: 'show/version', code: 'unexpected-response', ident: 'rci'
@@ -50,6 +54,8 @@ export function parseCapabilities(version: unknown): Capabilities {
     model,
     hwId,
     firmware,
+    ...(typeof release === 'string' ? { release } : {}),
+    ...(typeof sandbox === 'string' ? { sandbox } : {}),
     components: splitList(ndw['components']),
     features: splitList(ndw['features'])
   };

@@ -9,6 +9,20 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `get_wifi_client_health`, `compare_router_state`, `get_recent_changes`,
 and bounded raw `rci_call` GET.
 
+## System information
+
+`get_system_info.firmware` remains the existing `show/version.title` string.
+When router-reported `show/version.release` or `show/version.sandbox` is a
+string, `get_system_info` exposes it as the optional peer field `release` or
+`sandbox`, respectively. These are KeeneticOS metadata exposed without
+interpretation; non-string values are omitted.
+
+`components` reports installed software/component modules and `features`
+reports hardware/platform capabilities. Presence in either list proves
+installation/platform capability only. It does not by itself prove that a
+related service is configured, enabled, reachable, healthy, active, or
+operational.
+
 ## Segment inventory
 
 `list_segments.free.usedSubnets` is a de-duplicated list of canonical observed

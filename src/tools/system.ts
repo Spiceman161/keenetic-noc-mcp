@@ -46,9 +46,12 @@ export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): vo
     {
       title: 'Router system information',
       description:
-        'Model, firmware version, uptime, CPU and memory load, and the list of installed ' +
-        'KeeneticOS components. Call this first when you need to know what the router supports: ' +
-        'the component list tells you which features exist on this device.',
+        'Model, hardware identity, firmware title, uptime, CPU and memory load. Firmware is the ' +
+        'existing show/version.title string. Release and sandbox are router-reported KeeneticOS ' +
+        'metadata exposed without interpretation. Components are installed software/component ' +
+        'modules; features are hardware/platform capabilities. Their presence proves ' +
+        'installation/platform capability only, not that a related service is configured, ' +
+        'enabled, reachable, healthy, active, or operational.',
       inputSchema: {},
       annotations: READ_ONLY
     },
@@ -63,6 +66,8 @@ export function registerSystemTools(server: ToolRegistrar, ctx: ToolContext): vo
         model: caps.model,
         hardwareId: caps.hwId,
         firmware: caps.firmware,
+        ...(typeof caps.release === 'string' ? { release: caps.release } : {}),
+        ...(typeof caps.sandbox === 'string' ? { sandbox: caps.sandbox } : {}),
         hostname: s['hostname'] ?? '',
         uptimeSeconds: Number(s['uptime'] ?? 0),
         cpuLoad: s['cpuload'] ?? null,

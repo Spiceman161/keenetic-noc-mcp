@@ -32,6 +32,65 @@ describe('parseCapabilities', () => {
     expect(caps.firmware).toBe('2.16');
   });
 
+  it('keeps string release and sandbox metadata separate from firmware', () => {
+    const caps = parseCapabilities({
+      ...VERSION,
+      title: '5.1.5',
+      release: 'synthetic-release',
+      sandbox: 'synthetic-sandbox'
+    });
+
+    expect(caps).toMatchObject({
+      firmware: '5.1.5', release: 'synthetic-release', sandbox: 'synthetic-sandbox'
+    });
+    expect([...caps.components]).toEqual(['base', 'dhcpd', 'wireguard', 'dns-tls']);
+    expect([...caps.features]).toEqual(['wifi5ghz', 'hwnat', 'wpa3']);
+  });
+
+  it('omits each independently absent optional metadata field', () => {
+    const withoutRelease = parseCapabilities({ ...VERSION, sandbox: 'synthetic-sandbox' });
+    const withoutSandbox = parseCapabilities({ ...VERSION, release: 'synthetic-release' });
+
+    expect(withoutRelease).not.toHaveProperty('release');
+    expect(withoutRelease.sandbox).toBe('synthetic-sandbox');
+    expect(withoutSandbox.release).toBe('synthetic-release');
+    expect(withoutSandbox).not.toHaveProperty('sandbox');
+  });
+
+  it.each([null, 42, { value: 'synthetic' }, ['synthetic']])(
+    'omits malformed release metadata without invalidating capabilities: %j', release => {
+      const caps = parseCapabilities({ ...VERSION, release, sandbox: 'synthetic-sandbox' });
+      expect(caps).not.toHaveProperty('release');
+      expect(caps).toMatchObject({ firmware: '5.1.3', sandbox: 'synthetic-sandbox' });
+    }
+  );
+
+  it.each([null, 42, { value: 'synthetic' }, ['synthetic']])(
+    'omits malformed sandbox metadata without invalidating capabilities: %j', sandbox => {
+      const caps = parseCapabilities({ ...VERSION, release: 'synthetic-release', sandbox });
+      expect(caps).not.toHaveProperty('sandbox');
+      expect(caps).toMatchObject({ firmware: '5.1.3', release: 'synthetic-release' });
+    }
+  );
+
+  it('preserves optional metadata strings byte-semantically', () => {
+    const caps = parseCapabilities({
+      ...VERSION,
+      release: ' Release MIXED Case \t',
+      sandbox: ' Sandbox Mixed Case \n'
+    });
+    expect(caps.release).toBe(' Release MIXED Case \t');
+    expect(caps.sandbox).toBe(' Sandbox Mixed Case \n');
+  });
+
+  it.each(['stable', 'main', 'preview', 'dev', 'lts', 'experimental', 'unknown-value'])(
+    'keeps adversarial sandbox vocabulary as the exact raw string: %s', sandbox => {
+      const caps = parseCapabilities({ ...VERSION, sandbox });
+      expect(caps.sandbox).toBe(sandbox);
+      expect(Object.keys(caps)).toEqual(['model', 'hwId', 'firmware', 'sandbox', 'components', 'features']);
+    }
+  );
+
   it.each([{}, [], 'ok', { title: '5.1.3' }])(
     'rejects a response that does not identify a router: %j', value => {
       expect(() => parseCapabilities(value)).toThrow(/show\/version/i);

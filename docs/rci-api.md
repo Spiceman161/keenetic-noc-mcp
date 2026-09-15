@@ -137,6 +137,8 @@ the router: latency is 13 ms for `show/system` and about 100 ms for 100 KB.
 ```json
 {
   "title": "5.1.3",
+  "release": "5.01.C.3.0-1",
+  "sandbox": "preview",
   "model": "Ultra (KN-1811)",
   "hw_id": "KN-1811",
   "ndw": {
@@ -146,9 +148,16 @@ the router: latency is 13 ms for `show/system` and about 100 ms for 100 KB.
 }
 ```
 
-`components` is what is installed, `features` is what the hardware supports.
-This is the reliable way to decide whether a feature exists before trying to use
-it.
+`title` is the firmware string. `release` and `sandbox` are router-reported
+KeeneticOS metadata exposed without interpretation. The semantic
+`get_system_info` result exposes string-valued release and sandbox metadata
+when present, while keeping firmware as the existing title-derived string.
+
+`components` reports installed software/component modules, while `features`
+reports hardware/platform capabilities. Presence in either list proves
+installation/platform capability only; it does not by itself prove that a
+related service is configured, enabled, reachable, healthy, active, or
+operational.
 
 ## Recovering the syntax of a command
 

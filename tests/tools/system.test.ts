@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
+import { parseCapabilities, type Capabilities } from '../../src/router/capabilities.js';
 import { registerSystemTools } from '../../src/tools/system.js';
 import { fail, getToolResultTelemetry, guard, ok, type ToolContext, type ToolResult } from '../../src/tools/registry.js';
 import { AuthError, RciError, TransportError } from '../../src/router/errors.js';
@@ -9,10 +10,10 @@ import { stubBackup } from '../helpers/backup.js';
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
 interface Captured {
   handlers: Record<string, Handler>;
-  configs: Record<string, { annotations?: { readOnlyHint?: boolean } }>;
+  configs: Record<string, { annotations?: { readOnlyHint?: boolean }; description?: string }>;
 }
 
-const CAPS = {
+const CAPS: Capabilities = {
   model: 'Keenetic Model (KN-0000)',
   hwId: 'KN-0000',
   firmware: '5.1.3',
@@ -34,11 +35,12 @@ function contextWith(
   getText: (path: string) => Promise<string> = async () => '',
   getConfig: (path: string, maxBytes: number) => Promise<unknown> = async () => ({
     value: { result: [await getText('more?filename=startup-config')] }, bytes: 100
-  })
+  }),
+  caps: Capabilities = CAPS
 ): ToolContext {
   const client = {
     rci: { get, post: vi.fn(), getText: vi.fn(getText), getConfig: vi.fn(getConfig) },
-    capabilities: async () => CAPS,
+    capabilities: async () => caps,
     probedCapabilities: async () => PROBED
   } as unknown as KeeneticClient;
   return { client, maxResponseBytes: 25_000, readOnly: false, backup: stubBackup() };
@@ -48,10 +50,10 @@ function contextWith(
 function capture(ctx: ToolContext): Captured {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const handlers: Record<string, Handler> = {};
-  const configs: Record<string, { annotations?: { readOnlyHint?: boolean } }> = {};
+  const configs: Record<string, { annotations?: { readOnlyHint?: boolean }; description?: string }> = {};
   vi.spyOn(server, 'registerTool').mockImplementation(((
     name: string,
-    config: { annotations?: { readOnlyHint?: boolean } },
+    config: { annotations?: { readOnlyHint?: boolean }; description?: string },
     handler: Handler
   ) => {
     handlers[name] = handler;
@@ -96,20 +98,14 @@ describe('result helpers', () => {
 });
 
 describe('get_system_info', () => {
+  const system = async () => ({ hostname: 'router', cpuload: 6, memtotal: 524_288,
+    memfree: 300_728, uptime: '94683' });
+
   it('reports model, firmware and the component list', async () => {
     const { handlers } = capture(
-      contextWith(async path => {
-        if (path === 'show/system') {
-          return {
-            hostname: 'router',
-            cpuload: 6,
-            memtotal: 524_288,
-            memfree: 300_728,
-            uptime: '94683'
-          };
-        }
-        throw new Error(`unexpected path ${path}`);
-      })
+      contextWith(async path => path === 'show/system'
+        ? system()
+        : Promise.reject(new Error(`unexpected path ${path}`)))
     );
 
     const payload = JSON.parse(textOf(await handlers['get_system_info']!({})));
@@ -118,6 +114,77 @@ describe('get_system_info', () => {
     expect(payload.components).toContain('wireguard');
     expect(payload.cpuLoad).toBe(6);
   });
+
+  it('preserves firmware while exposing valid optional metadata peers and sorted arrays', async () => {
+    const caps: Capabilities = {
+      ...CAPS,
+      firmware: '5.1.5',
+      release: 'synthetic-release',
+      sandbox: 'synthetic-sandbox',
+      components: new Set(['wireguard', 'base']),
+      features: new Set(['wpa3', 'hwnat'])
+    };
+    const { handlers } = capture(contextWith(async () => system(), async () => '', undefined, caps));
+
+    const payload = JSON.parse(textOf(await handlers['get_system_info']!({})));
+    expect(payload.firmware).toBe('5.1.5');
+    expect(typeof payload.firmware).toBe('string');
+    expect(payload.release).toBe('synthetic-release');
+    expect(payload.sandbox).toBe('synthetic-sandbox');
+    expect(payload.components).toEqual(['base', 'wireguard']);
+    expect(payload.features).toEqual(['hwnat', 'wpa3']);
+  });
+
+  it('omits independently absent optional metadata peers', async () => {
+    const withSandbox = capture(contextWith(async () => system(), async () => '', undefined,
+      { ...CAPS, sandbox: 'synthetic-sandbox' }));
+    const withRelease = capture(contextWith(async () => system(), async () => '', undefined,
+      { ...CAPS, release: 'synthetic-release' }));
+
+    const sandboxPayload = JSON.parse(textOf(await withSandbox.handlers['get_system_info']!({})));
+    const releasePayload = JSON.parse(textOf(await withRelease.handlers['get_system_info']!({})));
+    expect(sandboxPayload).not.toHaveProperty('release');
+    expect(sandboxPayload.sandbox).toBe('synthetic-sandbox');
+    expect(releasePayload.release).toBe('synthetic-release');
+    expect(releasePayload).not.toHaveProperty('sandbox');
+  });
+
+  it.each(['release', 'sandbox'] as const)(
+    'omits every malformed %s value after capability parsing without failing the tool', async field => {
+      for (const value of [null, 42, { value: 'synthetic' }, ['synthetic']]) {
+        const raw: Record<string, unknown> = {
+          title: '5.1.5', model: 'Keenetic Model (KN-0000)', hw_id: 'KN-0000',
+          release: 'synthetic-release', sandbox: 'synthetic-sandbox'
+        };
+        raw[field] = value;
+        const { handlers } = capture(contextWith(async () => system(), async () => '', undefined,
+          parseCapabilities(raw)));
+        const payload = JSON.parse(textOf(await handlers['get_system_info']!({})));
+        expect(payload.firmware).toBe('5.1.5');
+        expect(payload).not.toHaveProperty(field);
+        expect(payload[field === 'release' ? 'sandbox' : 'release']).toBe(
+          field === 'release' ? 'synthetic-sandbox' : 'synthetic-release'
+        );
+      }
+    }
+  );
+
+  it.each(['stable', 'main', 'preview', 'dev', 'lts', 'experimental', 'unknown-value'])(
+    'keeps adversarial sandbox vocabulary raw at public output: %s', async sandbox => {
+      const caps = parseCapabilities({
+        title: '5.1.5', model: 'Keenetic Model (KN-0000)', hw_id: 'KN-0000', sandbox
+      });
+      const { handlers } = capture(contextWith(async () => system(), async () => '', undefined, caps));
+      const payload = JSON.parse(textOf(await handlers['get_system_info']!({})));
+
+      expect(payload).toMatchObject({ firmware: '5.1.5', sandbox });
+      expect(payload).not.toHaveProperty('channel');
+      expect(payload).not.toHaveProperty('updateChannel');
+      expect(payload).not.toHaveProperty('releaseChannel');
+      expect(payload).not.toHaveProperty('track');
+      expect(payload).not.toHaveProperty('branch');
+    }
+  );
 
   it('returns isError instead of throwing when the router is unreachable', async () => {
     const { handlers } = capture(
@@ -136,9 +203,39 @@ describe('get_system_info', () => {
     expect(configs['get_system_info']?.annotations?.readOnlyHint).toBe(true);
     expect(configs['get_config_state']?.annotations?.readOnlyHint).toBe(true);
   });
+
+  it('describes raw metadata and capability lists without operational inference', () => {
+    const { configs } = capture(contextWith(async () => ({})));
+    const description = configs['get_system_info']?.description ?? '';
+    expect(description).toContain('router-reported KeeneticOS metadata exposed without interpretation');
+    expect(description).toContain('installed software/component modules');
+    expect(description).toContain('hardware/platform capabilities');
+    expect(description).toContain('not that a related service is configured, enabled, reachable, healthy, active, or operational');
+    expect(description).not.toMatch(/channel/i);
+  });
+
+  it('continues to apply the existing response ceiling to oversized metadata', async () => {
+    const ctx = contextWith(async () => system(), async () => '', undefined,
+      { ...CAPS, release: 'x '.repeat(5_000) });
+    ctx.maxResponseBytes = 512;
+    const { handlers } = capture(ctx);
+    const result = await handlers['get_system_info']!({});
+    expect(Buffer.byteLength(textOf(result), 'utf8')).toBeLessThanOrEqual(512);
+    expect(JSON.parse(textOf(result))).toMatchObject({ truncated: true });
+  });
 });
 
 describe('get_connection_status', () => {
+  it('keeps its existing firmware-only consumer behavior when metadata is available', async () => {
+    const caps: Capabilities = { ...CAPS, release: 'synthetic-release', sandbox: 'synthetic-sandbox' };
+    const { handlers } = capture(contextWith(async () => ({}), async () => '', undefined, caps));
+    const payload = JSON.parse(textOf(await handlers['get_connection_status']!({})));
+    expect(payload.firmware).toBe('5.1.3');
+    expect(typeof payload.firmware).toBe('string');
+    expect(payload).not.toHaveProperty('release');
+    expect(payload).not.toHaveProperty('sandbox');
+  });
+
   it('reports measured remote startup config while preserving LAN-only backup policy', async () => {
     const ctx = contextWith(async () => ({}));
     ctx.connection = { mode: 'remote', endpoint: 'https://rci.example.test/rci/' };
