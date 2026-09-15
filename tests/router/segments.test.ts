@@ -232,7 +232,7 @@ describe('allocate', () => {
     const inventory = await readInventory(rciWith({
       ...INVENTORY,
       'show/rc/interface/Bridge0': { ip: { address: { address: '192.168.2.1', mask: '255.255.255.0' } } },
-      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/interface/Bridge1': {},
       'show/rc/ip/dhcp': { pool: {} }
     }));
 
@@ -244,7 +244,7 @@ describe('allocate', () => {
     const allIpv4 = await readInventory(rciWith({
       ...INVENTORY,
       'show/rc/interface/Bridge0': { ip: { address: { address: '0.0.0.1', mask: '0.0.0.0' } } },
-      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/interface/Bridge1': {},
       'show/rc/ip/dhcp': { pool: {} }
     }));
 
@@ -257,7 +257,7 @@ describe('allocate', () => {
       'show/rc/interface/Bridge0': {
         ip: { address: { address: '255.255.255.255', mask: '255.255.255.255' } }
       },
-      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/interface/Bridge1': {},
       'show/rc/ip/dhcp': { pool: {} }
     }));
 
@@ -304,17 +304,58 @@ describe('allocate', () => {
     }
   });
 
+  it('distinguishes absent bridges from successful malformed bridge responses', async () => {
+    const cases: Array<{ label: string; present: boolean; bridge?: unknown }> = [
+      { label: '404 absence', present: false },
+      { label: 'successful undefined', present: true, bridge: undefined },
+      { label: 'successful null', present: true, bridge: null },
+      { label: 'successful array', present: true, bridge: [] },
+      { label: 'successful scalar', present: true, bridge: 'not-a-bridge-record' },
+      { label: 'null ip container', present: true, bridge: { ip: null } },
+      { label: 'null address container', present: true, bridge: { ip: { address: null } } }
+    ];
+
+    for (const testCase of cases) {
+      const paths: Record<string, unknown> = {
+        ...PORTS,
+        'show/rc/interface/Bridge0': {
+          ip: { address: { address: '192.168.1.1', mask: '255.255.255.0' } }
+        },
+        'show/rc/ip/dhcp': { pool: {} }
+      };
+      if (testCase.present) paths['show/rc/interface/Bridge1'] = testCase.bridge;
+
+      const inventory = await readInventory(rciWith(paths));
+      expect(inventory.subnets.map(subnet => subnet.cidr), testCase.label).toEqual(['192.168.1.0/24']);
+      expect(inventory.subnetsStatus, testCase.label).toBe(testCase.present ? 'unknown' : 'observed');
+
+      if (testCase.present) {
+        expect(() => allocate(inventory, { subnet: 2, withPolicy: false, withWifi: false }), testCase.label).toThrow(
+          /complete bridge address-and-mask evidence is unavailable/
+        );
+        expect(() => allocate(inventory, { withPolicy: false, withWifi: false }), testCase.label).toThrow(
+          /complete bridge address-and-mask evidence is unavailable/
+        );
+      } else {
+        expect(allocate(inventory, { withPolicy: false, withWifi: false }).address).toBe('192.168.2.1');
+      }
+    }
+  });
+
   it('distinguishes unconfigured bridge and empty pool maps from unsupported subnet evidence', async () => {
     const unconfigured = await readInventory(rciWith({
       ...INVENTORY,
-      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/interface/Bridge1': {},
       'show/rc/ip/dhcp': { pool: {} }
     }));
     expect(unconfigured.subnetsStatus).toBe('observed');
     expect(unconfigured.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24']);
 
     for (const bridge of [
+      { ip: null },
+      { ip: {} },
       { ip: { address: '192.168.2.1' } },
+      { ip: { address: null } },
       { ip: { address: [] } },
       { ip: { address: { mask: '255.255.255.0' } } },
       { ip: { address: { address: '192.168.2.1' } } }
@@ -328,10 +369,26 @@ describe('allocate', () => {
       expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24']);
     }
 
+    const dhcpAbsent = await readInventory(rciWith({
+      ...PORTS,
+      'show/rc/interface/Bridge0': {
+        ip: { address: { address: '192.168.1.1', mask: '255.255.255.0' } }
+      }
+    }));
+    expect(dhcpAbsent.subnetsStatus).toBe('observed');
+    expect(dhcpAbsent.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24']);
+    expect(dhcpAbsent.pools).toEqual([]);
+
     for (const dhcp of [
+      undefined,
+      null,
+      [],
+      'not-a-dhcp-record',
       {},
+      { pool: undefined },
       { pool: null },
       { pool: 'configured' },
+      { pool: { pool0: null } },
       { pool: { pool0: 'configured' } },
       { pool: { pool0: {} } },
       { pool: { pool0: { range: null } } }

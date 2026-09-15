@@ -181,6 +181,27 @@ describe('list_segments', () => {
     expect(poolFree['allocationScope']).toBe('192.168.x/24-only');
   });
 
+  it('preserves known CIDRs but fails closed for a successful malformed bridge response', async () => {
+    const malformed = harness({ paths: { 'show/rc/interface/Bridge1': null } });
+
+    const free = payload(await malformed.handlers['list_segments']!({}))['free'] as Record<string, unknown>;
+    expect(free['usedSubnets']).toEqual(['192.168.1.0/24']);
+    expect(free['usedSubnetsStatus']).toBe('unknown');
+
+    const automatic = await malformed.handlers['create_segment']!({
+      name: 'iot', dry_run: false, confirm: true
+    });
+    expect(automatic.isError).toBe(true);
+    expect(text(automatic)).toMatch(/complete bridge address-and-mask evidence is unavailable/);
+
+    const explicit = await malformed.handlers['create_segment']!({
+      name: 'iot', subnet: 2, dry_run: false, confirm: true
+    });
+    expect(explicit.isError).toBe(true);
+    expect(text(explicit)).toMatch(/complete bridge address-and-mask evidence is unavailable/);
+    expect(malformed.post).not.toHaveBeenCalled();
+  });
+
   it('is the only segment tool registered in read-only mode', () => {
     const { handlers } = harness({ readOnly: true });
     expect(handlers['list_segments']).toBeDefined();

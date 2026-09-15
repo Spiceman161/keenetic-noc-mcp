@@ -44,18 +44,21 @@ function asVid(value: unknown): number | null {
  * unplugged cable into "nothing is configured", and the allocator would then
  * hand out identifiers that are already in use.
  */
-async function readOptionalValue(rci: Rci, path: string): Promise<unknown | undefined> {
+type OptionalRead =
+  | { status: 'absent' }
+  | { status: 'present'; value: unknown };
+
+async function readOptional(rci: Rci, path: string): Promise<OptionalRead> {
   try {
-    return await rci.get(path);
+    return { status: 'present', value: await rci.get(path) };
   } catch (error) {
-    if (error instanceof RciError && error.code === '404') return undefined;
+    if (error instanceof RciError && error.code === '404') return { status: 'absent' };
     throw error;
   }
 }
 
-async function readOptional(rci: Rci, path: string): Promise<Record<string, unknown> | null> {
-  const value = await readOptionalValue(rci, path);
-  return value === undefined ? null : asRecord(value);
+function optionalRecord(read: OptionalRead): Record<string, unknown> | null {
+  return read.status === 'absent' ? null : asRecord(read.value);
 }
 
 export interface SwitchPort {
@@ -80,7 +83,7 @@ export async function readSwitchPorts(rci: Rci): Promise<SwitchPort[]> {
 
   for (let index = 0; index < PROBE_LIMIT; index += 1) {
     const name = `GigabitEthernet0/${index}`;
-    const raw = await readOptional(rci, `show/rc/interface/${name}`);
+    const raw = optionalRecord(await readOptional(rci, `show/rc/interface/${name}`));
     if (raw === null) break;
 
     const switchport = asRecord(raw['switchport']);
@@ -162,17 +165,21 @@ export async function readInventory(rci: Rci): Promise<RouterInventory> {
   const subnets = new Map<string, IPv4Prefix>();
   let subnetsStatus: 'observed' | 'unknown' = 'observed';
   for (let index = 0; index < PROBE_LIMIT; index += 1) {
-    const raw = await readOptional(rci, `show/rc/interface/Bridge${index}`);
-    if (raw === null) continue;
+    const response = await readOptional(rci, `show/rc/interface/Bridge${index}`);
+    if (response.status === 'absent') continue;
     bridgeNumbers.push(index);
+    if (!isRecord(response.value)) {
+      subnetsStatus = 'unknown';
+      continue;
+    }
+    const raw = response.value;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'ip')) continue;
     const ip = raw['ip'];
-    if (ip === undefined || ip === null) continue;
     if (!isRecord(ip)) {
       subnetsStatus = 'unknown';
       continue;
     }
     const addressRecord = ip['address'];
-    if (addressRecord === undefined || addressRecord === null) continue;
     if (!isRecord(addressRecord)) {
       subnetsStatus = 'unknown';
       continue;
@@ -182,10 +189,16 @@ export async function readInventory(rci: Rci): Promise<RouterInventory> {
     else subnets.set(prefix.cidr, prefix);
   }
 
-  const dhcp = await readOptionalValue(rci, 'show/rc/ip/dhcp');
-  const pools = isRecord(dhcp) && isRecord(dhcp['pool']) ? dhcp['pool'] : {};
-  if (!isRecord(dhcp) || !Object.prototype.hasOwnProperty.call(dhcp, 'pool') || !isRecord(dhcp['pool'])) {
-    subnetsStatus = 'unknown';
+  const dhcpResponse = await readOptional(rci, 'show/rc/ip/dhcp');
+  let pools: Record<string, unknown> = {};
+  if (dhcpResponse.status === 'present') {
+    if (!isRecord(dhcpResponse.value) ||
+        !Object.prototype.hasOwnProperty.call(dhcpResponse.value, 'pool') ||
+        !isRecord(dhcpResponse.value['pool'])) {
+      subnetsStatus = 'unknown';
+    } else {
+      pools = dhcpResponse.value['pool'];
+    }
   }
   for (const pool of Object.values(pools)) {
     if (!isRecord(pool)) {
@@ -219,9 +232,9 @@ export async function readInventory(rci: Rci): Promise<RouterInventory> {
     ),
     subnetsStatus,
     vlanIds: [...vlanIds].sort((a, b) => a - b),
-    policies: Object.keys(asRecord(await readOptional(rci, 'show/rc/ip/policy'))),
+    policies: Object.keys(asRecord(optionalRecord(await readOptional(rci, 'show/rc/ip/policy')))),
     pools: Object.keys(pools),
-    wlanKeys: Object.keys(asRecord(await readOptional(rci, 'show/rc/mws/wlan')))
+    wlanKeys: Object.keys(asRecord(optionalRecord(await readOptional(rci, 'show/rc/mws/wlan'))))
   };
 }
 
@@ -335,7 +348,7 @@ export interface SegmentState {
 }
 
 export async function readSegment(rci: Rci, bridge: string): Promise<SegmentState | null> {
-  const raw = await readOptional(rci, `show/rc/interface/${bridge}`);
+  const raw = optionalRecord(await readOptional(rci, `show/rc/interface/${bridge}`));
   if (raw === null) return null;
 
   const iseg = asRecord(raw['iseg']);
@@ -374,8 +387,8 @@ export async function readDependants(rci: Rci, bridge: string): Promise<SegmentD
   const boundTo = (value: unknown): boolean =>
     asRecord(asRecord(value)['bind'])['interface'] === bridge;
 
-  const wlans = asRecord(await readOptional(rci, 'show/rc/mws/wlan'));
-  const pools = asRecord((await readOptional(rci, 'show/rc/ip/dhcp'))?.['pool']);
+  const wlans = asRecord(optionalRecord(await readOptional(rci, 'show/rc/mws/wlan')));
+  const pools = asRecord(optionalRecord(await readOptional(rci, 'show/rc/ip/dhcp'))?.['pool']);
 
   return {
     wlanKeys: Object.entries(wlans)
