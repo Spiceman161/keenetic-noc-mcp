@@ -165,6 +165,22 @@ describe('list_segments', () => {
     expect(free['allocationScope']).toBe('192.168.x/24-only');
   });
 
+  it('reports unknown rather than dropping present unsupported address or pool evidence', async () => {
+    const address = harness({
+      readOnly: true,
+      paths: { 'show/rc/interface/Bridge1': { ip: { address: [] } } }
+    });
+    const addressFree = payload(await address.handlers['list_segments']!({}))['free'] as Record<string, unknown>;
+    expect(addressFree['usedSubnets']).toEqual(['192.168.1.0/24']);
+    expect(addressFree['usedSubnetsStatus']).toBe('unknown');
+
+    const pool = harness({ readOnly: true, paths: { 'show/rc/ip/dhcp': {} } });
+    const poolFree = payload(await pool.handlers['list_segments']!({}))['free'] as Record<string, unknown>;
+    expect(poolFree['usedSubnets']).toEqual(['192.168.1.0/24']);
+    expect(poolFree['usedSubnetsStatus']).toBe('unknown');
+    expect(poolFree['allocationScope']).toBe('192.168.x/24-only');
+  });
+
   it('is the only segment tool registered in read-only mode', () => {
     const { handlers } = harness({ readOnly: true });
     expect(handlers['list_segments']).toBeDefined();
@@ -244,7 +260,7 @@ describe('create_segment', () => {
 
   it('fails closed before router mutation when subnet evidence is unknown or overlaps', async () => {
     const unknown = harness({
-      paths: { 'show/rc/interface/Bridge1': { ip: { address: { address: '192.168.2.1' } } } }
+      paths: { 'show/rc/interface/Bridge1': { ip: { address: [] } } }
     });
     const unknownResult = await unknown.handlers['create_segment']!({ name: 'iot', dry_run: false, confirm: true });
     expect(unknownResult.isError).toBe(true);

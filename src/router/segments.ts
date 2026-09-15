@@ -18,10 +18,12 @@ const POOL_PREFIX = '_WEBADMIN_BRIDGE';
 const DHCP_FIRST = 33;
 const DHCP_LAST = 152;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return isRecord(value) ? value : {};
 }
 
 /** The router collapses a single-element list into a bare object. */
@@ -42,13 +44,18 @@ function asVid(value: unknown): number | null {
  * unplugged cable into "nothing is configured", and the allocator would then
  * hand out identifiers that are already in use.
  */
-async function readOptional(rci: Rci, path: string): Promise<Record<string, unknown> | null> {
+async function readOptionalValue(rci: Rci, path: string): Promise<unknown | undefined> {
   try {
-    return asRecord(await rci.get(path));
+    return await rci.get(path);
   } catch (error) {
-    if (error instanceof RciError && error.code === '404') return null;
+    if (error instanceof RciError && error.code === '404') return undefined;
     throw error;
   }
+}
+
+async function readOptional(rci: Rci, path: string): Promise<Record<string, unknown> | null> {
+  const value = await readOptionalValue(rci, path);
+  return value === undefined ? null : asRecord(value);
 }
 
 export interface SwitchPort {
@@ -158,19 +165,39 @@ export async function readInventory(rci: Rci): Promise<RouterInventory> {
     const raw = await readOptional(rci, `show/rc/interface/Bridge${index}`);
     if (raw === null) continue;
     bridgeNumbers.push(index);
-    const addressRecord = asRecord(asRecord(raw['ip'])['address']);
-    const address = addressRecord['address'];
-    if (address === undefined || address === null) continue;
-    const prefix = ipv4Prefix(address, addressRecord['mask']);
+    const ip = raw['ip'];
+    if (ip === undefined || ip === null) continue;
+    if (!isRecord(ip)) {
+      subnetsStatus = 'unknown';
+      continue;
+    }
+    const addressRecord = ip['address'];
+    if (addressRecord === undefined || addressRecord === null) continue;
+    if (!isRecord(addressRecord)) {
+      subnetsStatus = 'unknown';
+      continue;
+    }
+    const prefix = ipv4Prefix(addressRecord['address'], addressRecord['mask']);
     if (prefix === null) subnetsStatus = 'unknown';
     else subnets.set(prefix.cidr, prefix);
   }
 
-  const pools = asRecord((await readOptional(rci, 'show/rc/ip/dhcp'))?.['pool']);
+  const dhcp = await readOptionalValue(rci, 'show/rc/ip/dhcp');
+  const pools = isRecord(dhcp) && isRecord(dhcp['pool']) ? dhcp['pool'] : {};
+  if (!isRecord(dhcp) || !Object.prototype.hasOwnProperty.call(dhcp, 'pool') || !isRecord(dhcp['pool'])) {
+    subnetsStatus = 'unknown';
+  }
   for (const pool of Object.values(pools)) {
-    const rangeValue = asRecord(pool)['range'];
-    if (rangeValue === undefined || rangeValue === null) continue;
-    const range = asRecord(rangeValue);
+    if (!isRecord(pool)) {
+      subnetsStatus = 'unknown';
+      continue;
+    }
+    const rangeValue = pool['range'];
+    if (!isRecord(rangeValue)) {
+      subnetsStatus = 'unknown';
+      continue;
+    }
+    const range = rangeValue;
     const begin = typeof range['begin'] === 'string' ? ipv4ToNumber(range['begin']) : null;
     const end = typeof range['end'] === 'string' ? ipv4ToNumber(range['end']) : null;
     if (begin === null || end === null || begin > end || ![...subnets.values()].some(

@@ -240,6 +240,31 @@ describe('allocate', () => {
     expect(() => allocate(inventory, { subnet: 2, withPolicy: false, withWifi: false })).toThrow(/already in use/);
   });
 
+  it('preserves IPv4 interval endpoints for /0 and the highest-address /32', async () => {
+    const allIpv4 = await readInventory(rciWith({
+      ...INVENTORY,
+      'show/rc/interface/Bridge0': { ip: { address: { address: '0.0.0.1', mask: '0.0.0.0' } } },
+      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/ip/dhcp': { pool: {} }
+    }));
+
+    expect(allIpv4.subnets.map(subnet => subnet.cidr)).toEqual(['0.0.0.0/0']);
+    expect(() => allocate(allIpv4, { subnet: 2, withPolicy: false, withWifi: false })).toThrow(/already in use/);
+    expect(() => allocate(allIpv4, { withPolicy: false, withWifi: false })).toThrow(/No free 192\.168/);
+
+    const highestAddress = await readInventory(rciWith({
+      ...INVENTORY,
+      'show/rc/interface/Bridge0': {
+        ip: { address: { address: '255.255.255.255', mask: '255.255.255.255' } }
+      },
+      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/ip/dhcp': { pool: {} }
+    }));
+
+    expect(highestAddress.subnets.map(subnet => subnet.cidr)).toEqual(['255.255.255.255/32']);
+    expect(allocate(highestAddress, { subnet: 2, withPolicy: false, withWifi: false }).address).toBe('192.168.2.1');
+  });
+
   it('marks malformed bridge or DHCP evidence unknown without inventing a subnet and fails closed', async () => {
     const cases: Array<Record<string, unknown>> = [
       { ip: { address: { address: '192.168.2.1' } } },
@@ -273,6 +298,47 @@ describe('allocate', () => {
       const inventory = await readInventory(rciWith({
         ...INVENTORY,
         'show/rc/ip/dhcp': { pool: { pool0: { range } } }
+      }));
+      expect(inventory.subnetsStatus).toBe('unknown');
+      expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24', '192.168.2.0/24']);
+    }
+  });
+
+  it('distinguishes unconfigured bridge and empty pool maps from unsupported subnet evidence', async () => {
+    const unconfigured = await readInventory(rciWith({
+      ...INVENTORY,
+      'show/rc/interface/Bridge1': { ip: {} },
+      'show/rc/ip/dhcp': { pool: {} }
+    }));
+    expect(unconfigured.subnetsStatus).toBe('observed');
+    expect(unconfigured.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24']);
+
+    for (const bridge of [
+      { ip: { address: '192.168.2.1' } },
+      { ip: { address: [] } },
+      { ip: { address: { mask: '255.255.255.0' } } },
+      { ip: { address: { address: '192.168.2.1' } } }
+    ]) {
+      const inventory = await readInventory(rciWith({
+        ...INVENTORY,
+        'show/rc/interface/Bridge1': bridge,
+        'show/rc/ip/dhcp': { pool: {} }
+      }));
+      expect(inventory.subnetsStatus).toBe('unknown');
+      expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24']);
+    }
+
+    for (const dhcp of [
+      {},
+      { pool: null },
+      { pool: 'configured' },
+      { pool: { pool0: 'configured' } },
+      { pool: { pool0: {} } },
+      { pool: { pool0: { range: null } } }
+    ]) {
+      const inventory = await readInventory(rciWith({
+        ...INVENTORY,
+        'show/rc/ip/dhcp': dhcp
       }));
       expect(inventory.subnetsStatus).toBe('unknown');
       expect(inventory.subnets.map(subnet => subnet.cidr)).toEqual(['192.168.1.0/24', '192.168.2.0/24']);
