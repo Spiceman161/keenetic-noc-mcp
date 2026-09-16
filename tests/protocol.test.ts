@@ -6,6 +6,7 @@ import type { ToolContext } from '../src/tools/registry.js';
 import type { KeeneticClient } from '../src/router/client.js';
 import { stubBackup } from './helpers/backup.js';
 import type { TelemetryRecord } from '../src/telemetry/record.js';
+import { AuthError, RciError, TransportError } from '../src/router/errors.js';
 
 // Local filesystem writes count as writes even when the router is unchanged.
 const READ_TOOLS = [
@@ -50,11 +51,20 @@ const WRITE_TOOLS = [
   'save_config',
 ];
 
-function context(readOnly: boolean, interfaceResponse: unknown = {}): ToolContext {
+function context(
+  readOnly: boolean,
+  interfaceResponse: unknown = {},
+  options: { interfaceError?: unknown; maxResponseBytes?: number } = {}
+): ToolContext {
   const client = {
     rci: { get: vi.fn(async (path: string) => path === 'show/version'
       ? { title: '5.1.3', model: 'Keenetic Model (KN-0000)', hw_id: 'KN-0000' }
-      : path === 'show/interface' ? interfaceResponse : {}), post: vi.fn(), getText: vi.fn() },
+      : path === 'show/interface'
+        ? (() => {
+          if (options.interfaceError !== undefined) throw options.interfaceError;
+          return interfaceResponse;
+        })()
+        : {}), post: vi.fn(), getText: vi.fn() },
     capabilities: vi.fn(async () => ({
       model: 'Keenetic Model (KN-0000)',
       hwId: 'KN-0000',
@@ -65,7 +75,7 @@ function context(readOnly: boolean, interfaceResponse: unknown = {}): ToolContex
   } as unknown as KeeneticClient;
   return {
     client,
-    maxResponseBytes: 25_000,
+    maxResponseBytes: options.maxResponseBytes ?? 25_000,
     readOnly,
     backup: stubBackup(),
     allowRawWrite: false
@@ -84,11 +94,20 @@ async function connectedClient(readOnly = false): Promise<Client> {
 }
 
 async function connectedTelemetryClient(
-  options: { routerId?: string; readOnly?: boolean } = { routerId: 'tupik' }
+  options: {
+    routerId?: string;
+    readOnly?: boolean;
+    interfaceResponse?: unknown;
+    interfaceError?: unknown;
+    maxResponseBytes?: number;
+  } = { routerId: 'tupik' }
 ): Promise<{ client: Client; records: TelemetryRecord[] }> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const records: TelemetryRecord[] = [];
-  const ctx = context(options.readOnly ?? true);
+  const ctx = context(options.readOnly ?? true, options.interfaceResponse, {
+    ...(options.interfaceError === undefined ? {} : { interfaceError: options.interfaceError }),
+    ...(options.maxResponseBytes === undefined ? {} : { maxResponseBytes: options.maxResponseBytes })
+  });
   if (options.routerId !== undefined) ctx.routerId = options.routerId;
   const server = createServer(ctx, { writer: { write: async record => { records.push(record); } } });
   await server.connect(serverTransport);
@@ -277,45 +296,72 @@ describe('assembled server over MCP', () => {
     });
   });
 
-  it('captures only controlled telemetry for a real WireGuard MCP call', async () => {
+  it('keeps WireGuard sentinels out of real MCP telemetry for every status, error, and truncation path', async () => {
     const sentinels = [
       'SYNTHETIC_PRIVATE_KEY', 'SYNTHETIC_PSK', 'SYNTHETIC_PUBLIC_KEY', 'SYNTHETIC_PEER_ID',
       'SYNTHETIC_COLLECTION_KEY', 'SYNTHETIC_ENDPOINT', 'SYNTHETIC_ALLOWED_RANGE',
       'SYNTHETIC_RAW_PEER_OBJECT', 'SYNTHETIC_STABLE_ID', 'SYNTHETIC_HASH', 'SYNTHETIC_FINGERPRINT'
     ];
-    const source = {
+    const peer = () => ({
+      'preshared-key': sentinels[1], 'public-key': sentinels[2], id: sentinels[3],
+      endpoint: sentinels[5], 'allowed-ips': [sentinels[6]], raw: sentinels[7],
+      stable: sentinels[8], hash: sentinels[9], fingerprint: sentinels[10],
+      'last-handshake': 1, rxbytes: 0, txbytes: 1
+    });
+    const source = (peerCount = 1) => ({
       Wireguard0: {
         type: 'Wireguard', wireguard: {
           'private-key': sentinels[0],
-          [sentinels[4]!]: {
-            'preshared-key': sentinels[1], 'public-key': sentinels[2], id: sentinels[3],
-            endpoint: sentinels[5], 'allowed-ips': [sentinels[6]], raw: sentinels[7],
-            stable: sentinels[8], hash: sentinels[9], fingerprint: sentinels[10],
-            'last-handshake': 1, rxbytes: 0, txbytes: 1
-          }
+          peer: Object.fromEntries(Array.from({ length: peerCount }, (_, index) => [
+            `${sentinels[4]}_${index}`, peer()
+          ]))
         }
       }
-    };
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const records: TelemetryRecord[] = [];
-    const ctx = context(false, source);
-    const server = createServer(ctx, { writer: { write: async record => { records.push(record); } } });
-    await server.connect(serverTransport);
-    const client = new Client({ name: 'wireguard-telemetry-test', version: '0.0.0' });
-    await client.connect(clientTransport);
-
-    const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
-    expect(result.isError).not.toBe(true);
-    expect(JSON.stringify(result)).toContain('peersObserved');
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      tool: 'get_wireguard_status', status: 'success',
-      tool_attributes: { read_only: true, open_world: false },
-      args_summary: { fields: {}, total_fields: 0, truncated: false }
     });
-    for (const sentinel of sentinels) {
-      expect(JSON.stringify(result)).not.toContain(sentinel);
-      expect(JSON.stringify(records)).not.toContain(sentinel);
+    const errorText = `private-key=${sentinels.join(':')}`;
+    const cases: Array<[
+      string,
+      Parameters<typeof connectedTelemetryClient>[0],
+      { isError?: true; errorCode: string | null; outputTruncated?: boolean; peersTruncated?: boolean }
+    ]> = [
+      ['complete', { interfaceResponse: source() }, { errorCode: null }],
+      ['partial', { interfaceResponse: { Wireguard0: { type: 'Wireguard', wireguard: { 'private-key': sentinels[0], peer: [peer(), true] } } } }, { errorCode: null }],
+      ['unavailable', { interfaceResponse: [source()] }, { errorCode: null }],
+      ['malformed', { interfaceResponse: { Wireguard0: { type: 'Wireguard', wireguard: [sentinels], peer: [peer()] } } }, { errorCode: null }],
+      ['rci', { interfaceError: new RciError(errorText, { path: 'show/interface', code: '404', ident: 'rci' }) }, { errorCode: null }],
+      ['auth', { interfaceError: new AuthError(errorText) }, { isError: true, errorCode: 'authentication' }],
+      ['transport', { interfaceError: new TransportError(errorText) }, { isError: true, errorCode: 'transport' }],
+      ['peer truncation', { interfaceResponse: source(101) }, { errorCode: null, peersTruncated: true }],
+      ['interface truncation', { interfaceResponse: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [
+        `Wireguard${index}`, source().Wireguard0
+      ])) }, { errorCode: null, outputTruncated: true }],
+      ['512-byte budget', { interfaceResponse: source(101), maxResponseBytes: 512 }, { errorCode: null, outputTruncated: true }]
+    ];
+
+    for (const [_label, options, expected] of cases) {
+      const { client, records } = await connectedTelemetryClient(options);
+      const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
+      const publicText = (result.content as Array<{ type: string; text: string }>)
+        .map(part => part.text).join('');
+      expect(result.isError).toBe(expected.isError ?? undefined);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        tool: 'get_wireguard_status', status: expected.isError ? 'error' : 'success',
+        error_code: expected.errorCode,
+        tool_attributes: { read_only: true, open_world: false },
+        args_summary: { fields: {}, total_fields: 0, truncated: false }
+      });
+      if (expected.outputTruncated !== undefined) {
+        expect(records[0]?.output_truncated).toBe(expected.outputTruncated);
+      }
+      if (expected.peersTruncated === true) {
+        expect(publicText).toContain('"peersTruncated":true');
+      }
+      expect(publicText).toContain(expected.isError ? 'router' : 'peersObserved');
+      for (const sentinel of sentinels) {
+        expect(publicText).not.toContain(sentinel);
+        expect(JSON.stringify(records)).not.toContain(sentinel);
+      }
     }
   });
 

@@ -96,6 +96,23 @@ function envelope(value: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+function unavailableEnvelope(reason: 'unexpected-response' | 'response-too-large' | 'rci-error'): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    evidenceStatus: 'unavailable',
+    evidenceReason: reason,
+    peersObserved: null,
+    peersWithHandshakeEvidence: null,
+    peersWithoutHandshakeEvidence: null,
+    peersWithUnknownHandshakeEvidence: null,
+    peersWithInvalidHandshakeEvidence: null,
+    interfaces: [],
+    shown: 0,
+    total: null,
+    truncated: false
+  };
+}
+
 function completeInterface(): Record<string, unknown> {
   return { type: 'Wireguard', wireguard: { peer: [{ 'last-handshake': 1 }] } };
 }
@@ -155,13 +172,23 @@ describe('get_wireguard_status', () => {
     ['no classification-valid row', { Wireguard0: { type: null } }]
   ])('returns controlled unavailable evidence for a %s root', async (_label, value) => {
     const { get, handler } = harness(value);
-    expect(payload(await handler())).toEqual({
-      schemaVersion: 1, evidenceStatus: 'unavailable', evidenceReason: 'unexpected-response',
-      peersObserved: null, peersWithHandshakeEvidence: null, peersWithoutHandshakeEvidence: null,
-      peersWithUnknownHandshakeEvidence: null, peersWithInvalidHandshakeEvidence: null,
-      interfaces: [], shown: 0, total: null, truncated: false
-    });
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(payload(await handler())).toEqual(unavailableEnvelope('unexpected-response'));
+    expect(get.mock.calls).toEqual([['show/interface', 256_000]]);
+  });
+
+  it.each([
+    ['array row', ['SYNTHETIC_MALFORMED_INTERFACE']],
+    ['null row', null],
+    ['scalar row', 'SYNTHETIC_MALFORMED_INTERFACE'],
+    ['missing type', {}],
+    ['non-string type', { type: 1 }]
+  ])('returns the exact unavailable envelope for a source with only a malformed interface %s', async (_label, row) => {
+    const { get, handler } = harness({ Bad: row });
+    const out = payload(await handler());
+    expect(out).toEqual(unavailableEnvelope('unexpected-response'));
+    expect(out.interfaces).toEqual([]);
+    expect(JSON.stringify(out)).not.toContain('SYNTHETIC_MALFORMED_INTERFACE');
+    expect(get.mock.calls).toEqual([['show/interface', 256_000]]);
   });
 
   it('fails closed on malformed rows but retains exact WireGuard siblings', async () => {
@@ -198,11 +225,12 @@ describe('get_wireguard_status', () => {
     });
   });
 
-  it('keeps valid peer siblings, rejects nested-array rows, and ignores peer-map keys', async () => {
+  it('keeps valid peer siblings, rejects scalar and nested-array rows, and ignores peer-map keys', async () => {
     const { handler } = harness({
       Wireguard0: { type: 'Wireguard', wireguard: { peer: {
         SYNTHETIC_COLLECTION_KEY: { 'last-handshake': 1, rxbytes: Number.MAX_SAFE_INTEGER, txbytes: Infinity },
         ignored: null,
+        scalar: true,
         nested: []
       } } }
     });
@@ -218,36 +246,42 @@ describe('get_wireguard_status', () => {
     });
     const tooLarge = harness(new RciError('bounded', { path: 'response', code: 'response-too-large', ident: 'rci' }));
     tooLarge.get.mockRejectedValueOnce(new RciError('bounded', { path: 'response', code: 'response-too-large', ident: 'rci' }));
-    expect(envelope(payload(await tooLarge.handler()))).toEqual({
-      evidenceStatus: 'unavailable', evidenceReason: 'response-too-large', peersObserved: null,
-      peersWithHandshakeEvidence: null, peersWithoutHandshakeEvidence: null,
-      peersWithUnknownHandshakeEvidence: null, peersWithInvalidHandshakeEvidence: null,
-      shown: 0, total: null, truncated: false
-    });
+    expect(payload(await tooLarge.handler())).toEqual(unavailableEnvelope('response-too-large'));
 
     const rci = harness(new RciError('missing', { path: 'show/interface', code: '404', ident: 'rci' }));
     rci.get.mockRejectedValueOnce(new RciError('missing', { path: 'show/interface', code: '404', ident: 'rci' }));
-    expect(envelope(payload(await rci.handler()))).toEqual({
-      evidenceStatus: 'unavailable', evidenceReason: 'rci-error', peersObserved: null,
-      peersWithHandshakeEvidence: null, peersWithoutHandshakeEvidence: null,
-      peersWithUnknownHandshakeEvidence: null, peersWithInvalidHandshakeEvidence: null,
-      shown: 0, total: null, truncated: false
-    });
+    expect(payload(await rci.handler())).toEqual(unavailableEnvelope('rci-error'));
 
     const auth = harness({}); auth.get.mockRejectedValueOnce(new AuthError('denied'));
     const transport = harness({}); transport.get.mockRejectedValueOnce(new TransportError('offline'));
-    expect((await auth.handler()).isError).toBe(true);
-    expect((await transport.handler()).isError).toBe(true);
+    const authResult = await auth.handler();
+    const transportResult = await transport.handler();
+    expect(authResult).toEqual({
+      content: [{ type: 'text', text: new AuthError('denied').message }], isError: true
+    });
+    expect(transportResult).toEqual({
+      content: [{ type: 'text', text: new TransportError('offline').message }], isError: true
+    });
+    expect(authResult.content[0]?.text).not.toBe(transportResult.content[0]?.text);
   });
 
-  it('reduces mixed interface evidence independently of map insertion order', async () => {
+  it('reduces an isolated malformed non-WireGuard row independently of map insertion order', async () => {
     const good = { type: 'Wireguard', wireguard: { peer: [{ 'last-handshake': 1 }] } };
-    const unavailable = { type: 'Wireguard', wireguard: { peer: true } };
-    const first = payload(await harness({ Good: good, Bad: { type: null }, Unavailable: unavailable }).handler());
-    const second = payload(await harness({ Unavailable: unavailable, Bad: { type: null }, Good: good }).handler());
+    const malformed = ['SYNTHETIC_MALFORMED_INTERFACE'];
+    const first = payload(await harness({ Good: good, Bad: malformed }).handler());
+    const second = payload(await harness({ Bad: malformed, Good: good }).handler());
     for (const out of [first, second]) {
-      expect(out).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1 });
+      expect(envelope(out)).toEqual({
+        evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1,
+        peersWithHandshakeEvidence: 1, peersWithoutHandshakeEvidence: 0,
+        peersWithUnknownHandshakeEvidence: 0, peersWithInvalidHandshakeEvidence: 0,
+        shown: 1, total: 1, truncated: false
+      });
+      expect(out.interfaces).toHaveLength(1);
+      expect(out.interfaces[0]?.id).toBe('Good');
+      expect(JSON.stringify(out)).not.toContain('SYNTHETIC_MALFORMED_INTERFACE');
     }
+    expect(first).toEqual(second);
   });
 
   it('bounds peer and interface detail while preserving complete aggregate evidence', async () => {
@@ -339,6 +373,30 @@ describe('get_wireguard_status', () => {
         expect(JSON.stringify(out)).not.toContain('SYNTHETIC_MALFORMED_OUTER');
       }
     }
+  });
+
+  it.each(['peer', 'peers'])('keeps a malformed nested preferred %s collection partial with either direct fallback property order', async (nestedName) => {
+    const fallbackName = nestedName === 'peer' ? 'peers' : 'peer';
+    const fallback = [{ 'last-handshake': 1, rxbytes: 3, txbytes: 4 }];
+    const nested = { [nestedName]: true };
+    const rows = [
+      { type: 'Wireguard', wireguard: nested, [fallbackName]: fallback },
+      { type: 'Wireguard', [fallbackName]: fallback, wireguard: nested }
+    ];
+    const outcomes = await Promise.all(rows.map(row => harness({ Wireguard0: row }).handler().then(payload)));
+    for (const out of outcomes) {
+      expect(envelope(out)).toEqual({
+        evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1,
+        peersWithHandshakeEvidence: 1, peersWithoutHandshakeEvidence: 0,
+        peersWithUnknownHandshakeEvidence: 0, peersWithInvalidHandshakeEvidence: 0,
+        shown: 1, total: 1, truncated: false
+      });
+      expect(out.interfaces[0]).toMatchObject({
+        peerEvidenceStatus: 'partial', peersTotal: 1,
+        peers: [{ peerIndex: 1, handshake: 'present', rxBytes: 3, txBytes: 4 }]
+      });
+    }
+    expect(outcomes[0]).toEqual(outcomes[1]);
   });
 
   it('distinguishes absent outer compatibility from malformed outer evidence and collapses unusable collections', async () => {
