@@ -24,12 +24,44 @@ const VPN_INTERFACE_TYPES: ReadonlySet<string> = new Set([
   'Wireguard', 'OpenVPN', 'L2TP', 'PPTP', 'IPsec', 'Sstp'
 ]);
 
+// This is the only exact physical uplink type established by the sanitized
+// show/interface fixture used by the diagnostic path. Unknown types fail closed.
+const OBSERVED_PHYSICAL_UPLINK_TYPE = 'GigabitEthernet';
+
 export function isVpnInterfaceType(value: unknown): boolean {
   return typeof value === 'string' && VPN_INTERFACE_TYPES.has(value);
 }
 
+export function isObservedPhysicalUplinkType(value: unknown): boolean {
+  return value === OBSERVED_PHYSICAL_UPLINK_TYPE;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function peerCollectionSize(value: unknown): number | null {
+  if (Array.isArray(value)) return value.length;
+  if (value !== null && typeof value === 'object') return Object.keys(value).length;
+  return null;
+}
+
+/**
+ * Counts only collection structure. A non-empty nested peer collection wins;
+ * empty or malformed primary aliases fall through to a non-empty alternate.
+ */
+export function countVpnPeerEntries(value: unknown): number {
+  const iface = asRecord(value);
+  const wireguard = asRecord(iface['wireguard']);
+  const candidates = [
+    wireguard['peer'], wireguard['peers'], iface['peer'], iface['peers']
+  ];
+  for (const candidate of candidates) {
+    const size = peerCollectionSize(candidate);
+    if (size === null) continue;
+    if (size > 0) return size;
+  }
+  return 0;
 }
 
 function str(source: Record<string, unknown>, key: string): string {

@@ -58,6 +58,14 @@ describe('log tools', () => {
     expect(post).toHaveBeenCalledWith({ show: { log: {} } }, 2_000_000);
   });
 
+  it('keeps the generic get_logs line contract separate from diagnose_internet omission', async () => {
+    const { handlers } = harness({ logs: { show: { log: { log: {
+      '1': { timestamp: '00:01', ident: 'Network', message: { message: 'gateway generic-log-sentinel' } }
+    } } } } });
+    const out = payload(await handlers['get_logs']!({}));
+    expect(out.entries[0]).toMatchObject({ line: '00:01 Network gateway generic-log-sentinel' });
+  });
+
   it('resolves normalized device names to log aliases', async () => {
     const { handlers } = harness();
     const out = payload(await handlers['get_logs_by_device']!({ device: 'Iphosha13' }));

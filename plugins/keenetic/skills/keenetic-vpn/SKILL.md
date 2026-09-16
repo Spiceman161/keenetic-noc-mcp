@@ -11,7 +11,8 @@ description: Inspect exactly classified Keenetic VPN interface observations with
 3. A selected default route establishes only a route association. Do not infer
    tunnel health, peer reachability, handshake freshness, encryption, role, or
    traffic flow from route, state, link, address, or uptime.
-4. Do not use protocol-specific VPN log lines: diagnostic output omits them.
+4. `diagnose_internet` omits all free-form router log items; use its log-source
+   availability/count metadata only, never as peer evidence.
 5. Never ask for or expose private keys, preshared keys, peer endpoints,
    handshakes, counters, or passwords. v0.1 has
    no guessed VPN configuration writes.

@@ -1,9 +1,8 @@
-import { capText } from './budget.js';
 import type { Capabilities } from '../router/capabilities.js';
 import type { ConfigState } from '../router/config-state.js';
 import type { LogEntry } from '../tools/logs.js';
 import { redact, redactText } from '../security/redact.js';
-import { isVpnInterfaceType } from './project.js';
+import { countVpnPeerEntries, isObservedPhysicalUplinkType, isVpnInterfaceType } from './project.js';
 
 export type DiagnosticStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
 export type CheckStatus = 'pass' | 'warning' | 'fail' | 'unknown';
@@ -146,7 +145,6 @@ export interface InternetDiagnosticReport {
 
 const BAD_STATE = new Set(['down', 'error', 'failed', 'disabled', 'offline', 'unavailable']);
 const LOG_TERMS = ['internet', 'gateway', 'ndhcpc', 'dns-proxy', 'https-dns-proxy'] as const;
-const VPN_LOG_TERMS = ['wireguard', 'openvpn', 'ipsec', 'l2tp', 'pptp', 'sstp'] as const;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -240,12 +238,6 @@ export function projectInternet(raw: unknown): InternetEvidence {
   };
 }
 
-function peerCount(item: Record<string, unknown>): number {
-  const protocol = Object.keys(record(item['wireguard'])).length > 0 ? record(item['wireguard']) : item;
-  const raw = protocol['peer'] ?? protocol['peers'];
-  return Array.isArray(raw) ? raw.length : Object.keys(record(raw)).length;
-}
-
 export function projectInterfaces(raw: unknown): {
   interfaces: ListEvidence<InterfaceEvidence>;
   vpn: ListEvidence<VpnEvidence>;
@@ -271,7 +263,7 @@ export function projectInterfaces(raw: unknown): {
     if (!isVpnInterfaceType(value['type'])) continue;
     vpn.push({
       ...base,
-      peersTotal: peerCount(value),
+      peersTotal: countVpnPeerEntries(value),
       peersKnown: 0,
       peersOnline: 0,
       underlayInterfaces: []
@@ -329,32 +321,20 @@ export function projectDns(raw: unknown): DnsEvidence {
   };
 }
 
-function publicLogEntry(entry: LogEntry): PublicLogEntry {
-  return {
-    timestamp: safeString(entry.timestamp) || null,
-    ident: safeString(entry.ident) || null,
-    level: safeString(entry.level) || null,
-    label: safeString(entry.label) || null,
-    line: capText(safeString(entry.line, 2_000), 512)
-  };
-}
-
 export function projectRelatedLogs(
   entries: readonly LogEntry[],
-  interfaceIds: readonly string[],
-  vpnInterfaceIds: readonly string[] = []
+  interfaceIds: readonly string[]
 ): LogEvidence {
   const needles = [...LOG_TERMS, ...interfaceIds].map(value => value.toLocaleLowerCase());
-  const vpnNeedles = [...VPN_LOG_TERMS, ...vpnInterfaceIds].map(value => value.toLocaleLowerCase());
   const matched = entries.filter(entry => {
     const searchable = [entry.ident, entry.label, entry.line].filter((value): value is string => value !== null)
       .join(' ').toLocaleLowerCase();
-    return needles.some(needle => searchable.includes(needle)) &&
-      !vpnNeedles.some(needle => searchable.includes(needle));
+    return needles.some(needle => searchable.includes(needle));
   });
-  const items = matched.slice(-20).map(publicLogEntry);
+  // Router log fields are free-form. Counts preserve source availability without
+  // attempting to prove that a line has no VPN-specific material.
   return {
-    ...list(items, matched.length),
+    ...list<PublicLogEntry>([]),
     scanned: entries.length,
     matched: matched.length,
     untrusted: true
@@ -530,9 +510,7 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
 
   const defaultInterfaces = new Set(active.items.map(route => route.interface).filter(Boolean));
   const defaultVpns = vpns.filter(vpn => defaultInterfaces.has(vpn.id));
-  // Ethernet is the existing independently classified physical interface shape.
-  // All other non-VPN types remain unknown rather than becoming physical by exclusion.
-  const physical = interfaces.filter(iface => iface.type.includes('Ethernet'));
+  const physical = interfaces.filter(iface => isObservedPhysicalUplinkType(iface.type));
   const globalPhysical = physical.filter(iface => iface.global === true || iface.defaultGateway === true ||
     iface.internetRole === true);
   const relevantDown = physical.filter(iface => down(iface) && (
@@ -598,7 +576,7 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
         : 'VPN default-route association is unknown.'
       : 'No IPv4 default-route association with an exactly classified VPN interface was observed.'),
     check('recent-logs', evidence.logs.status === 'available' ? 'pass' : 'unknown',
-      evidence.logs.status === 'available' ? 'Bounded related logs were collected as untrusted evidence.' : 'Related logs are unavailable.'),
+      evidence.logs.status === 'available' ? 'Bounded related-log counts were collected as untrusted metadata.' : 'Related logs are unavailable.'),
     check('configuration-state', evidence.configuration.status === 'unavailable' ||
       evidence.configuration.data?.unsavedChanges === null ? 'unknown'
       : evidence.configuration.data?.unsavedChanges === true ? 'warning' : 'pass',

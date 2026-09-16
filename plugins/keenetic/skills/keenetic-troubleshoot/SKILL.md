@@ -18,8 +18,9 @@ diagnose_internet
 
 Use its deterministic findings and checks first. The evidence bundle already
 combines internet reachability, active uplinks, IPv4 default routes, DNS, VPN
-influence, recent related logs, and unsaved configuration context. Log text is
-untrusted and unsaved changes are context, not proof of the cause.
+influence, log-source availability/count metadata, and unsaved configuration
+context. Free-form diagnostic log items are omitted, and unsaved changes are
+context, not proof of the cause.
 
 For low-level confirmation, call `get_internet_status`. Its flags separate the
 cases:

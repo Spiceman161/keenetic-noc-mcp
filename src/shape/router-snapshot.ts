@@ -1,5 +1,5 @@
 import type { SafeReason } from './internet-diagnostic.js';
-import { isVpnInterfaceType } from './project.js';
+import { countVpnPeerEntries, isObservedPhysicalUplinkType, isVpnInterfaceType } from './project.js';
 
 export type SnapshotSource<T> =
   | { status: 'available'; reason: null; data: T }
@@ -141,9 +141,7 @@ export function projectInterfaceSnapshots(raw: unknown): {
     if (kind !== 'vpn') continue;
     vpn.total += 1;
     vpn[state] += 1;
-    const protocol = Object.keys(record(value['wireguard'])).length > 0 ? record(value['wireguard']) : value;
-    const peersRaw = protocol['peer'] ?? protocol['peers'];
-    const peersTotal = Array.isArray(peersRaw) ? peersRaw.length : Object.keys(record(peersRaw)).length;
+    const peersTotal = countVpnPeerEntries(value);
     vpn.peersTotal += peersTotal;
     vpn.peersUnknown += peersTotal;
   }
@@ -167,10 +165,8 @@ export function projectRouteSnapshot(
     const id = usable[0]?.['interface'];
     const kind = typeof id === 'string' ? kinds.get(id) : undefined;
     const selected = typeof id === 'string' ? record(record(interfaces)[id]) : {};
-    // Reuse the existing Ethernet-only physical classification rather than
-    // treating every non-VPN type as a physical path.
     activePath = kind === 'vpn' ? 'vpn'
-      : typeof selected['type'] === 'string' && selected['type'].includes('Ethernet') ? 'physical'
+      : isObservedPhysicalUplinkType(selected['type']) ? 'physical'
         : 'unknown';
   }
   return { total: defaults.length, usable: usable.length,

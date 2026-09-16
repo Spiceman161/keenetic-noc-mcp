@@ -158,9 +158,10 @@ evidence.
 
 `diagnose_internet` is the first call for an internet-down or internet-slow
 incident. It has no arguments and combines bounded system, internet-status,
-interface, IPv4 default-route, DNS, VPN, recent-log, and configuration-state
-reads. The result has `schemaVersion: 1`, an overall `status`, `complete`, fixed
-`checks`, deterministic `findings`, and projected `evidence`.
+interface, IPv4 default-route, DNS, VPN, log-source count metadata, and
+configuration-state reads. The result has `schemaVersion: 1`, an overall
+`status`, `complete`, fixed `checks`, deterministic `findings`, and projected
+`evidence`.
 
 Overall status is `unhealthy` only for a confirmed blocking fault,
 `degraded` when core evidence is incomplete or contains a warning, `healthy`
@@ -171,13 +172,15 @@ Remote profiles do not request the LAN-only `/ci/startup-config.txt` surface;
 their saved-state comparison remains unknown in B1.
 
 Findings come only from explicit router state, such as an unreachable gateway,
-missing usable `0.0.0.0/0` route, DNS reachability failure, or required physical
-uplink down. A `vpn-default-route` result records only an observed IPv4 route
-association with an exactly classified VPN interface; it remains `unknown` for
-VPN health, peer reachability, encryption, and traffic flow. Logs never create
-a finding and remain marked `untrusted`; their timestamps and proximity to an
-incident do not establish causality. B1 does not diagnose IPv6 routes and does
-not apply CPU, memory, or connection-table thresholds.
+missing usable `0.0.0.0/0` route, DNS reachability failure, or a down uplink of
+the fixture-established exact `GigabitEthernet` type. Other interface types do
+not establish physical route or health evidence. A `vpn-default-route` result
+records only an observed IPv4 route association with an exactly classified VPN
+interface; it remains `unknown` for VPN health, peer reachability, encryption,
+and traffic flow. Free-form router log items are omitted from this diagnostic;
+only untrusted availability/count metadata remains, and it never creates a
+finding. B1 does not diagnose IPv6 routes and does not apply CPU, memory, or
+connection-table thresholds.
 
 ## VPN interface discovery
 

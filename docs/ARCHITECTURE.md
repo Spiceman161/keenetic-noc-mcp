@@ -59,11 +59,11 @@ first transport failure latches the remaining sources unavailable without more
 requests, and an authentication failure remains fatal. An individual RCI-level
 endpoint failure becomes an unavailable evidence slot and an unknown check
 instead of discarding successful siblings. Findings are fixed rules over
-explicit state; log text is returned only as bounded untrusted evidence and
-cannot create findings. Input bounds are applied to both GET responses and the
-known read-only `show log` dispatcher POST. Output trimming preserves checks and
-findings before dropping logs, routes, interfaces, DNS upstreams, and VPN rows
-in that order.
+explicit state. Because router log fields are free-form, this diagnostic exposes
+only bounded log availability/count metadata, never log items or bodies. Input
+bounds are applied to both GET responses and the known read-only `show log`
+dispatcher POST. Output trimming preserves checks and findings before dropping
+logs, routes, interfaces, DNS upstreams, and VPN rows in that order.
 Remote composite diagnosis does not request `/ci/startup-config.txt`; it keeps
 the saved-state comparison unknown without broadening the credentialed request
 surface.

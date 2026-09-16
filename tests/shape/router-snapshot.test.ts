@@ -47,6 +47,20 @@ describe('router snapshot projections', () => {
     ['direct array', { peer: [{ link: 'down' }, null] }, 2],
     ['keyed alias', { peers: { first: { online: true }, second: { 'last-handshake': 'sentinel' } } }, 2],
     ['partial keyed nested', { wireguard: { peer: { first: { endpoint: 'sentinel' }, second: null } } }, 2],
+    ['nested peer wins over direct aliases', { wireguard: { peer: [{ endpoint: 'sentinel' }] }, peers: {
+      first: { online: true }, second: { 'public-key': 'sentinel' }
+    } }, 1],
+    ['nested peers alias wins over direct peer', { wireguard: { peers: { first: { endpoint: 'sentinel' } } },
+      peer: [{ online: true }, { 'last-handshake': 'sentinel' }] }, 1],
+    ['empty nested peer falls back to direct alias', { wireguard: { peer: [] }, peers: {
+      first: { endpoint: 'sentinel' }, second: { online: true }
+    } }, 2],
+    ['malformed nested peer falls back to direct alias', { wireguard: { peer: true }, peers: {
+      first: { endpoint: 'sentinel' }, second: { online: true }
+    } }, 2],
+    ['partial nested metadata falls back to direct peer', { wireguard: { 'public-key': 'sentinel' }, peer: [
+      { endpoint: 'sentinel' }, { 'last-handshake': 'sentinel' }
+    ] }, 2],
     ['malformed scalar', { peer: true }, 0]
   ])('keeps %s peer cardinality unknown in diagnostic and snapshot projections', (_shape, fields, peersTotal) => {
     const raw = { Wireguard0: { type: 'Wireguard', ...fields } };
@@ -70,16 +84,26 @@ describe('router snapshot projections', () => {
 
   it.each([
     ['OpenConnect0', 'OpenConnect'], ['Gre0', 'GRE'], ['NameHint', 'FutureVPN'],
+    ['VpnNamedFutureEthernet', 'FutureEthernetVPN'], ['EthernetFuture', 'EthernetFuture'],
+    ['ControlDecoratedEthernet', 'Gigabit\u0001Ethernet'],
     ['Lowercase', 'wireguard'], ['CaseVariant', 'WireGuard'], ['Whitespace', ' Wireguard '],
     ['Empty', ''], ['MissingType', undefined], ['NullType', null], ['NumberType', 1],
     ['BooleanType', true], ['ObjectType', { name: 'Wireguard' }], ['ArrayType', ['Wireguard']]
   ])('keeps an unproven %s default route unknown whether it is up or down', (_id, type) => {
     for (const state of ['up', 'down']) {
-      const interfaces = { [_id]: { type, state, link: state, global: true, defaultgw: true } };
+      const interfaces = { [_id]: { type, state, link: state, global: true, defaultgw: true,
+        description: 'wireguard vpn', wireguard: { peer: [{ endpoint: 'sentinel' }] } } };
       const route = [{ destination: '0.0.0.0/0', interface: _id }];
       expect(projectInterfaceSnapshots(interfaces).vpn.total).toBe(0);
       expect(projectRouteSnapshot(route, interfaces)).toMatchObject({ activePath: 'unknown' });
     }
+  });
+
+  it('uses only the fixture-established GigabitEthernet type as a physical path', () => {
+    const interfaces = { GigabitEthernet1: { type: 'GigabitEthernet', state: 'up', link: 'up' } };
+    expect(projectRouteSnapshot([
+      { destination: '0.0.0.0/0', interface: 'GigabitEthernet1' }
+    ], interfaces)).toMatchObject({ activePath: 'physical' });
   });
 
   it('reduces routes and DNS to aggregate state', () => {

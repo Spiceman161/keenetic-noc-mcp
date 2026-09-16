@@ -532,6 +532,8 @@ describe('diagnose_internet', () => {
 
   it.each([
     ['OpenConnect0', 'OpenConnect'], ['Gre0', 'GRE'], ['WireguardByName', 'FutureVPN'],
+    ['VpnNamedFutureEthernet', 'FutureEthernetVPN'], ['EthernetFuture', 'EthernetFuture'],
+    ['ControlDecoratedEthernet', 'Gigabit\u0001Ethernet'],
     ['Lowercase', 'wireguard'], ['CaseVariant', 'WireGuard'], ['Whitespace', ' Wireguard '],
     ['Empty', ''], ['MissingType', undefined], ['NullType', null], ['NumberType', 1],
     ['BooleanType', true], ['ObjectType', { name: 'Wireguard' }], ['ArrayType', ['Wireguard']]
@@ -563,32 +565,43 @@ describe('diagnose_internet', () => {
     expect(out.checks.find((check: any) => check.id === 'wan-link').status).toBe('unknown');
   });
 
-  it('omits VPN-related router log text while retaining unrelated bounded context', async () => {
+  it('omits every free-form diagnostic log item, including protocol-less and normalized VPN material', async () => {
     const forbidden = ['private-key-sentinel', 'psk-sentinel', 'interface-public-sentinel',
       'peer-public-sentinel', 'peer-description-sentinel', 'endpoint-sentinel', 'allowed-ips-sentinel',
       'handshake-sentinel', 'rx-counter-sentinel', 'tx-counter-sentinel'];
     const logs = { show: { log: { log: {
-      '1': { ident: 'Wireguard3', message: { message: `Wireguard peer private-key=${forbidden[0]} psk=${forbidden[1]} public-key=${forbidden[2]} peer=${forbidden[3]} description=${forbidden[4]} endpoint=${forbidden[5]} allowed-ips=${forbidden[6]} handshake=${forbidden[7]} rxbytes=${forbidden[8]} txbytes=${forbidden[9]}` } },
-      '2': { ident: 'Network', message: { message: 'gateway remains available' } }
+      '1': { ident: 'Network', message: { message: `gateway peer private-key=${forbidden[0]} psk=${forbidden[1]} public-key=${forbidden[2]} peer=${forbidden[3]} description=${forbidden[4]} endpoint=${forbidden[5]} allowed-ips=${forbidden[6]} handshake=${forbidden[7]} rxbytes=${forbidden[8]} txbytes=${forbidden[9]}` } },
+      '2': { ident: 'Network', message: { message: `gateway wire\u001b[31mguard endpoint=${forbidden[5]} handshake=${forbidden[7]}` } },
+      '3': { ident: 'Network', message: { message: 'gateway remains available' } }
     } } } };
     const out = payload(await setup({ values: {
       'show/interface': { Wireguard3: { type: 'Wireguard', state: 'up', link: 'up' } }
     }, logs }).handler({}));
     const text = JSON.stringify(out);
     for (const sentinel of forbidden) expect(text).not.toContain(sentinel);
-    expect(out.evidence.logs.data.items.map((item: any) => item.line)).toContain('Network gateway remains available');
+    expect(out.evidence.logs.data).toMatchObject({ scanned: 3, matched: 3, items: [], shown: 0, total: 0 });
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(25_000);
+
+    const unavailableVpn = payload(await setup({
+      failures: { 'show/interface': new RciError('interface source unavailable', {
+        path: 'show/interface', code: '500', ident: 'http'
+      }) },
+      logs
+    }).handler({}));
+    expect(unavailableVpn.evidence.vpn).toMatchObject({ status: 'unavailable' });
+    expect(unavailableVpn.evidence.logs.data).toMatchObject({ scanned: 3, matched: 3, items: [] });
+    for (const sentinel of forbidden) expect(JSON.stringify(unavailableVpn)).not.toContain(sentinel);
   });
 
-  it('filters protocol-term and exact-VPN-interface log matches at the local boundary', () => {
+  it('retains only diagnostic log counts at the local boundary', () => {
     const entries = [
       { timestamp: null, ident: 'Wireguard', level: null, label: null, line: 'wireguard peer-sentinel' },
       { timestamp: null, ident: 'Network', level: null, label: 'Wireguard3', line: 'peer-sentinel' },
-      { timestamp: null, ident: 'Network', level: null, label: null, line: 'gateway stable' }
+      { timestamp: null, ident: 'Network', level: null, label: null, line: 'gateway endpoint-sentinel' }
     ];
-    const projected = projectRelatedLogs(entries, ['GigabitEthernet1', 'Wireguard3'], ['Wireguard3']);
-    expect(projected.items.map(item => item.line)).toEqual(['gateway stable']);
-    expect(projected.matched).toBe(1);
+    const projected = projectRelatedLogs(entries, ['GigabitEthernet1', 'Wireguard3']);
+    expect(projected).toMatchObject({ scanned: 3, matched: 2, items: [], shown: 0, total: 0 });
+    expect(JSON.stringify(projected)).not.toContain('sentinel');
   });
 
   it('preserves partial evidence and treats absent booleans as unknown', async () => {
@@ -682,7 +695,7 @@ describe('diagnose_internet', () => {
     expect(result.content.map(part => part.text).join('')).not.toContain('raw-private-data');
   });
 
-  it('uses embedded interface ids and excludes unrelated LAN logs', async () => {
+  it('uses embedded interface ids without exposing related log items', async () => {
     const logs = { show: { log: { log: {
       '1': { timestamp: '00:01', ident: 'Hotspot', message: {
         label: 'Bridge0', message: 'client joined'
@@ -695,8 +708,7 @@ describe('diagnose_internet', () => {
     } }, logs }).handler({}));
     expect(out.evidence.interfaces.data.items.map((item: any) => item.id))
       .toEqual(['Bridge0', 'GigabitEthernet1']);
-    expect(out.evidence.logs.data.items).toHaveLength(1);
-    expect(out.evidence.logs.data.items[0].ident).toBe('dns-proxy');
+    expect(out.evidence.logs.data).toMatchObject({ scanned: 2, matched: 1, items: [], shown: 0, total: 0 });
   });
 
   it('reports unsaved configuration only as informational context', async () => {
@@ -729,14 +741,14 @@ describe('diagnose_internet', () => {
     expect(out.complete).toBe(false);
   });
 
-  it('redacts a complete naked key before truncating an untrusted log line', async () => {
+  it('omits a complete naked key from free-form diagnostic log output', async () => {
     const key = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst';
     const logs = { show: { log: { log: {
       '1': { ident: 'dns-proxy', message: { message: `${'.'.repeat(476)}${key}` } }
     } } } };
     const out = payload(await setup({ logs }).handler({}));
     const text = JSON.stringify(out.evidence.logs.data.items);
-    expect(text).toContain('[REDACTED_KEY]');
+    expect(text).toBe('[]');
     expect(text).not.toContain(key.slice(0, 12));
   });
 
@@ -752,7 +764,7 @@ describe('diagnose_internet', () => {
     expect(out.evidence.configuration.data.failSafe.secondsLeft).toBeNull();
   });
 
-  it('bounds untrusted logs and keeps the final output under the configured ceiling', async () => {
+  it('keeps free-form log counts within the final output ceiling', async () => {
     const rows: Record<string, unknown> = {};
     for (let i = 0; i < 80; i += 1) {
       rows[String(i)] = {
@@ -766,9 +778,8 @@ describe('diagnose_internet', () => {
     const text = result.content.map(part => part.text).join('');
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(8_000);
     const out = JSON.parse(text);
-    expect(out.truncated).toBe(true);
-    expect(out.evidence.logs.data.untrusted).toBe(true);
-    expect(out.evidence.logs.data.shown).toBeLessThanOrEqual(20);
+    expect(out.truncated).toBe(false);
+    expect(out.evidence.logs.data).toMatchObject({ untrusted: true, scanned: 80, matched: 80, shown: 0, total: 0, items: [] });
     expect(text).not.toContain('secret-');
   });
 
