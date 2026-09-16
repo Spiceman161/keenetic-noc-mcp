@@ -65,9 +65,11 @@ During preflight, DNS output is limited to success and address count. The
 standalone TLS probe uses the system trust store and SNI with certificate and
 hostname verification enabled on every attempt. Each attempt and the complete
 probe have hard wall-clock deadlines within one 30-second budget. It retries
-only transient connection failures; certificate or hostname verification
-failures stop immediately. A successful retry is shown as a bounded recovery
-notice without connection details. A read-only `show/version` request
+only connection timeouts and an explicit allowlist of interrupted TCP
+connection errors; certificate or hostname verification failures and
+unrecognized TLS/protocol failures stop immediately. Unrecognized failures use
+a neutral TLS connection-failure detail. A successful retry is shown as a
+bounded recovery notice without connection details. A read-only `show/version` request
 verifies authentication and RCI and projects only the model and firmware.
 Running/startup configuration capabilities and bounded system, internet-status,
 and DNS diagnostics are probed independently; router or configuration payloads

@@ -29,10 +29,10 @@ const TLS_MAX_ATTEMPTS = 5;
 const TLS_TOTAL_BUDGET_MS = 30_000;
 const TLS_ATTEMPT_TIMEOUT_MS = 10_000;
 
-type TlsFailureCategory = 'certificate' | 'timeout' | 'transient';
+type TlsFailureCategory = 'certificate' | 'timeout' | 'transient' | 'unknown';
 
 class TlsProbeError extends Error {
-  constructor(readonly category: Exclude<TlsFailureCategory, 'transient'>) {
+  constructor(readonly category: Exclude<TlsFailureCategory, 'transient' | 'unknown'>) {
     super(category);
   }
 }
@@ -72,6 +72,7 @@ const certificateOrHostnameCodes = new Set([
   'ERROR_IN_CERT_NOT_BEFORE_FIELD',
   'ERROR_IN_CRL_LAST_UPDATE_FIELD',
   'ERROR_IN_CRL_NEXT_UPDATE_FIELD',
+  'HOSTNAME_MISMATCH',
   'INVALID_CA',
   'INVALID_NON_CA',
   'INVALID_PURPOSE',
@@ -94,6 +95,15 @@ const certificateOrHostnameCodes = new Set([
   'UNHANDLED_CRITICAL_EXTENSION'
 ]);
 
+// These codes identify an interrupted TCP connection, rather than a TLS
+// protocol or verification outcome. Keep this list deliberately small: a
+// new/unrecognized error must not be claimed transient or retried by default.
+const retryableTransportCodes = new Set([
+  'ECONNABORTED',
+  'ECONNRESET',
+  'EPIPE'
+]);
+
 function isCertificateOrHostnameError(error: unknown): boolean {
   return certificateOrHostnameCodes.has(errorCode(error) ?? '');
 }
@@ -101,7 +111,8 @@ function isCertificateOrHostnameError(error: unknown): boolean {
 function tlsFailureCategory(error: unknown): TlsFailureCategory {
   if (error instanceof TlsProbeError) return error.category;
   if (isCertificateOrHostnameError(error)) return 'certificate';
-  return errorCode(error) === 'ETIMEDOUT' ? 'timeout' : 'transient';
+  if (errorCode(error) === 'ETIMEDOUT') return 'timeout';
+  return retryableTransportCodes.has(errorCode(error) ?? '') ? 'transient' : 'unknown';
 }
 
 async function verifyTls(hostname: string, port: number, timeoutMs: number): Promise<void> {
@@ -178,7 +189,7 @@ async function verifyRemoteTls(
       return { failure: null, recovered: attempt > 1 };
     } catch (error) {
       lastFailure = tlsFailureCategory(error);
-      if (lastFailure === 'certificate' || attempt === TLS_MAX_ATTEMPTS) {
+      if (lastFailure === 'certificate' || lastFailure === 'unknown' || attempt === TLS_MAX_ATTEMPTS) {
         return { failure: lastFailure, recovered: false };
       }
       const delay = 1_000 * 2 ** (attempt - 1);
@@ -279,7 +290,9 @@ export async function runRouterPreflight(
         ? 'certificate or hostname verification failed'
         : tls.failure === 'timeout'
           ? 'TLS connection timeout or retry budget exhausted'
-          : 'transient TCP/TLS connection failed after bounded retries');
+          : tls.failure === 'transient'
+            ? 'transient TCP/TLS connection failed after bounded retries'
+            : 'TLS connection failed');
       checks['Reachability'] = skipped('TLS connection failed');
       checks['Authentication'] = skipped('secure endpoint unavailable');
       checks['RCI'] = skipped('secure endpoint unavailable');

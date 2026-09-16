@@ -173,7 +173,8 @@ describe('router onboarding preflight', () => {
     'INVALID_PURPOSE',
     'CERT_CHAIN_TOO_LONG',
     'UNABLE_TO_GET_ISSUER_CERT',
-    'ERR_TLS_CERT_ALTNAME_INVALID'
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+    'HOSTNAME_MISMATCH'
   ])('treats %s as a terminal certificate failure without exposing error data', async code => {
     const instance = client();
     const sleep = vi.fn(async () => undefined);
@@ -190,6 +191,33 @@ describe('router onboarding preflight', () => {
 
     expect(result.ready).toBe(false);
     expect(result.checks['TLS']).toEqual({ status: 'fail', detail: 'certificate or hostname verification failed' });
+    expect(verifyTls).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(instance.capabilities).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('raw-secret');
+    expect(JSON.stringify(result)).not.toContain('router.example.test');
+    expect(JSON.stringify(result)).not.toContain('192.0.2.55');
+  });
+
+  it('fails an unknown TLS or protocol error immediately without exposing error data', async () => {
+    const instance = client();
+    const sleep = vi.fn(async () => undefined);
+    const verifyTls = vi.fn()
+      .mockRejectedValueOnce(Object.assign(
+        new Error('wrong version router.example.test 192.0.2.55 raw-secret'),
+        { code: 'ERR_SSL_WRONG_VERSION_NUMBER' }
+      ))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => 0
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks['TLS']).toEqual({ status: 'fail', detail: 'TLS connection failed' });
     expect(verifyTls).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
     expect(instance.capabilities).not.toHaveBeenCalled();
