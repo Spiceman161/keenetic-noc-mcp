@@ -157,12 +157,99 @@ describe('router onboarding preflight', () => {
     });
 
     expect(result.ready).toBe(true);
-    expect(result.checks['TLS']).toEqual({ status: 'pass', detail: 'certificate and hostname verified' });
+    expect(result.checks['TLS']).toEqual({ status: 'pass', detail: 'certificate and hostname verified after retry' });
     expect(verifyTls).toHaveBeenNthCalledWith(1, 'router.example.test', 443, 10_000);
     expect(verifyTls).toHaveBeenNthCalledWith(2, 'router.example.test', 443, 10_000);
     expect(sleep).toHaveBeenCalledTimes(1);
     expect(sleep).toHaveBeenCalledWith(1_000);
     expect(instance.capabilities).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'CERT_REVOKED',
+    'CERT_UNTRUSTED',
+    'CERT_REJECTED',
+    'INVALID_CA',
+    'INVALID_PURPOSE',
+    'CERT_CHAIN_TOO_LONG',
+    'UNABLE_TO_GET_ISSUER_CERT',
+    'ERR_TLS_CERT_ALTNAME_INVALID'
+  ])('treats %s as a terminal certificate failure without exposing error data', async code => {
+    const instance = client();
+    const sleep = vi.fn(async () => undefined);
+    const verifyTls = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('router.example.test 192.0.2.55 raw-secret'), { code }))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => 0
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks['TLS']).toEqual({ status: 'fail', detail: 'certificate or hostname verification failed' });
+    expect(verifyTls).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(instance.capabilities).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('raw-secret');
+    expect(JSON.stringify(result)).not.toContain('router.example.test');
+    expect(JSON.stringify(result)).not.toContain('192.0.2.55');
+  });
+
+  it('enforces an absolute attempt deadline for a verifier that never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const instance = client();
+      const verifyTls = vi.fn(() => new Promise<void>(() => undefined));
+      const resultPromise = runRouterPreflight(remote, instance, {
+        resolveDns: async () => 1,
+        verifyTls,
+        sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+        now: () => Date.now()
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(verifyTls).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(verifyTls).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(verifyTls).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(verifyTls).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(7_000);
+      const result = await resultPromise;
+
+      expect(result.ready).toBe(false);
+      expect(result.checks['TLS']).toEqual({
+        status: 'fail', detail: 'TLS connection timeout or retry budget exhausted'
+      });
+      expect(instance.capabilities).not.toHaveBeenCalled();
+      expect(verifyTls).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects a verifier success observed after the total TLS deadline', async () => {
+    const instance = client();
+    let now = 0;
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls: async () => { now = 30_000; },
+      sleep: async () => undefined,
+      now: () => now
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks['TLS']).toEqual({
+      status: 'fail', detail: 'TLS connection timeout or retry budget exhausted'
+    });
+    expect(instance.capabilities).not.toHaveBeenCalled();
   });
 
   it('caps transient TLS failures at five attempts and never calls RCI', async () => {

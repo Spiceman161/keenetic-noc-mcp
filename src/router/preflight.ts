@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises';
+import { performance } from 'node:perf_hooks';
 import { connect } from 'node:tls';
 import type { RouterProfile } from '../profiles/registry.js';
 import type { KeeneticClient } from './client.js';
@@ -51,18 +52,50 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+const certificateOrHostnameCodes = new Set([
+  'AKID_ISSUER_SERIAL_MISMATCH',
+  'AKID_SKID_MISMATCH',
+  'CERT_CHAIN_TOO_LONG',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REJECTED',
+  'CERT_REVOKED',
+  'CERT_SIGNATURE_FAILURE',
+  'CERT_UNTRUSTED',
+  'CRL_HAS_EXPIRED',
+  'CRL_NOT_YET_VALID',
+  'CRL_SIGNATURE_FAILURE',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'ERR_TLS_CERT_ALTNAME_FORMAT',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'ERROR_IN_CERT_NOT_AFTER_FIELD',
+  'ERROR_IN_CERT_NOT_BEFORE_FIELD',
+  'ERROR_IN_CRL_LAST_UPDATE_FIELD',
+  'ERROR_IN_CRL_NEXT_UPDATE_FIELD',
+  'INVALID_CA',
+  'INVALID_NON_CA',
+  'INVALID_PURPOSE',
+  'KEYUSAGE_NO_CERTSIGN',
+  'KEYUSAGE_NO_CRL_SIGN',
+  'KEYUSAGE_NO_DIGITAL_SIGNATURE',
+  'PATH_LENGTH_EXCEEDED',
+  'PROXY_PATH_LENGTH_EXCEEDED',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'SUBJECT_ISSUER_MISMATCH',
+  'UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY',
+  'UNABLE_TO_DECRYPT_CERT_SIGNATURE',
+  'UNABLE_TO_DECRYPT_CRL_SIGNATURE',
+  'UNABLE_TO_GET_CRL',
+  'UNABLE_TO_GET_CRL_ISSUER',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNHANDLED_CRITICAL_CRL_EXTENSION',
+  'UNHANDLED_CRITICAL_EXTENSION'
+]);
+
 function isCertificateOrHostnameError(error: unknown): boolean {
-  return new Set([
-    'CERT_HAS_EXPIRED',
-    'CERT_NOT_YET_VALID',
-    'CERT_SIGNATURE_FAILURE',
-    'DEPTH_ZERO_SELF_SIGNED_CERT',
-    'ERR_TLS_CERT_ALTNAME_FORMAT',
-    'ERR_TLS_CERT_ALTNAME_INVALID',
-    'SELF_SIGNED_CERT_IN_CHAIN',
-    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-    'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
-  ]).has(errorCode(error) ?? '');
+  return certificateOrHostnameCodes.has(errorCode(error) ?? '');
 }
 
 function tlsFailureCategory(error: unknown): TlsFailureCategory {
@@ -76,18 +109,25 @@ async function verifyTls(hostname: string, port: number, timeoutMs: number): Pro
     // `servername` enables SNI and certificate hostname verification. The
     // default trust store and rejectUnauthorized=true remain in effect.
     const socket = connect({ host: hostname, port, servername: hostname, rejectUnauthorized: true });
+    let finished = false;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (error?: Error): void => {
+      if (finished) return;
+      finished = true;
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       socket.removeAllListeners();
       socket.destroy();
       if (error) reject(error);
       else resolve();
     };
+    deadlineTimer = setTimeout(() => finish(new TlsProbeError('timeout')), timeoutMs);
     socket.setTimeout(timeoutMs, () => finish(new TlsProbeError('timeout')));
     socket.once('secureConnect', () => {
       if (!socket.authorized) finish(new TlsProbeError('certificate'));
       else finish();
     });
-    socket.once('error', error => finish(isCertificateOrHostnameError(error)
+    socket.once('error', error => finish(isCertificateOrHostnameError(error) ||
+      (!socket.authorized && Boolean(socket.authorizationError))
       ? new TlsProbeError('certificate') : error));
   });
 }
@@ -96,32 +136,62 @@ const defaults: PreflightDependencies = {
   resolveDns,
   verifyTls,
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-  now: Date.now
+  now: () => performance.now()
 };
+
+function withinDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new TlsProbeError('timeout')), timeoutMs);
+    void operation.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+interface TlsProbeResult {
+  failure: TlsFailureCategory | null;
+  recovered: boolean;
+}
 
 async function verifyRemoteTls(
   hostname: string,
   port: number,
   deps: PreflightDependencies
-): Promise<TlsFailureCategory | null> {
+): Promise<TlsProbeResult> {
   const deadline = deps.now() + TLS_TOTAL_BUDGET_MS;
   let lastFailure: TlsFailureCategory = 'timeout';
 
   for (let attempt = 1; attempt <= TLS_MAX_ATTEMPTS; attempt++) {
     const remaining = deadline - deps.now();
-    if (remaining <= 0) return 'timeout';
+    if (remaining <= 0) return { failure: 'timeout', recovered: false };
     try {
-      await deps.verifyTls(hostname, port, Math.min(TLS_ATTEMPT_TIMEOUT_MS, remaining));
-      return null;
+      const attemptTimeout = Math.min(TLS_ATTEMPT_TIMEOUT_MS, remaining);
+      await withinDeadline(deps.verifyTls(hostname, port, attemptTimeout), attemptTimeout);
+      if (deps.now() >= deadline) return { failure: 'timeout', recovered: false };
+      return { failure: null, recovered: attempt > 1 };
     } catch (error) {
       lastFailure = tlsFailureCategory(error);
-      if (lastFailure === 'certificate' || attempt === TLS_MAX_ATTEMPTS) return lastFailure;
+      if (lastFailure === 'certificate' || attempt === TLS_MAX_ATTEMPTS) {
+        return { failure: lastFailure, recovered: false };
+      }
       const delay = 1_000 * 2 ** (attempt - 1);
-      if (delay >= deadline - deps.now()) return 'timeout';
-      await deps.sleep(delay);
+      const remainingAfterFailure = deadline - deps.now();
+      if (delay >= remainingAfterFailure) return { failure: 'timeout', recovered: false };
+      try {
+        await withinDeadline(deps.sleep(delay), remainingAfterFailure);
+      } catch {
+        return { failure: 'timeout', recovered: false };
+      }
     }
   }
-  return lastFailure;
+  return { failure: lastFailure, recovered: false };
 }
 
 function remoteOrigin(endpoint: string): { hostname: string; port: number } {
@@ -198,14 +268,16 @@ export async function runRouterPreflight(
       return { ready: false, checks };
     }
 
-    const tlsFailure = await verifyRemoteTls(origin.hostname, origin.port, deps);
-    if (!tlsFailure) {
-      checks['TLS'] = pass('certificate and hostname verified');
+    const tls = await verifyRemoteTls(origin.hostname, origin.port, deps);
+    if (!tls.failure) {
+      checks['TLS'] = pass(tls.recovered
+        ? 'certificate and hostname verified after retry'
+        : 'certificate and hostname verified');
       checks['Reachability'] = pass('HTTPS endpoint reached');
     } else {
-      checks['TLS'] = fail(tlsFailure === 'certificate'
+      checks['TLS'] = fail(tls.failure === 'certificate'
         ? 'certificate or hostname verification failed'
-        : tlsFailure === 'timeout'
+        : tls.failure === 'timeout'
           ? 'TLS connection timeout or retry budget exhausted'
           : 'transient TCP/TLS connection failed after bounded retries');
       checks['Reachability'] = skipped('TLS connection failed');

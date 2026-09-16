@@ -72,7 +72,7 @@ describe('router test checks', () => {
     expect(result.checks['Backup']).toContain('read-only use is ready');
   });
 
-  it('projects a recovered shared TLS preflight as healthy without duplicating retry logic', async () => {
+  it('projects a recovered shared TLS preflight as healthy with a safe retry indication', async () => {
     const instance = client();
     let now = 0;
     const sleep = vi.fn(async (ms: number) => { now += ms; });
@@ -88,7 +88,7 @@ describe('router test checks', () => {
     });
 
     expect(result.overall).toBe('healthy');
-    expect(result.checks['TLS']).toBe('✓ certificate and hostname verified');
+    expect(result.checks['TLS']).toBe('✓ certificate and hostname verified after retry');
     expect(verifyTls).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(1_000);
   });

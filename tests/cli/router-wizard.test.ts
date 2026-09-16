@@ -247,14 +247,14 @@ describe('router onboarding state machine', () => {
       ready: true,
       model: 'Keenetic Test',
       firmware: '5.1.3',
-      checks: { TLS: { status: 'pass', detail: 'certificate and hostname verified' } }
+      checks: { TLS: { status: 'pass', detail: 'certificate and hostname verified after retry' } }
     });
     const ui = new FakePrompt(successfulScript());
 
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
 
     expect(deps.preflight).toHaveBeenCalledOnce();
-    expect(ui.outputs.join('\n')).toContain('✓ TLS: certificate and hostname verified');
+    expect(ui.outputs.join('\n')).toContain('✓ TLS: certificate and hostname verified after retry');
   });
 
   it('shows terminal certificate failure from shared preflight without persisting', async () => {
