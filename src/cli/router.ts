@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { configDir, migrateLegacyConfigDir } from '../config/discover.js';
+import { DEFAULT_REMOTE_TIMEOUT_MS } from '../config/load.js';
 import { createClient, createRemoteClient, type KeeneticClient } from '../router/client.js';
 import { getProfile, readLastTest, readProfiles, removeProfile, removeState, saveLastTest, saveRegistration, setDefaultProfile, type RouterProfile } from '../profiles/registry.js';
 import { createProfileSecretStore, generatePassword, type ProfileSecretBackend } from '../profiles/secrets.js';
@@ -21,7 +22,7 @@ function requireTty(): void { if (!process.stdin.isTTY || !process.stdout.isTTY)
 function masked(secret: string): string { return `${'*'.repeat(Math.max(0, secret.length - 4))}${secret.slice(-4)}`; }
 function profileClient(profile: RouterProfile, password: string): KeeneticClient {
   return profile.mode === 'remote'
-    ? createRemoteClient({ endpoint: profile.endpoint, login: profile.login, password, routerId: profile.id })
+    ? createRemoteClient({ endpoint: profile.endpoint, login: profile.login, password, routerId: profile.id, timeoutMs: DEFAULT_REMOTE_TIMEOUT_MS })
     : createClient({ host: profile.endpoint, login: profile.login, password });
 }
 async function confirm(ui: Terminal, prompt: string, defaultYes = true): Promise<boolean> { const answer = (await ui.ask(`${prompt} [${defaultYes ? 'Y/n' : 'y/N'}] `)).toLowerCase(); return answer === '' ? defaultYes : answer === 'y' || answer === 'yes'; }

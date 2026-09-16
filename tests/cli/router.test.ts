@@ -72,6 +72,41 @@ describe('router test checks', () => {
     expect(result.checks['Backup']).toContain('read-only use is ready');
   });
 
+  it('projects a recovered shared TLS preflight as healthy without duplicating retry logic', async () => {
+    const instance = client();
+    let now = 0;
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+    const verifyTls = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('reset raw-secret'), { code: 'ECONNRESET' }))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await runConnectionChecks(profile('remote'), instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => now
+    });
+
+    expect(result.overall).toBe('healthy');
+    expect(result.checks['TLS']).toBe('✓ certificate and hostname verified');
+    expect(verifyTls).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(1_000);
+  });
+
+  it('projects the refined terminal TLS detail as unhealthy', async () => {
+    const result = await runConnectionChecks(profile('remote'), client(), {
+      resolveDns: async () => 1,
+      verifyTls: async () => {
+        throw Object.assign(new Error('certificate raw-secret'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' });
+      },
+      sleep: async () => undefined,
+      now: () => 0
+    });
+
+    expect(result.overall).toBe('unhealthy');
+    expect(result.checks['TLS']).toBe('✗ certificate or hostname verification failed');
+  });
+
   it('preserves a degraded exit result when LAN backup is unavailable', async () => {
     const result = await runConnectionChecks(profile('lan'), client({ backupError: new Error('denied') }));
     expect(result.overall).toBe('degraded');

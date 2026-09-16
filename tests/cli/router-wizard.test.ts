@@ -241,6 +241,39 @@ describe('router onboarding state machine', () => {
     expect(deps.addProfile).not.toHaveBeenCalled();
   });
 
+  it('displays the shared recovered TLS result and proceeds without a user-level retry', async () => {
+    const { deps } = harness();
+    vi.mocked(deps.preflight!).mockResolvedValue({
+      ready: true,
+      model: 'Keenetic Test',
+      firmware: '5.1.3',
+      checks: { TLS: { status: 'pass', detail: 'certificate and hostname verified' } }
+    });
+    const ui = new FakePrompt(successfulScript());
+
+    await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
+
+    expect(deps.preflight).toHaveBeenCalledOnce();
+    expect(ui.outputs.join('\n')).toContain('✓ TLS: certificate and hostname verified');
+  });
+
+  it('shows terminal certificate failure from shared preflight without persisting', async () => {
+    const { deps, store } = harness();
+    vi.mocked(deps.preflight!).mockResolvedValue({
+      ready: false,
+      checks: { TLS: { status: 'fail', detail: 'certificate or hostname verification failed' } }
+    });
+    const ui = new FakePrompt([
+      answer('Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('router.keenetic.pro'), cancel
+    ]);
+
+    await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(1);
+
+    expect(ui.outputs.join('\n')).toContain('✗ TLS: certificate or hostname verification failed');
+    expect(store.save).not.toHaveBeenCalled();
+    expect(deps.addProfile).not.toHaveBeenCalled();
+  });
+
   it('declining owner-only file fallback saves nothing', async () => {
     const { deps, store } = harness({ keychain: false });
     const ui = new FakePrompt([

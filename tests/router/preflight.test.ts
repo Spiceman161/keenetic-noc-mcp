@@ -79,7 +79,7 @@ describe('router onboarding preflight', () => {
     expect(result.checks['DNS resolution']).toEqual({ status: 'pass', detail: '2 addresses' });
     expect(result.checks['TLS']?.status).toBe('pass');
     expect(remoteDeps.resolveDns).toHaveBeenCalledWith('router.example.test');
-    expect(remoteDeps.verifyTls).toHaveBeenCalledWith('router.example.test', 443);
+    expect(remoteDeps.verifyTls).toHaveBeenCalledWith('router.example.test', 443, 10_000);
   });
 
   it('blocks on DNS failure and does not attempt TLS or RCI', async () => {
@@ -115,15 +115,129 @@ describe('router onboarding preflight', () => {
     expect(instance.capabilities).not.toHaveBeenCalled();
   });
 
-  it('blocks on TLS or certificate failure', async () => {
-    const result = await runRouterPreflight(remote, client(), {
+  it('stops immediately on a certificate or hostname failure without exposing error data', async () => {
+    const instance = client();
+    let now = 0;
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+    const verifyTls = vi.fn(async () => {
+      throw Object.assign(new Error('certificate SAN router.example.test 192.0.2.55 raw-secret'), {
+        code: 'ERR_TLS_CERT_ALTNAME_INVALID'
+      });
+    });
+    const result = await runRouterPreflight(remote, instance, {
       resolveDns: async () => 1,
-      verifyTls: async () => { throw new Error('certificate SAN contains raw-secret'); }
+      verifyTls,
+      sleep,
+      now: () => now
     });
 
     expect(result.ready).toBe(false);
-    expect(result.checks['TLS']?.status).toBe('fail');
+    expect(result.checks['TLS']).toEqual({ status: 'fail', detail: 'certificate or hostname verification failed' });
+    expect(verifyTls).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(instance.capabilities).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('raw-secret');
+    expect(JSON.stringify(result)).not.toContain('router.example.test');
+    expect(JSON.stringify(result)).not.toContain('192.0.2.55');
+  });
+
+  it('recovers from one transient TLS failure within the shared preflight path', async () => {
+    const instance = client();
+    let now = 0;
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+    const verifyTls = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('reset raw-secret'), { code: 'ECONNRESET' }))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => now
+    });
+
+    expect(result.ready).toBe(true);
+    expect(result.checks['TLS']).toEqual({ status: 'pass', detail: 'certificate and hostname verified' });
+    expect(verifyTls).toHaveBeenNthCalledWith(1, 'router.example.test', 443, 10_000);
+    expect(verifyTls).toHaveBeenNthCalledWith(2, 'router.example.test', 443, 10_000);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(instance.capabilities).toHaveBeenCalledOnce();
+  });
+
+  it('caps transient TLS failures at five attempts and never calls RCI', async () => {
+    const instance = client();
+    const sleep = vi.fn(async () => undefined);
+    const verifyTls = vi.fn(async () => {
+      throw Object.assign(new Error('reset raw-secret'), { code: 'ECONNRESET' });
+    });
+
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => 0
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks['TLS']).toEqual({
+      status: 'fail', detail: 'transient TCP/TLS connection failed after bounded retries'
+    });
+    expect(verifyTls).toHaveBeenCalledTimes(5);
+    expect(sleep).toHaveBeenCalledTimes(4);
+    expect(instance.capabilities).not.toHaveBeenCalled();
+  });
+
+  it('uses one TLS budget and does not start a backoff that crosses its deadline', async () => {
+    const instance = client();
+    let now = 0;
+    const timeouts: number[] = [];
+    const sleep = vi.fn(async (ms: number) => { now += ms; });
+    const verifyTls = vi.fn(async (_hostname: string, _port: number, timeoutMs: number) => {
+      timeouts.push(timeoutMs);
+      now += timeoutMs;
+      throw Object.assign(new Error('reset raw-secret'), { code: 'ECONNRESET' });
+    });
+
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => now
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks['TLS']).toEqual({
+      status: 'fail', detail: 'TLS connection timeout or retry budget exhausted'
+    });
+    expect(timeouts).toEqual([10_000, 10_000, 7_000]);
+    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(sleep).toHaveBeenCalledWith(2_000);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(instance.capabilities).not.toHaveBeenCalled();
+  });
+
+  it('keeps timeout failures distinct from transient TCP/TLS failures', async () => {
+    const instance = client();
+    const sleep = vi.fn(async () => undefined);
+    const verifyTls = vi.fn(async () => {
+      throw Object.assign(new Error('timeout raw-secret'), { code: 'ETIMEDOUT' });
+    });
+
+    const result = await runRouterPreflight(remote, instance, {
+      resolveDns: async () => 1,
+      verifyTls,
+      sleep,
+      now: () => 0
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.checks['TLS']).toEqual({
+      status: 'fail', detail: 'TLS connection timeout or retry budget exhausted'
+    });
+    expect(verifyTls).toHaveBeenCalledTimes(5);
+    expect(sleep).toHaveBeenCalledTimes(4);
+    expect(instance.capabilities).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -182,5 +296,21 @@ describe('router onboarding preflight', () => {
     expect(result.model).not.toMatch(/[\r\n\u001b\u0007\u202e]/);
     expect(Array.from(result.model ?? '')).toHaveLength(120);
     expect(result.firmware).toBe('5.1.3 spoof');
+  });
+
+  it('leaves LAN preflight independent of DNS, TLS, clock, and sleep hooks', async () => {
+    const resolveDns = vi.fn(async () => 1);
+    const verifyTls = vi.fn(async () => undefined);
+    const sleep = vi.fn(async () => undefined);
+    const now = vi.fn(() => 0);
+
+    const result = await runRouterPreflight(lan, client(), { resolveDns, verifyTls, sleep, now });
+
+    expect(result.ready).toBe(true);
+    expect(resolveDns).not.toHaveBeenCalled();
+    expect(verifyTls).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(now).not.toHaveBeenCalled();
+    expect(result.checks['TLS']).toEqual({ status: 'skipped', detail: 'not required for LAN' });
   });
 });

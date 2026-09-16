@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createKeychainStore, spawnRunner } from '../config/secrets.js';
+import { DEFAULT_REMOTE_TIMEOUT_MS } from '../config/load.js';
 import { addProfile, readProfiles, saveRegistration, type RouterProfile } from '../profiles/registry.js';
 import { createProfileSecretStore, generatePassword, keychainAvailable, type ProfileSecretBackend, type ProfileSecretStore } from '../profiles/secrets.js';
 import { createClient, createRemoteClient, type KeeneticClient } from '../router/client.js';
@@ -148,7 +149,7 @@ const defaultDependencies: RouterWizardDependencies = {
   createSecretStore: createProfileSecretStore,
   createClient(profile, password) {
     return profile.mode === 'remote'
-      ? createRemoteClient({ endpoint: profile.endpoint, login: profile.login, password, routerId: profile.id })
+      ? createRemoteClient({ endpoint: profile.endpoint, login: profile.login, password, routerId: profile.id, timeoutMs: DEFAULT_REMOTE_TIMEOUT_MS })
       : createClient({ host: profile.endpoint, login: profile.login, password });
   },
   preflight: runRouterPreflight,

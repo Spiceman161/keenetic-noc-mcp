@@ -61,16 +61,19 @@ default is 30 seconds for remote profiles (10 seconds for LAN connections),
 because bounded log reads through KeenDNS can legitimately take longer than
 10 seconds.
 
-During preflight, DNS output is limited to success and address count. TLS uses
-the system trust store and SNI, with certificate verification enabled. A
-read-only `show/version` request verifies authentication and RCI and projects
-only the model and firmware. Running/startup configuration capabilities and
-bounded system, internet-status, and DNS diagnostics are probed independently;
-router or configuration payloads are never printed. Endpoint, TLS,
-authentication, and RCI failures block saving, while unavailable optional
-capabilities are reported as warnings rather than credential failures. RCI
-response reads used by preflight have explicit byte limits; oversized core
-responses block setup and oversized optional diagnostics become warnings.
+During preflight, DNS output is limited to success and address count. The
+standalone TLS probe uses the system trust store and SNI with certificate and
+hostname verification enabled on every attempt. It retries only transient
+connection failures within one 30-second budget; certificate or hostname
+verification failures stop immediately. A read-only `show/version` request
+verifies authentication and RCI and projects only the model and firmware.
+Running/startup configuration capabilities and bounded system, internet-status,
+and DNS diagnostics are probed independently; router or configuration payloads
+are never printed. Endpoint, TLS, authentication, and RCI failures block
+saving, while unavailable optional capabilities are reported as warnings rather
+than credential failures. RCI response reads used by preflight have explicit
+byte limits; oversized core responses block setup and oversized optional
+diagnostics become warnings.
 
 The password is saved and read back before the profile is added. The system
 keychain is selected automatically when a disposable probe succeeds. Otherwise
