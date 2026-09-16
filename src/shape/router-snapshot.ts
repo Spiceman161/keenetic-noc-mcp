@@ -166,7 +166,12 @@ export function projectRouteSnapshot(
   else {
     const id = usable[0]?.['interface'];
     const kind = typeof id === 'string' ? kinds.get(id) : undefined;
-    activePath = kind === 'vpn' ? 'vpn' : kind === undefined ? 'unknown' : 'physical';
+    const selected = typeof id === 'string' ? record(record(interfaces)[id]) : {};
+    // Reuse the existing Ethernet-only physical classification rather than
+    // treating every non-VPN type as a physical path.
+    activePath = kind === 'vpn' ? 'vpn'
+      : typeof selected['type'] === 'string' && selected['type'].includes('Ethernet') ? 'physical'
+        : 'unknown';
   }
   return { total: defaults.length, usable: usable.length,
     rejecting: defaults.length - usable.length, activePath };

@@ -176,7 +176,7 @@ export function registerInternetDiagnosticTool(server: ToolRegistrar, ctx: ToolC
       const logs = fromSettled<LogEntry[], ReturnType<typeof projectRelatedLogs>>(
         logsResult,
         Array.isArray,
-        value => projectRelatedLogs(value, interfaceIds)
+        value => projectRelatedLogs(value, interfaceIds, vpn.data?.items.map(item => item.id) ?? [])
       );
 
       const evidence: DiagnosticEvidence = {

@@ -204,7 +204,7 @@ export function compareSnapshots(
         const beforeData = from.sources.vpn.data;
         const afterData = to.sources.vpn.data;
         if (beforeData === null || afterData === null) break;
-        for (const metric of ['total', 'up', 'down', 'unknown', 'peersTotal', 'peersOnline',
+        for (const metric of ['total', 'up', 'down', 'unknown', 'peersTotal',
           'peersUnknown'] as const) {
           countChange(changes, domain, metric, beforeData[metric], afterData[metric]);
         }

@@ -9,6 +9,7 @@ import {
   type SnapshotStoreLimits
 } from '../../src/router/snapshot-store.js';
 import type { RouterSnapshotV1 } from '../../src/shape/router-snapshot.js';
+import { compareSnapshots } from '../../src/shape/state-comparison.js';
 
 const limits: SnapshotStoreLimits = { maxCount: 2, maxAgeMs: 1_000, maxTotalBytes: 32_000,
   maxFileBytes: 16_000, maxDirectoryEntries: 32 };
@@ -67,6 +68,32 @@ describe('snapshot store', () => {
       status: 'unavailable', reason: 'password=secret', data: null
     };
     expect(canonicalSnapshot(value)).toBeNull();
+  });
+
+  it('reads historical V1 peer aggregates as unknown without rewriting them or publishing peer-online changes', async () => {
+    const older = snapshot('2026-09-11T10:00:00.000Z') as RouterSnapshotV1;
+    const newer = snapshot('2026-09-11T10:01:00.000Z') as RouterSnapshotV1;
+    for (const item of [older, newer]) {
+      item.sources.vpn = { status: 'available', reason: null, data: {
+        total: 1, up: 1, down: 0, unknown: 0, peersTotal: 1,
+        peersOnline: item === older ? 1 : 0, peersUnknown: item === older ? 0 : 1
+      } };
+    }
+    const root = await mkdtemp(join(tmpdir(), 'kn-snapshot-'));
+    const store = createSnapshotStore(root, 'home', limits);
+    await mkdir(store.directory, { recursive: true, mode: 0o700 });
+    const path = join(store.directory, 'historical.json');
+    await writeFile(path, JSON.stringify(older), { mode: 0o600 });
+    const listed = (await store.list()).snapshots;
+    expect(listed).toHaveLength(1);
+    const canonicalOlder = listed[0]!;
+    const canonicalNewer = canonicalSnapshot(newer)!;
+    expect(canonicalOlder.sources.vpn.data).toMatchObject({ peersTotal: 1, peersOnline: 0, peersUnknown: 1 });
+    expect((JSON.parse(await readFile(path, 'utf8')) as RouterSnapshotV1).sources.vpn.data)
+      .toMatchObject({ peersOnline: 1, peersUnknown: 0 });
+    expect(compareSnapshots(canonicalOlder, canonicalNewer, ['vpn']).changes).not.toContainEqual(
+      expect.objectContaining({ metric: 'peersOnline' })
+    );
   });
 
   it('rejects contradictory configuration state', () => {

@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { AuthError, RciError, TransportError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import { registerInternetDiagnosticTool } from '../../src/tools/diagnose-internet.js';
+import { projectRelatedLogs } from '../../src/shape/internet-diagnostic.js';
 import type { ToolContext, ToolResult } from '../../src/tools/registry.js';
 import { stubBackup } from '../helpers/backup.js';
 
@@ -492,7 +493,11 @@ describe('diagnose_internet', () => {
   it('reports only neutral VPN route association and excludes peer material', async () => {
     const base = {
       type: 'Wireguard', link: 'up', state: 'up', global: true, defaultgw: true,
-      wireguard: { 'private-key': 'never-show-this', peer: [{ online: true, via: 'GigabitEthernet1' }] }
+      wireguard: { 'private-key': 'private-sentinel', 'public-key': 'interface-public-sentinel', peer: [{
+        online: true, via: 'via-sentinel', description: 'peer-description-sentinel',
+        'public-key': 'peer-public-sentinel', 'preshared-key': 'psk-sentinel', endpoint: 'endpoint-sentinel',
+        'allowed-ips': ['allowed-ips-sentinel'], 'last-handshake': 'handshake-sentinel', rxbytes: 'counter-sentinel'
+      }] }
     };
     const route = [{ destination: '0.0.0.0/0', interface: 'Wireguard3', rejecting: false }];
     const associated = payload(await setup({ values: {
@@ -506,7 +511,11 @@ describe('diagnose_internet', () => {
     } }).handler({}));
     expect(associated.checks.find((check: any) => check.id === 'vpn-default-route')).toMatchObject({ status: 'unknown' });
     expect(associated.findings.map((finding: any) => finding.id)).not.toContain('vpn-default-route-active');
-    expect(JSON.stringify(associated)).not.toContain('never-show-this');
+    for (const sentinel of ['private-sentinel', 'interface-public-sentinel', 'via-sentinel',
+      'peer-description-sentinel', 'peer-public-sentinel', 'psk-sentinel', 'endpoint-sentinel',
+      'allowed-ips-sentinel', 'handshake-sentinel', 'counter-sentinel']) {
+      expect(JSON.stringify(associated)).not.toContain(sentinel);
+    }
 
     const changedObservations = payload(await setup({ values: {
       'show/interface': { Wireguard3: { ...base, link: 'down', state: 'down' } },
@@ -521,17 +530,65 @@ describe('diagnose_internet', () => {
     expect(changedObservations.findings.map((finding: any) => finding.id)).not.toContain('vpn-default-route-down');
   });
 
-  it('does not classify names or excluded types as VPN evidence', async () => {
+  it.each([
+    ['OpenConnect0', 'OpenConnect'], ['Gre0', 'GRE'], ['WireguardByName', 'FutureVPN'],
+    ['Lowercase', 'wireguard'], ['CaseVariant', 'WireGuard'], ['Whitespace', ' Wireguard '],
+    ['Empty', ''], ['MissingType', undefined], ['NullType', null], ['NumberType', 1],
+    ['BooleanType', true], ['ObjectType', { name: 'Wireguard' }], ['ArrayType', ['Wireguard']]
+  ])('negative default-route matrix keeps %s unknown instead of physical for up and down', async (id, type) => {
+    for (const state of ['up', 'down']) {
+      const out = payload(await setup({ values: {
+        'show/interface': { [id]: { type, state, link: state, global: true, defaultgw: true,
+          role: 'inet', description: 'wireguard vpn', wireguard: { peer: [{ online: true }] } } },
+        'show/internet/status': { checked: false },
+        'show/ip/route': [{ destination: '0.0.0.0/0', interface: id, rejecting: false }]
+      } }).handler({}));
+      expect(out.evidence.vpn.data.items).toEqual([]);
+      expect(out.findings.map((finding: any) => finding.id)).not.toContain('physical-uplink-down');
+      expect(out.checks.find((check: any) => check.id === 'wan-link')).toMatchObject({ status: 'unknown' });
+      expect(out.checks.find((check: any) => check.id === 'default-route')).toMatchObject({ status: 'unknown' });
+      expect(out.checks.find((check: any) => check.id === 'vpn-default-route')).toMatchObject({ status: 'unknown' });
+      expect(['healthy', 'unhealthy']).not.toContain(out.status);
+    }
+  });
+
+  it.each([' Wireguard ', '\u0001Wireguard'])('does not normalize malformed exact-type controls: %j', async type => {
     const out = payload(await setup({ values: {
-      'show/interface': {
-        WireguardByName: { type: 'FutureVPN', wireguard: { peer: [{ online: true, via: 'GigabitEthernet1' }] } },
-        OpenConnect0: { type: 'OpenConnect' }, Gre0: { type: 'GRE' }
-      },
+      'show/interface': { Wireguard3: { type, state: 'down', link: 'down', global: true } },
       'show/internet/status': { checked: false },
-      'show/ip/route': [{ destination: '0.0.0.0/0', interface: 'WireguardByName', rejecting: false }]
+      'show/ip/route': [{ destination: '0.0.0.0/0', interface: 'Wireguard3', rejecting: false }]
     } }).handler({}));
+    expect(out.evidence.interfaces.data.items[0].type).toBe('');
     expect(out.evidence.vpn.data.items).toEqual([]);
-    expect(out.checks.find((check: any) => check.id === 'vpn-default-route')).toMatchObject({ status: 'pass' });
+    expect(out.checks.find((check: any) => check.id === 'wan-link').status).toBe('unknown');
+  });
+
+  it('omits VPN-related router log text while retaining unrelated bounded context', async () => {
+    const forbidden = ['private-key-sentinel', 'psk-sentinel', 'interface-public-sentinel',
+      'peer-public-sentinel', 'peer-description-sentinel', 'endpoint-sentinel', 'allowed-ips-sentinel',
+      'handshake-sentinel', 'rx-counter-sentinel', 'tx-counter-sentinel'];
+    const logs = { show: { log: { log: {
+      '1': { ident: 'Wireguard3', message: { message: `Wireguard peer private-key=${forbidden[0]} psk=${forbidden[1]} public-key=${forbidden[2]} peer=${forbidden[3]} description=${forbidden[4]} endpoint=${forbidden[5]} allowed-ips=${forbidden[6]} handshake=${forbidden[7]} rxbytes=${forbidden[8]} txbytes=${forbidden[9]}` } },
+      '2': { ident: 'Network', message: { message: 'gateway remains available' } }
+    } } } };
+    const out = payload(await setup({ values: {
+      'show/interface': { Wireguard3: { type: 'Wireguard', state: 'up', link: 'up' } }
+    }, logs }).handler({}));
+    const text = JSON.stringify(out);
+    for (const sentinel of forbidden) expect(text).not.toContain(sentinel);
+    expect(out.evidence.logs.data.items.map((item: any) => item.line)).toContain('Network gateway remains available');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(25_000);
+  });
+
+  it('filters protocol-term and exact-VPN-interface log matches at the local boundary', () => {
+    const entries = [
+      { timestamp: null, ident: 'Wireguard', level: null, label: null, line: 'wireguard peer-sentinel' },
+      { timestamp: null, ident: 'Network', level: null, label: 'Wireguard3', line: 'peer-sentinel' },
+      { timestamp: null, ident: 'Network', level: null, label: null, line: 'gateway stable' }
+    ];
+    const projected = projectRelatedLogs(entries, ['GigabitEthernet1', 'Wireguard3'], ['Wireguard3']);
+    expect(projected.items.map(item => item.line)).toEqual(['gateway stable']);
+    expect(projected.matched).toBe(1);
   });
 
   it('preserves partial evidence and treats absent booleans as unknown', async () => {
@@ -713,5 +770,16 @@ describe('diagnose_internet', () => {
     expect(out.evidence.logs.data.untrusted).toBe(true);
     expect(out.evidence.logs.data.shown).toBeLessThanOrEqual(20);
     expect(text).not.toContain('secret-');
+  });
+
+  it('bounds VPN-heavy diagnostic evidence without dropping its report envelope', async () => {
+    const interfaces = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`Wireguard${index}`, {
+      type: 'Wireguard', state: 'up', link: 'up', wireguard: { peer: [{ endpoint: 'endpoint-sentinel' }] }
+    }]));
+    const result = await setup({ values: { 'show/interface': interfaces }, maxResponseBytes: 8_000 }).handler({});
+    const text = result.content.map(part => part.text).join('');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8_000);
+    expect(JSON.parse(text)).toMatchObject({ schemaVersion: 1, truncated: true });
+    expect(text).not.toContain('endpoint-sentinel');
   });
 });

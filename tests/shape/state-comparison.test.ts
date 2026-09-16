@@ -61,6 +61,7 @@ describe('router state comparison', () => {
         delta: -6, anomaly: 'drop' }
     ]));
     expect(JSON.stringify(result)).not.toContain('bbbbbbbb');
+    expect(result.changes).not.toContainEqual(expect.objectContaining({ metric: 'peersOnline' }));
   });
 
   it('keeps unavailable sources separate from router state changes', () => {

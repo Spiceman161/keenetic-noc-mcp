@@ -182,7 +182,9 @@ function vpnData(value: unknown): VpnSnapshot | null {
   const peersUnknown = nonNegative(data['peersUnknown'], true);
   if (peersTotal === null || peersOnline === null || peersUnknown === null ||
       peersOnline + peersUnknown > peersTotal) return null;
-  return { ...base, peersTotal, peersOnline, peersUnknown };
+  // Historical V1 files can contain peer operational aggregates. They remain
+  // structurally valid, but are read as unknown rather than republished.
+  return { ...base, peersTotal, peersOnline: 0, peersUnknown: peersTotal };
 }
 
 function wifiData(value: unknown): WifiSnapshot | null {

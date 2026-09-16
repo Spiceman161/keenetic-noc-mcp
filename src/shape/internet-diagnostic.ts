@@ -145,10 +145,8 @@ export interface InternetDiagnosticReport {
 }
 
 const BAD_STATE = new Set(['down', 'error', 'failed', 'disabled', 'offline', 'unavailable']);
-const LOG_TERMS = [
-  'internet', 'gateway', 'ndhcpc', 'dns-proxy', 'https-dns-proxy',
-  'wireguard', 'openvpn', 'ipsec', 'l2tp', 'pptp', 'sstp'
-] as const;
+const LOG_TERMS = ['internet', 'gateway', 'ndhcpc', 'dns-proxy', 'https-dns-proxy'] as const;
+const VPN_LOG_TERMS = ['wireguard', 'openvpn', 'ipsec', 'l2tp', 'pptp', 'sstp'] as const;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -165,6 +163,13 @@ function safeString(value: unknown, max = 120): string {
     .replace(/\s+/g, ' ')
     .trim());
   return Array.from(raw).slice(0, max).join('');
+}
+
+/** A display type must never become a normalized classifier input. */
+function safeExactType(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const safe = safeString(value);
+  return safe === value ? safe : '';
 }
 
 function nullableBoolean(value: unknown): boolean | null {
@@ -254,7 +259,7 @@ export function projectInterfaces(raw: unknown): {
     if (!id) continue;
     const base: InterfaceEvidence = {
       id,
-      type: safeString(value['type']),
+      type: safeExactType(value['type']),
       link: safeString(value['link']),
       state: safeString(value['state']),
       connected: connected(value['connected']),
@@ -334,12 +339,18 @@ function publicLogEntry(entry: LogEntry): PublicLogEntry {
   };
 }
 
-export function projectRelatedLogs(entries: readonly LogEntry[], interfaceIds: readonly string[]): LogEvidence {
+export function projectRelatedLogs(
+  entries: readonly LogEntry[],
+  interfaceIds: readonly string[],
+  vpnInterfaceIds: readonly string[] = []
+): LogEvidence {
   const needles = [...LOG_TERMS, ...interfaceIds].map(value => value.toLocaleLowerCase());
+  const vpnNeedles = [...VPN_LOG_TERMS, ...vpnInterfaceIds].map(value => value.toLocaleLowerCase());
   const matched = entries.filter(entry => {
     const searchable = [entry.ident, entry.label, entry.line].filter((value): value is string => value !== null)
       .join(' ').toLocaleLowerCase();
-    return needles.some(needle => searchable.includes(needle));
+    return needles.some(needle => searchable.includes(needle)) &&
+      !vpnNeedles.some(needle => searchable.includes(needle));
   });
   const items = matched.slice(-20).map(publicLogEntry);
   return {
@@ -430,7 +441,7 @@ export function relatedInterfaceIds(
   internet: InternetEvidence | null,
   routes: ListEvidence<RouteEvidence> | null,
   interfaces: ListEvidence<InterfaceEvidence> | null,
-  _vpns: ListEvidence<VpnEvidence> | null
+  vpns: ListEvidence<VpnEvidence> | null
 ): string[] {
   const active = selectActiveRouteList(
     routes?.items.filter(route => route.rejecting !== true) ?? [],
@@ -439,9 +450,10 @@ export function relatedInterfaceIds(
       .map(iface => iface.id))
   );
   const selected = new Set(active.items.map(route => route.interface).filter(Boolean));
+  const vpnIds = new Set((vpns?.items ?? []).map(vpn => vpn.id));
   for (const iface of interfaces?.items ?? []) {
     if (iface.global === true || iface.defaultGateway === true || iface.internetRole === true ||
-      isVpnInterfaceType(iface.type)) selected.add(iface.id);
+      vpnIds.has(iface.id)) selected.add(iface.id);
   }
   return [...selected].sort();
 }
@@ -518,7 +530,9 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
 
   const defaultInterfaces = new Set(active.items.map(route => route.interface).filter(Boolean));
   const defaultVpns = vpns.filter(vpn => defaultInterfaces.has(vpn.id));
-  const physical = interfaces.filter(iface => !isVpnInterfaceType(iface.type));
+  // Ethernet is the existing independently classified physical interface shape.
+  // All other non-VPN types remain unknown rather than becoming physical by exclusion.
+  const physical = interfaces.filter(iface => iface.type.includes('Ethernet'));
   const globalPhysical = physical.filter(iface => iface.global === true || iface.defaultGateway === true ||
     iface.internetRole === true);
   const relevantDown = physical.filter(iface => down(iface) && (
@@ -540,9 +554,6 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
   const internetStatus: CheckStatus = evidence.internet.status === 'unavailable' || !internetCurrent || internetConflict ? 'unknown'
     : internet?.internet === false || internet?.gatewayAccessible === false ? 'fail'
       : internet?.internet === true ? 'pass' : 'unknown';
-  const routeStatus: CheckStatus = evidence.routes.status === 'unavailable' ? 'unknown'
-    : active.ambiguous || (routes.length === 0 && internet?.internet === true) ? 'warning'
-      : routes.length > 0 ? 'pass' : internetCurrent && internet?.internet === false ? 'fail' : 'warning';
   const wanStatus: CheckStatus = evidence.interfaces.status === 'unavailable' ? 'unknown'
     : relevantDown.length > 0 ? 'fail'
       : physical.some(iface => (iface.global === true || iface.defaultGateway === true ||
@@ -553,7 +564,12 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
       : (internetCurrent && internet?.dnsAccessible === true) || dnsHealthy ? 'pass'
         : evidence.dns.status === 'unavailable' ? 'unknown' : 'unknown';
   const knownInterfaces = new Set(interfaces.map(iface => iface.id));
-  const defaultRouteUnknown = active.items.some(route => !knownInterfaces.has(route.interface));
+  const knownPathInterfaces = new Set([...physical.map(iface => iface.id), ...vpns.map(vpn => vpn.id)]);
+  const defaultRouteUnknown = active.items.some(route => !knownInterfaces.has(route.interface) ||
+    !knownPathInterfaces.has(route.interface));
+  const routeStatus: CheckStatus = evidence.routes.status === 'unavailable' || defaultRouteUnknown ? 'unknown'
+    : active.ambiguous || (routes.length === 0 && internet?.internet === true) ? 'warning'
+      : routes.length > 0 ? 'pass' : internetCurrent && internet?.internet === false ? 'fail' : 'warning';
   const vpnStatus: CheckStatus = evidence.vpn.status === 'unavailable' || evidence.routes.status === 'unavailable' ||
     routes.length === 0 || active.ambiguous || defaultRouteUnknown ? 'unknown'
       : defaultVpns.length > 0 ? 'unknown' : 'pass';

@@ -56,6 +56,7 @@ const ALL: Record<string, Record<string, unknown>> = {
 
 function harness(get: (path: string) => Promise<unknown> = async () => INTERFACES): {
   handlers: Record<string, Handler>;
+  configs: Record<string, any>;
   get: ReturnType<typeof vi.fn>;
   post: ReturnType<typeof vi.fn>;
 } {
@@ -76,17 +77,19 @@ function harness(get: (path: string) => Promise<unknown> = async () => INTERFACE
 
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const handlers: Record<string, Handler> = {};
+  const configs: Record<string, any> = {};
   vi.spyOn(server, 'registerTool').mockImplementation(((
     name: string,
-    _config: unknown,
+    config: unknown,
     handler: Handler
   ) => {
     handlers[name] = handler;
+    configs[name] = config;
     return {} as never;
   }) as never);
 
   registerInterfaceTools(server, ctx);
-  return { handlers, get: spy, post: postSpy };
+  return { handlers, configs, get: spy, post: postSpy };
 }
 
 function payload(result: ToolResult): any {
@@ -99,6 +102,14 @@ describe('list_interfaces', () => {
     expect(Object.keys(out.interfaces[0]).sort()).toEqual(
       ['address', 'defaultGateway', 'description', 'id', 'link', 'state', 'type'].sort()
     );
+  });
+
+  it('keeps the kind enum limited to the six established values', () => {
+    const kind = harness().configs['list_interfaces'].inputSchema.kind;
+    for (const value of ['all', 'wan', 'lan', 'wifi', 'vpn', 'bridge']) {
+      expect(kind.safeParse(value).success).toBe(true);
+    }
+    expect(kind.safeParse('tunnel').success).toBe(false);
   });
 
   it('returns the raw records when detail is full', async () => {
@@ -131,10 +142,26 @@ describe('list_interfaces', () => {
     expect(all.interfaces.map((item: any) => item.id)).toContain('MissingType');
   });
 
+  it('keeps malformed and case-varied VPN-looking rows visible only in all', async () => {
+    const negatives: unknown[] = ['wireguard', 'WireGuard', ' Wireguard ', 'FutureVPN', 'OpenConnect',
+      '', '   ', null, 1, true, { name: 'Wireguard' }, ['Wireguard']];
+    const rows = Object.fromEntries(negatives.map((type, index) => [`NameHint${index}`, {
+      type, description: 'wireguard vpn', wireguard: { peer: [{ online: true }] }
+    }]));
+    const { handlers } = harness(async () => rows);
+    expect(payload(await handlers['list_interfaces']!({ kind: 'vpn' })).interfaces).toEqual([]);
+    expect(payload(await handlers['list_interfaces']!({ kind: 'all' })).interfaces).toHaveLength(negatives.length);
+  });
+
   it('keeps VPN summaries fixed and leaves full-detail behavior unchanged', async () => {
     const rows = { Wireguard3: {
       type: 'Wireguard', address: 'interface-address', wireguard: {
-        'private-key': 'private-sentinel', peer: [{ 'remote-endpoint-address': 'endpoint-sentinel' }]
+        'private-key': 'private-sentinel', 'public-key': 'interface-public-sentinel', peer: [{
+          description: 'peer-description-sentinel', 'public-key': 'peer-public-sentinel',
+          'preshared-key': 'psk-sentinel', 'remote-endpoint-address': 'endpoint-sentinel',
+          'allowed-ips': ['allowed-ips-sentinel'], 'last-handshake': 'handshake-sentinel',
+          rxbytes: 'counter-sentinel', via: 'via-sentinel'
+        }]
       }
     } };
     const { handlers } = harness(async () => rows);
@@ -159,6 +186,17 @@ describe('list_interfaces', () => {
     const out = payload(await harness().handlers['list_interfaces']!({}));
     expect(out.total).toBe(4);
   });
+
+  it('bounds a VPN-heavy summary envelope without changing full-detail behavior', async () => {
+    const rows = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`Wireguard${index}`, {
+      type: 'Wireguard', description: 'x'.repeat(500), address: 'interface-address'
+    }]));
+    const { handlers } = harness(async () => rows);
+    const result = await handlers['list_interfaces']!({ kind: 'vpn' });
+    const text = result.content.map(part => part.text).join('');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(25_000);
+    expect(payload(result)).toMatchObject({ interfaces: expect.any(Array), truncated: true });
+  });
 });
 
 describe('get_interface', () => {
@@ -167,6 +205,7 @@ describe('get_interface', () => {
     const out = payload(await handlers['get_interface']!({ name: 'Wireguard3' }));
     expect(post).toHaveBeenCalledWith({ show: { interface: { name: 'Wireguard3' } } });
     expect(out.type).toBe('Wireguard');
+    expect(out.wireguard).toEqual({ 'public-key': '<redacted>' });
   });
 
   // Regression: GET show/interface/WifiMaster0/AccessPoint6 is a 404 on a real
