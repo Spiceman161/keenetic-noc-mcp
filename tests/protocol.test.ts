@@ -50,11 +50,11 @@ const WRITE_TOOLS = [
   'save_config',
 ];
 
-function context(readOnly: boolean): ToolContext {
+function context(readOnly: boolean, interfaceResponse: unknown = {}): ToolContext {
   const client = {
     rci: { get: vi.fn(async (path: string) => path === 'show/version'
       ? { title: '5.1.3', model: 'Keenetic Model (KN-0000)', hw_id: 'KN-0000' }
-      : {}), post: vi.fn(), getText: vi.fn() },
+      : path === 'show/interface' ? interfaceResponse : {}), post: vi.fn(), getText: vi.fn() },
     capabilities: vi.fn(async () => ({
       model: 'Keenetic Model (KN-0000)',
       hwId: 'KN-0000',
@@ -277,6 +277,48 @@ describe('assembled server over MCP', () => {
     });
   });
 
+  it('captures only controlled telemetry for a real WireGuard MCP call', async () => {
+    const sentinels = [
+      'SYNTHETIC_PRIVATE_KEY', 'SYNTHETIC_PSK', 'SYNTHETIC_PUBLIC_KEY', 'SYNTHETIC_PEER_ID',
+      'SYNTHETIC_COLLECTION_KEY', 'SYNTHETIC_ENDPOINT', 'SYNTHETIC_ALLOWED_RANGE',
+      'SYNTHETIC_RAW_PEER_OBJECT', 'SYNTHETIC_STABLE_ID', 'SYNTHETIC_HASH', 'SYNTHETIC_FINGERPRINT'
+    ];
+    const source = {
+      Wireguard0: {
+        type: 'Wireguard', wireguard: {
+          'private-key': sentinels[0],
+          [sentinels[4]!]: {
+            'preshared-key': sentinels[1], 'public-key': sentinels[2], id: sentinels[3],
+            endpoint: sentinels[5], 'allowed-ips': [sentinels[6]], raw: sentinels[7],
+            stable: sentinels[8], hash: sentinels[9], fingerprint: sentinels[10],
+            'last-handshake': 1, rxbytes: 0, txbytes: 1
+          }
+        }
+      }
+    };
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const records: TelemetryRecord[] = [];
+    const ctx = context(false, source);
+    const server = createServer(ctx, { writer: { write: async record => { records.push(record); } } });
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'wireguard-telemetry-test', version: '0.0.0' });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result)).toContain('peersObserved');
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      tool: 'get_wireguard_status', status: 'success',
+      tool_attributes: { read_only: true, open_world: false },
+      args_summary: { fields: {}, total_fields: 0, truncated: false }
+    });
+    for (const sentinel of sentinels) {
+      expect(JSON.stringify(result)).not.toContain(sentinel);
+      expect(JSON.stringify(records)).not.toContain(sentinel);
+    }
+  });
+
   it('advertises the DNS diagnostic contracts as read-only', async () => {
     const client = await connectedClient(true);
     const { tools } = await client.listTools();
@@ -410,5 +452,25 @@ describe('write mode', () => {
       'get_config_diff', 'compare_router_state', 'get_recent_changes']) {
       expect(tools.find(tool => tool.name === name)?.annotations?.readOnlyHint).toBe(true);
     }
+  });
+
+  it('advertises and passively calls WireGuard evidence in write mode', async () => {
+    const source = { Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'last-handshake': 1 }] } } };
+    const ctx = context(false, source);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer(ctx);
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'wireguard-write-mode-test', version: '0.0.0' });
+    await client.connect(clientTransport);
+
+    const { tools } = await client.listTools();
+    const tool = tools.find(item => item.name === 'get_wireguard_status');
+    expect(tool?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+    const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
+    expect(JSON.stringify(result)).toContain('peersObserved');
+    const rci = ctx.client.rci as unknown as { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> };
+    expect(rci.get.mock.calls).toEqual([['show/interface', 256_000]]);
+    expect(rci.post).not.toHaveBeenCalled();
+    expect((ctx.backup.ensure as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 });

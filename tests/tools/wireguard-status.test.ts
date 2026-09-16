@@ -47,6 +47,58 @@ const interfaceKeys = [
   'peersShown', 'peersTotal', 'peersTruncated'
 ].sort();
 const peerKeys = ['peerIndex', 'handshake', 'rxBytes', 'txBytes'].sort();
+const forbiddenSentinels = [
+  'SYNTHETIC_PRIVATE_KEY', 'SYNTHETIC_PSK', 'SYNTHETIC_PUBLIC_KEY', 'SYNTHETIC_PEER_ID',
+  'SYNTHETIC_COLLECTION_KEY', 'SYNTHETIC_ENDPOINT', 'SYNTHETIC_ALLOWED_RANGE',
+  'SYNTHETIC_RAW_PEER_OBJECT', 'SYNTHETIC_STABLE_ID', 'SYNTHETIC_HASH', 'SYNTHETIC_FINGERPRINT'
+];
+
+function peerWithSentinels(): Record<string, unknown> {
+  return {
+    'preshared-key': forbiddenSentinels[1], 'public-key': forbiddenSentinels[2],
+    id: forbiddenSentinels[3], endpoint: forbiddenSentinels[5],
+    'allowed-ips': [forbiddenSentinels[6]], raw: forbiddenSentinels[7],
+    stable: forbiddenSentinels[8], hash: forbiddenSentinels[9], fingerprint: forbiddenSentinels[10],
+    'last-handshake': 1, rxbytes: 0, txbytes: 1
+  };
+}
+
+function sentinelSource(peerCount = 1): Record<string, unknown> {
+  return {
+    Wireguard0: {
+      type: 'Wireguard', wireguard: {
+        'private-key': forbiddenSentinels[0],
+        peer: Object.fromEntries(Array.from({ length: peerCount }, (_, index) => [
+          `${forbiddenSentinels[4]}_${index}`, peerWithSentinels()
+        ]))
+      }
+    }
+  };
+}
+
+function assertNoSentinels(value: unknown): void {
+  const text = JSON.stringify(value);
+  for (const sentinel of forbiddenSentinels) expect(text).not.toContain(sentinel);
+}
+
+function envelope(value: Record<string, unknown>): Record<string, unknown> {
+  return {
+    evidenceStatus: value.evidenceStatus,
+    evidenceReason: value.evidenceReason,
+    peersObserved: value.peersObserved,
+    peersWithHandshakeEvidence: value.peersWithHandshakeEvidence,
+    peersWithoutHandshakeEvidence: value.peersWithoutHandshakeEvidence,
+    peersWithUnknownHandshakeEvidence: value.peersWithUnknownHandshakeEvidence,
+    peersWithInvalidHandshakeEvidence: value.peersWithInvalidHandshakeEvidence,
+    shown: value.shown,
+    total: value.total,
+    truncated: value.truncated
+  };
+}
+
+function completeInterface(): Record<string, unknown> {
+  return { type: 'Wireguard', wireguard: { peer: [{ 'last-handshake': 1 }] } };
+}
 
 describe('get_wireguard_status', () => {
   it('uses exactly one bounded interface read and projects only fixed safe evidence', async () => {
@@ -103,8 +155,11 @@ describe('get_wireguard_status', () => {
     ['no classification-valid row', { Wireguard0: { type: null } }]
   ])('returns controlled unavailable evidence for a %s root', async (_label, value) => {
     const { get, handler } = harness(value);
-    expect(payload(await handler())).toMatchObject({
-      evidenceStatus: 'unavailable', evidenceReason: 'unexpected-response', interfaces: [], total: null
+    expect(payload(await handler())).toEqual({
+      schemaVersion: 1, evidenceStatus: 'unavailable', evidenceReason: 'unexpected-response',
+      peersObserved: null, peersWithHandshakeEvidence: null, peersWithoutHandshakeEvidence: null,
+      peersWithUnknownHandshakeEvidence: null, peersWithInvalidHandshakeEvidence: null,
+      interfaces: [], shown: 0, total: null, truncated: false
     });
     expect(get).toHaveBeenCalledTimes(1);
   });
@@ -163,11 +218,21 @@ describe('get_wireguard_status', () => {
     });
     const tooLarge = harness(new RciError('bounded', { path: 'response', code: 'response-too-large', ident: 'rci' }));
     tooLarge.get.mockRejectedValueOnce(new RciError('bounded', { path: 'response', code: 'response-too-large', ident: 'rci' }));
-    expect(payload(await tooLarge.handler())).toMatchObject({ evidenceStatus: 'unavailable', evidenceReason: 'response-too-large' });
+    expect(envelope(payload(await tooLarge.handler()))).toEqual({
+      evidenceStatus: 'unavailable', evidenceReason: 'response-too-large', peersObserved: null,
+      peersWithHandshakeEvidence: null, peersWithoutHandshakeEvidence: null,
+      peersWithUnknownHandshakeEvidence: null, peersWithInvalidHandshakeEvidence: null,
+      shown: 0, total: null, truncated: false
+    });
 
     const rci = harness(new RciError('missing', { path: 'show/interface', code: '404', ident: 'rci' }));
     rci.get.mockRejectedValueOnce(new RciError('missing', { path: 'show/interface', code: '404', ident: 'rci' }));
-    expect(payload(await rci.handler())).toMatchObject({ evidenceStatus: 'unavailable', evidenceReason: 'rci-error' });
+    expect(envelope(payload(await rci.handler()))).toEqual({
+      evidenceStatus: 'unavailable', evidenceReason: 'rci-error', peersObserved: null,
+      peersWithHandshakeEvidence: null, peersWithoutHandshakeEvidence: null,
+      peersWithUnknownHandshakeEvidence: null, peersWithInvalidHandshakeEvidence: null,
+      shown: 0, total: null, truncated: false
+    });
 
     const auth = harness({}); auth.get.mockRejectedValueOnce(new AuthError('denied'));
     const transport = harness({}); transport.get.mockRejectedValueOnce(new TransportError('offline'));
@@ -217,5 +282,146 @@ describe('get_wireguard_status', () => {
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(512);
     expect(Object.keys(out).sort()).toEqual(topLevelKeys);
     expect(out).toMatchObject({ schemaVersion: 1, evidenceStatus: 'complete', evidenceReason: null, peersObserved: 10, truncated: true });
+  });
+
+  it.each([
+    ['complete + complete', completeInterface(), completeInterface(),
+      { evidenceStatus: 'complete', evidenceReason: null, peersObserved: 2, peersWithHandshakeEvidence: 2,
+        peersWithoutHandshakeEvidence: 0, peersWithUnknownHandshakeEvidence: 0,
+        peersWithInvalidHandshakeEvidence: 0, shown: 2, total: 2, truncated: false }],
+    ['complete + partial', completeInterface(), { type: 'Wireguard', wireguard: { peer: [{ 'last-handshake': 1 }, null] } },
+      { evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 2, peersWithHandshakeEvidence: 2,
+        peersWithoutHandshakeEvidence: 0, peersWithUnknownHandshakeEvidence: 0,
+        peersWithInvalidHandshakeEvidence: 0, shown: 2, total: 2, truncated: false }],
+    ['complete + unavailable', completeInterface(), { type: 'Wireguard', wireguard: { peer: true } },
+      { evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1, peersWithHandshakeEvidence: 1,
+        peersWithoutHandshakeEvidence: 0, peersWithUnknownHandshakeEvidence: 0,
+        peersWithInvalidHandshakeEvidence: 0, shown: 2, total: 2, truncated: false }],
+    ['unavailable + unavailable', { type: 'Wireguard', wireguard: { peer: true } }, { type: 'Wireguard', wireguard: { peers: null } },
+      { evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: null, peersWithHandshakeEvidence: null,
+        peersWithoutHandshakeEvidence: null, peersWithUnknownHandshakeEvidence: null,
+        peersWithInvalidHandshakeEvidence: null, shown: 2, total: 2, truncated: false }]
+  ])('reduces %s independently of interface-map order', async (_label, first, second, expected) => {
+    const outcomes = await Promise.all([
+      harness({ First: first, Second: second }).handler().then(payload),
+      harness({ Second: second, First: first }).handler().then(payload)
+    ]);
+    for (const out of outcomes) {
+      expect(envelope(out)).toEqual(expected);
+      expect(out.evidenceReason).not.toBeUndefined();
+      expect(JSON.stringify(out)).not.toContain('not-supported');
+    }
+    expect(envelope(outcomes[0])).toEqual(envelope(outcomes[1]));
+  });
+
+  it.each([
+    ['array', []], ['null', null], ['scalar', 'SYNTHETIC_MALFORMED_OUTER']
+  ])('keeps direct fallback evidence partial for a present malformed outer %s container in either property order', async (_label, outer) => {
+    for (const directName of ['peer', 'peers']) {
+      const fallback = [{ 'last-handshake': 1, rxbytes: 3, txbytes: 4 }];
+      const rows = [
+        { type: 'Wireguard', wireguard: outer, [directName]: fallback },
+        { type: 'Wireguard', [directName]: fallback, wireguard: outer }
+      ];
+      for (const row of rows) {
+        const tested = harness({ Wireguard0: row });
+        const out = payload(await tested.handler());
+        expect(envelope(out)).toEqual(expect.objectContaining({
+          evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1,
+          peersWithHandshakeEvidence: 1, total: 1
+        }));
+        expect(out.interfaces).toHaveLength(1);
+        expect(out.interfaces[0]).toMatchObject({
+          peerEvidenceStatus: 'partial', peersTotal: 1,
+          peers: [{ peerIndex: 1, handshake: 'present', rxBytes: 3, txBytes: 4 }]
+        });
+        expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
+        expect(JSON.stringify(out)).not.toContain('SYNTHETIC_MALFORMED_OUTER');
+      }
+    }
+  });
+
+  it('distinguishes absent outer compatibility from malformed outer evidence and collapses unusable collections', async () => {
+    const absent = payload(await harness({
+      Wireguard0: { type: 'Wireguard', peer: [{ 'last-handshake': 1 }] }
+    }).handler());
+    expect(envelope(absent)).toEqual(expect.objectContaining({
+      evidenceStatus: 'complete', evidenceReason: null, peersObserved: 1
+    }));
+    const presentRecord = payload(await harness({
+      Wireguard0: { type: 'Wireguard', wireguard: {}, peer: [{ 'last-handshake': 1 }] }
+    }).handler());
+    expect(envelope(presentRecord)).toEqual(envelope(absent));
+
+    for (const outer of [[], null, 0]) {
+      const out = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: outer } }).handler());
+      expect(envelope(out)).toEqual(expect.objectContaining({
+        evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: null
+      }));
+      expect(out.interfaces[0]).toMatchObject({ peerEvidenceStatus: 'unavailable', peers: [], peersTotal: null });
+    }
+
+    const missing = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: {} } }).handler());
+    const malformed = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: true } } }).handler());
+    expect(missing.interfaces[0]).toEqual(malformed.interfaces[0]);
+    expect(envelope(missing)).toEqual(envelope(malformed));
+  });
+
+  it.each([
+    ['missing', undefined, 'absent'], ['null', null, 'absent'], ['zero', 0, 'unknown'],
+    ['positive', 1, 'present'], ['large/future-looking', Number.MAX_SAFE_INTEGER, 'present'],
+    ['negative', -1, 'invalid'], ['infinity', Infinity, 'invalid'], ['negative infinity', -Infinity, 'invalid'],
+    ['NaN', NaN, 'invalid'], ['string', '1', 'invalid'], ['boolean', true, 'invalid'],
+    ['object', {}, 'invalid'], ['array', [], 'invalid']
+  ])('classifies every handshake shape without time or health inference', async (_label, value, expected) => {
+    const peer: Record<string, unknown> = { rxbytes: 0, txbytes: 0 };
+    if (value !== undefined) peer['last-handshake'] = value;
+    const out = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [peer] } } }).handler());
+    expect(out.interfaces[0].peers[0]).toEqual({ peerIndex: 1, handshake: expected, rxBytes: 0, txBytes: 0 });
+    expect(JSON.stringify(out)).not.toMatch(/age|fresh|stale|health|failure|rate|throughput|delta|reset|wrap/i);
+  });
+
+  it.each([
+    ['missing', undefined, null], ['zero', 0, 0], ['maximum safe integer', Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    ['negative', -1, null], ['fractional', 1.5, null], ['infinity', Infinity, null],
+    ['NaN', NaN, null], ['unsafe integer', Number.MAX_SAFE_INTEGER + 1, null], ['string', '1', null],
+    ['boolean', false, null], ['object', {}, null], ['array', [], null]
+  ])('accepts only safe current counter shapes', async (_label, value, expected) => {
+    const peer: Record<string, unknown> = { 'last-handshake': 1 };
+    if (value !== undefined) {
+      peer.rxbytes = value;
+      peer.txbytes = value;
+    }
+    const out = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [peer] } } }).handler());
+    expect(out.interfaces[0].peers[0]).toEqual({ peerIndex: 1, handshake: 'present', rxBytes: expected, txBytes: expected });
+    expect(JSON.stringify(out)).not.toMatch(/rate|throughput|delta|reset|wrap/i);
+  });
+
+  it('keeps every forbidden sentinel out of all focused output and error paths', async () => {
+    const cases: Array<[string, ReturnType<typeof harness>]> = [
+      ['complete', harness(sentinelSource())],
+      ['partial', harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [peerWithSentinels(), null] } } })],
+      ['unavailable', harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: true, raw: forbiddenSentinels } } })],
+      ['malformed outer', harness({ Wireguard0: { type: 'Wireguard', wireguard: [forbiddenSentinels], peer: [peerWithSentinels()] } })],
+      ['peer truncation', harness(sentinelSource(101))],
+      ['interface truncation', harness(Object.fromEntries(Array.from({ length: 101 }, (_, index) => [
+        `Wireguard${index}`, sentinelSource().Wireguard0
+      ])))],
+      ['512-byte budget', harness(sentinelSource(101), 512)]
+    ];
+    const errorText = `private-key=${forbiddenSentinels.join(':')}`;
+    const rci = harness(sentinelSource());
+    rci.get.mockRejectedValueOnce(new RciError(errorText, { path: 'show/interface', code: '404', ident: 'rci' }));
+    const auth = harness(sentinelSource()); auth.get.mockRejectedValueOnce(new AuthError(errorText));
+    const transport = harness(sentinelSource()); transport.get.mockRejectedValueOnce(new TransportError(errorText));
+    cases.push(['rci error', rci], ['auth error', auth], ['transport error', transport]);
+
+    for (const [_label, tested] of cases) {
+      const result = await tested.handler();
+      assertNoSentinels(result);
+      expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
+    }
+    const complete = payload(await harness(sentinelSource()).handler());
+    expect(complete).toMatchObject({ evidenceStatus: 'complete', peersObserved: 1 });
   });
 });

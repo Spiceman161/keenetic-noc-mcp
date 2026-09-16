@@ -204,12 +204,13 @@ valid counter. Counter lifetime is unknown and the tool never calculates a
 rate, delta, reset, or interface total.
 
 The evidence status is `complete` for a usable source without structural
-defects, `partial` when valid evidence is retained alongside malformed or
-unavailable peer evidence, and `unavailable` only when the source cannot be
-used. Missing or malformed peer collections yield null peer counts, while a
-valid empty collection yields zero. Authentication and transport errors remain
-typed call errors rather than tunnel-status claims. Peer indexes are assigned
-only within one response; they are neither stable identifiers nor peer names.
+defects, `partial` when valid evidence is retained alongside malformed interface
+rows/types or malformed or unavailable WireGuard peer evidence, and
+`unavailable` only when the source cannot be used. Missing or malformed peer
+collections yield null peer counts, while a valid empty collection yields zero.
+Authentication and transport errors remain typed call errors rather than
+tunnel-status claims. Peer indexes are assigned only within one response; they
+are neither stable identifiers nor peer names.
 
 Handshake time format is unproven. Presence never implies age, freshness,
 staleness, health, Internet access, routing, DNS, endpoint reachability,

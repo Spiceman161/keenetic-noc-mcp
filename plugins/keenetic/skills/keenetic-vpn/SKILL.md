@@ -1,6 +1,6 @@
 ---
 name: keenetic-vpn
-description: Inspect exactly classified Keenetic VPN interface observations without exposing peer data.
+description: Inspect exactly classified Keenetic VPN interface observations and privacy-safe per-peer runtime evidence without exposing peer identity or configuration data.
 ---
 
 # Keenetic VPN diagnosis

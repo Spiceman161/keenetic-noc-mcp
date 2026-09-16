@@ -157,9 +157,13 @@ interface SelectedPeers {
 
 /** The nested observed collection is primary; these are the existing compatibility aliases. */
 function selectPeers(iface: Record<string, unknown>): SelectedPeers {
-  const wireguard = strictRecord(iface['wireguard']) ? iface['wireguard'] : {};
-  const candidates = [wireguard['peer'], wireguard['peers'], iface['peer'], iface['peers']];
-  let malformedCandidate = false;
+  const hasWireguard = Object.prototype.hasOwnProperty.call(iface, 'wireguard');
+  const wireguard = iface['wireguard'];
+  const nested = strictRecord(wireguard) ? wireguard : undefined;
+  // A missing measured container can use the established direct aliases. A
+  // present non-record container is malformed, but its contents stay opaque.
+  const candidates = [nested?.['peer'], nested?.['peers'], iface['peer'], iface['peers']];
+  let malformedCandidate = hasWireguard && !strictRecord(wireguard);
   for (const candidate of candidates) {
     if (candidate === undefined) continue;
     const parsed = parsePeerCollection(candidate);
