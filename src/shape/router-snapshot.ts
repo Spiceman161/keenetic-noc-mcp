@@ -1,4 +1,5 @@
 import type { SafeReason } from './internet-diagnostic.js';
+import { isVpnInterfaceType } from './project.js';
 
 export type SnapshotSource<T> =
   | { status: 'available'; reason: null; data: T }
@@ -63,7 +64,6 @@ export interface RouterSnapshotV1 {
 }
 
 const KINDS: readonly InterfaceKind[] = ['wan', 'lan', 'wifi', 'vpn', 'bridge', 'other'];
-const VPN = /wireguard|ipsec|openvpn|l2tp|pptp|sstp|openconnect|vpn/i;
 const DOWN = new Set(['down', 'error', 'failed', 'disabled', 'offline', 'unavailable']);
 const UP = new Set(['up', 'running', 'online', 'connected', 'ready']);
 
@@ -103,7 +103,7 @@ function stateOf(value: Record<string, unknown>): 'up' | 'down' | 'unknown' {
 
 function interfaceKind(id: string, value: Record<string, unknown>): InterfaceKind {
   const type = typeof value['type'] === 'string' ? value['type'] : '';
-  if (VPN.test(`${id} ${type}`)) return 'vpn';
+  if (isVpnInterfaceType(value['type'])) return 'vpn';
   if (id.includes('WifiMaster') || /accesspoint|wifi/i.test(type)) return 'wifi';
   if (value['role'] === 'inet' || value['defaultgw'] === true) return 'wan';
   if (/bridge/i.test(type)) return 'bridge';
@@ -143,15 +143,9 @@ export function projectInterfaceSnapshots(raw: unknown): {
     vpn[state] += 1;
     const protocol = Object.keys(record(value['wireguard'])).length > 0 ? record(value['wireguard']) : value;
     const peersRaw = protocol['peer'] ?? protocol['peers'];
-    const peers = Array.isArray(peersRaw) ? peersRaw : Object.values(record(peersRaw));
-    vpn.peersTotal += peers.length;
-    for (const rawPeer of peers) {
-      const peer = record(rawPeer);
-      const online = peer['online'] === true || peer['link'] === 'up'
-        ? true : peer['online'] === false || peer['link'] === 'down' ? false : null;
-      if (online === true) vpn.peersOnline += 1;
-      if (online === null) vpn.peersUnknown += 1;
-    }
+    const peersTotal = Array.isArray(peersRaw) ? peersRaw.length : Object.keys(record(peersRaw)).length;
+    vpn.peersTotal += peersTotal;
+    vpn.peersUnknown += peersTotal;
   }
   const interfaces = { total: [...kindsById.keys()].length, byKind };
   return { interfaces, vpn, kindsById };

@@ -20,6 +20,14 @@ export interface InterfaceSummary {
   defaultGateway: boolean;
 }
 
+const VPN_INTERFACE_TYPES: ReadonlySet<string> = new Set([
+  'Wireguard', 'OpenVPN', 'L2TP', 'PPTP', 'IPsec', 'Sstp'
+]);
+
+export function isVpnInterfaceType(value: unknown): boolean {
+  return typeof value === 'string' && VPN_INTERFACE_TYPES.has(value);
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }

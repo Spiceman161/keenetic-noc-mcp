@@ -29,9 +29,20 @@ describe('router snapshot projections', () => {
     expect(projected.interfaces.byKind.wifi).toEqual({ total: 1, up: 1, down: 0, unknown: 0 });
     expect(projected.interfaces.byKind.wan.total).toBe(1);
     expect(projected.vpn).toMatchObject({ total: 1, up: 0, down: 1, unknown: 0,
-      peersTotal: 1, peersOnline: 1, peersUnknown: 0 });
+      peersTotal: 1, peersOnline: 0, peersUnknown: 1 });
     const text = JSON.stringify(projected);
     expect(text).not.toMatch(/Private|WifiMaster|Wireguard|DO-NOT-STORE|198\.51/);
+  });
+
+  it('uses exact VPN types and counts keyed peers without inspecting their state', () => {
+    const projected = projectInterfaceSnapshots({
+      Exact: { type: 'OpenVPN', peer: { first: { online: true }, second: { link: 'down' } } },
+      NameOnlyWireguard: { type: 'FutureVPN', wireguard: { peer: [{ online: true }] } },
+      Excluded: { type: 'OpenConnect', peer: [{ online: true }] },
+      Malformed: { type: { name: 'Wireguard' } }
+    });
+    expect(projected.interfaces.byKind.vpn.total).toBe(1);
+    expect(projected.vpn).toMatchObject({ total: 1, peersTotal: 2, peersOnline: 0, peersUnknown: 2 });
   });
 
   it('reduces routes and DNS to aggregate state', () => {

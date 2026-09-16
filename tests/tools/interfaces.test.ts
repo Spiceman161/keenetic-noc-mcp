@@ -112,6 +112,39 @@ describe('list_interfaces', () => {
     expect(out.interfaces.map((i: any) => i.id)).toEqual(['Wireguard3']);
   });
 
+  it('uses only exact types for VPN membership while keeping unknown rows in all', async () => {
+    const rows = {
+      ...INTERFACES,
+      OpenVPN0: { type: 'OpenVPN' }, L2TP0: { type: 'L2TP' }, PPTP0: { type: 'PPTP' },
+      IPsec0: { type: 'IPsec' }, Sstp0: { type: 'Sstp' },
+      WireguardNameOnly: { type: 'FutureVPN', description: 'wireguard vpn', state: 'up', link: 'up',
+        wireguard: { peer: [{ online: true }] } },
+      OpenConnect0: { type: 'OpenConnect' }, Gre0: { type: 'GRE' }, MissingType: { description: 'vpn' }
+    };
+    const { handlers } = harness(async () => rows);
+    const vpn = payload(await handlers['list_interfaces']!({ kind: 'vpn' }));
+    expect(vpn.interfaces.map((item: any) => item.id)).toEqual([
+      'Wireguard3', 'OpenVPN0', 'L2TP0', 'PPTP0', 'IPsec0', 'Sstp0'
+    ]);
+    const all = payload(await handlers['list_interfaces']!({ kind: 'all' }));
+    expect(all.interfaces.map((item: any) => item.id)).toContain('WireguardNameOnly');
+    expect(all.interfaces.map((item: any) => item.id)).toContain('MissingType');
+  });
+
+  it('keeps VPN summaries fixed and leaves full-detail behavior unchanged', async () => {
+    const rows = { Wireguard3: {
+      type: 'Wireguard', address: 'interface-address', wireguard: {
+        'private-key': 'private-sentinel', peer: [{ 'remote-endpoint-address': 'endpoint-sentinel' }]
+      }
+    } };
+    const { handlers } = harness(async () => rows);
+    const summary = payload(await handlers['list_interfaces']!({ kind: 'vpn' }));
+    expect(summary.interfaces[0]).toMatchObject({ id: 'Wireguard3', address: 'interface-address' });
+    expect(JSON.stringify(summary)).not.toMatch(/sentinel|private-key|peer/i);
+    const full = payload(await handlers['list_interfaces']!({ kind: 'vpn', detail: 'full' }));
+    expect(full.interfaces[0].wireguard).toHaveProperty('private-key');
+  });
+
   it('filters to Wi-Fi interfaces', async () => {
     const out = payload(await harness().handlers['list_interfaces']!({ kind: 'wifi' }));
     expect(out.interfaces.map((i: any) => i.id)).toEqual(['WifiMaster0/AccessPoint0']);

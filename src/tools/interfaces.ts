@@ -1,7 +1,7 @@
 import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { boundedArrayEnvelope } from '../shape/config.js';
-import { projectInterface } from '../shape/project.js';
+import { isVpnInterfaceType, projectInterface } from '../shape/project.js';
 import { fail, guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 import { describeWrite, verifiedWrite } from './write.js';
 import { GuardError, KeeneticError, VerificationError } from '../router/errors.js';
@@ -27,8 +27,6 @@ async function readInterface(ctx: ToolContext, name: string): Promise<Record<str
   return typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : {};
 }
 
-const VPN_TYPES = new Set(['Wireguard', 'OpenVPN', 'L2TP', 'PPTP', 'IPsec', 'Sstp']);
-
 function matchesKind(id: string, record: Record<string, unknown>, kind: InterfaceKind): boolean {
   const type = typeof record['type'] === 'string' ? record['type'] : '';
   switch (kind) {
@@ -37,7 +35,7 @@ function matchesKind(id: string, record: Record<string, unknown>, kind: Interfac
     case 'wifi':
       return id.includes('WifiMaster') || type === 'AccessPoint';
     case 'vpn':
-      return VPN_TYPES.has(type);
+      return isVpnInterfaceType(record['type']);
     case 'bridge':
       return type === 'Bridge';
     case 'lan':

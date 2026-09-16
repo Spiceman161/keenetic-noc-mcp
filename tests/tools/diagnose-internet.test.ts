@@ -463,7 +463,7 @@ describe('diagnose_internet', () => {
       .toBe('warning');
   });
 
-  it('describes an up VPN with explicitly offline peers accurately', async () => {
+  it('keeps peer status unknown and does not infer VPN health from it', async () => {
     const out = payload(await setup({ values: {
       'show/interface': {
         GigabitEthernet1: { type: 'GigabitEthernet', link: 'up', state: 'up', global: true },
@@ -481,18 +481,21 @@ describe('diagnose_internet', () => {
         gateway: { interface: 'Wireguard3' }
       }
     } }).handler({}));
-    const finding = out.findings.find((item: any) => item.id === 'vpn-default-route-down');
-    expect(finding.summary).toMatch(/peers are offline/i);
-    expect(finding.summary).not.toMatch(/interface is explicitly down/i);
+    const check = out.checks.find((item: any) => item.id === 'vpn-default-route');
+    expect(check).toMatchObject({ status: 'unknown' });
+    expect(check.summary).toMatch(/association.*observed/i);
+    expect(out.evidence.vpn.data.items[0]).toMatchObject({ peersTotal: 1, peersKnown: 0,
+      peersOnline: 0, underlayInterfaces: [] });
+    expect(out.findings.map((item: any) => item.id)).not.toContain('vpn-default-route-down');
   });
 
-  it('recognizes a healthy or failed VPN default route without exposing peer material', async () => {
+  it('reports only neutral VPN route association and excludes peer material', async () => {
     const base = {
       type: 'Wireguard', link: 'up', state: 'up', global: true, defaultgw: true,
       wireguard: { 'private-key': 'never-show-this', peer: [{ online: true, via: 'GigabitEthernet1' }] }
     };
     const route = [{ destination: '0.0.0.0/0', interface: 'Wireguard3', rejecting: false }];
-    const healthy = payload(await setup({ values: {
+    const associated = payload(await setup({ values: {
       'show/interface': { GigabitEthernet1: HEALTHY['show/interface'] as object, Wireguard3: base },
       'show/ip/route': route,
       'show/internet/status': {
@@ -501,10 +504,11 @@ describe('diagnose_internet', () => {
         gateway: { interface: 'Wireguard3' }
       }
     } }).handler({}));
-    expect(healthy.findings.map((finding: any) => finding.id)).toContain('vpn-default-route-active');
-    expect(JSON.stringify(healthy)).not.toContain('never-show-this');
+    expect(associated.checks.find((check: any) => check.id === 'vpn-default-route')).toMatchObject({ status: 'unknown' });
+    expect(associated.findings.map((finding: any) => finding.id)).not.toContain('vpn-default-route-active');
+    expect(JSON.stringify(associated)).not.toContain('never-show-this');
 
-    const failed = payload(await setup({ values: {
+    const changedObservations = payload(await setup({ values: {
       'show/interface': { Wireguard3: { ...base, link: 'down', state: 'down' } },
       'show/ip/route': route,
       'show/internet/status': {
@@ -513,7 +517,21 @@ describe('diagnose_internet', () => {
         gateway: { interface: 'Wireguard3' }
       }
     } }).handler({}));
-    expect(failed.findings.map((finding: any) => finding.id)).toContain('vpn-default-route-down');
+    expect(changedObservations.checks.find((check: any) => check.id === 'vpn-default-route')).toMatchObject({ status: 'unknown' });
+    expect(changedObservations.findings.map((finding: any) => finding.id)).not.toContain('vpn-default-route-down');
+  });
+
+  it('does not classify names or excluded types as VPN evidence', async () => {
+    const out = payload(await setup({ values: {
+      'show/interface': {
+        WireguardByName: { type: 'FutureVPN', wireguard: { peer: [{ online: true, via: 'GigabitEthernet1' }] } },
+        OpenConnect0: { type: 'OpenConnect' }, Gre0: { type: 'GRE' }
+      },
+      'show/internet/status': { checked: false },
+      'show/ip/route': [{ destination: '0.0.0.0/0', interface: 'WireguardByName', rejecting: false }]
+    } }).handler({}));
+    expect(out.evidence.vpn.data.items).toEqual([]);
+    expect(out.checks.find((check: any) => check.id === 'vpn-default-route')).toMatchObject({ status: 'pass' });
   });
 
   it('preserves partial evidence and treats absent booleans as unknown', async () => {

@@ -1,15 +1,59 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { McpServer } from '@modelcontextprotocol/server';
 import { projectVpn } from '../../src/tools/vpn.js';
+import { registerVpnTools } from '../../src/tools/vpn.js';
 import { projectDns } from '../../src/tools/dns.js';
 import { filterLogs, logLines } from '../../src/tools/logs.js';
+import type { KeeneticClient } from '../../src/router/client.js';
+import type { ToolContext, ToolResult } from '../../src/tools/registry.js';
+import { stubBackup } from '../helpers/backup.js';
 
 describe('v0.1 projections', () => {
-  it('projects WireGuard peers without private material', () => {
-    const result = projectVpn('Wireguard0', { type: 'Wireguard', 'private-key': 'must-not-leak', wireguard: { 'public-key': 'pub', peer: [{ description: 'vps', 'public-key': 'peer-pub', 'preshared-key': 'must-not-leak', online: true, rxbytes: 12, 'remote-endpoint-address': '192.0.2.8' }] } });
-    expect(result).toMatchObject({ name: 'Wireguard0', publicKey: 'pub', peers: [{ description: 'vps', publicKey: 'peer-pub', online: true, rxBytes: 12, remoteEndpointAddress: '192.0.2.8' }] });
-    expect(JSON.stringify(result)).not.toContain('must-not-leak');
+  it('projects only seven interface-level VPN fields', () => {
+    const result = projectVpn('Wireguard0', {
+      type: 'Wireguard', description: 'safe-description', state: 'up', link: 'up',
+      address: '198.51.100.8', uptime: 12, 'private-key': 'private-sentinel',
+      wireguard: {
+        'public-key': 'interface-public-sentinel', 'listen-port': 51820,
+        peer: [{ description: 'peer-description-sentinel', 'public-key': 'peer-public-sentinel',
+          'preshared-key': 'psk-sentinel', 'remote-endpoint-address': 'endpoint-sentinel',
+          'allowed-ips': ['allowed-ips-sentinel'], 'last-handshake': 'handshake-sentinel',
+          rxbytes: 12, via: 'via-sentinel', arbitrary: 'nested-sentinel' }]
+      }
+    });
+    expect(result).toEqual({ name: 'Wireguard0', type: 'Wireguard', description: 'safe-description',
+      state: 'up', link: 'up', address: '198.51.100.8', uptime: 12 });
+    expect(JSON.stringify(result)).not.toMatch(/sentinel|listen-port|peer|public-key|private-key/i);
   });
-  it('keeps unknown VPN types parseable', () => expect(projectVpn('Tunnel7', { type: 'FutureVPN', state: 'up' })).toMatchObject({ type: 'FutureVPN', state: 'up' }));
+  it('normalizes non-scalar interface values without copying them', () => {
+    expect(projectVpn('Tunnel7', { type: 'FutureVPN', state: { nested: 'sentinel' } }))
+      .toEqual({ name: 'Tunnel7', type: 'FutureVPN', description: '', state: '', link: '', address: null, uptime: null });
+  });
+  it('lists only all six exact types and keeps the fixed VPN-tool contract', async () => {
+    const rows = Object.fromEntries([
+      'Wireguard', 'OpenVPN', 'L2TP', 'PPTP', 'IPsec', 'Sstp'
+    ].map(type => [`${type}0`, { type, description: 'safe', state: 'up', link: 'up', address: 'safe-address', uptime: 1 }])) as Record<string, unknown>;
+    rows['NameOnly'] = { type: 'FutureVPN', wireguard: { peer: [{ 'public-key': 'peer-sentinel' }] } };
+    rows['OpenConnect0'] = { type: 'OpenConnect' };
+    const client = { rci: { get: vi.fn(async () => rows) } } as unknown as KeeneticClient;
+    const ctx: ToolContext = { client, maxResponseBytes: 25_000, readOnly: true, backup: stubBackup() };
+    const server = new McpServer({ name: 'test', version: '0.0.0' });
+    let list: (() => Promise<ToolResult>) | undefined;
+    let get: ((args: { name: string }) => Promise<ToolResult>) | undefined;
+    vi.spyOn(server, 'registerTool').mockImplementation(((name: string, _config: unknown, handler: unknown) => {
+      if (name === 'list_vpn') list = handler as () => Promise<ToolResult>;
+      if (name === 'get_vpn') get = handler as (args: { name: string }) => Promise<ToolResult>;
+      return {} as never;
+    }) as never);
+    registerVpnTools(server, ctx);
+    const output = JSON.parse((await list!()).content.map(part => part.text).join(''));
+    expect(output.vpn.map((item: any) => item.type)).toEqual(['Wireguard', 'OpenVPN', 'L2TP', 'PPTP', 'IPsec', 'Sstp']);
+    expect(Object.keys(output.vpn[0]).sort()).toEqual(['address', 'description', 'link', 'name', 'state', 'type', 'uptime']);
+    expect(JSON.stringify(output)).not.toContain('peer-sentinel');
+    const single = JSON.parse((await get!({ name: 'Wireguard0' })).content.map(part => part.text).join(''));
+    expect(single).toEqual(output.vpn[0]);
+    expect((await get!({ name: 'NameOnly' })).isError).toBe(true);
+  });
   it('projects DNS resolvers and host count', () => expect(projectDns({ 'proxy-status': { enabled: true, server: [{ address: '192.0.2.53', protocol: 'DoT', sni: 'resolver.example' }], host: [{}, {}] } })).toMatchObject({ enabled: true, staticHostsCount: 2, upstreamResolvers: [{ protocol: 'DoT' }] }));
   it('parses, filters case-insensitively and bounds log tails', () => {
     const lines = logLines('00:01 ndm start\n00:02 Wireguard UP\n00:03 wireguard peer');

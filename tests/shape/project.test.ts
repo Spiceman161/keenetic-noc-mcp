@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { projectDevice, projectInterface } from '../../src/shape/project.js';
+import { isVpnInterfaceType, projectDevice, projectInterface } from '../../src/shape/project.js';
 
 const WIRELESS_HOST = {
   mac: '02:00:00:00:00:01',
@@ -99,5 +99,19 @@ describe('projectInterface', () => {
       address: '',
       defaultGateway: false
     });
+  });
+});
+
+describe('isVpnInterfaceType', () => {
+  it.each(['Wireguard', 'OpenVPN', 'L2TP', 'PPTP', 'IPsec', 'Sstp'])
+  ('accepts the established exact VPN type %s', type => {
+    expect(isVpnInterfaceType(type)).toBe(true);
+  });
+
+  it.each([
+    'wireguard', 'WireGuard', ' Wireguard ', 'FutureVPN', 'OpenConnect', 'GRE', 'IPIP',
+    'EoIP', '6in4', '6to4', 'ZeroTier', 'XFRM', '', '   ', undefined, null, 1, true, {}, []
+  ])('fails closed for unknown or malformed type %#', type => {
+    expect(isVpnInterfaceType(type)).toBe(false);
   });
 });

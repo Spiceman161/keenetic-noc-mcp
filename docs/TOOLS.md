@@ -171,12 +171,25 @@ Remote profiles do not request the LAN-only `/ci/startup-config.txt` surface;
 their saved-state comparison remains unknown in B1.
 
 Findings come only from explicit router state, such as an unreachable gateway,
-missing usable `0.0.0.0/0` route, DNS reachability failure, required physical
-uplink down, or failed VPN carrying the default route. An active default-route
-VPN and unsaved configuration are informational context. Logs never create a
-finding and remain marked `untrusted`; their timestamps and proximity to an
+missing usable `0.0.0.0/0` route, DNS reachability failure, or required physical
+uplink down. A `vpn-default-route` result records only an observed IPv4 route
+association with an exactly classified VPN interface; it remains `unknown` for
+VPN health, peer reachability, encryption, and traffic flow. Logs never create
+a finding and remain marked `untrusted`; their timestamps and proximity to an
 incident do not establish causality. B1 does not diagnose IPv6 routes and does
 not apply CPU, memory, or connection-table thresholds.
+
+## VPN interface discovery
+
+VPN-only views use exactly these existing interface type literals: `Wireguard`,
+`OpenVPN`, `L2TP`, `PPTP`, `IPsec`, and `Sstp`. Matching is case-sensitive and
+type-only. GRE, IPIP, EoIP, 6in4, 6to4, ZeroTier, XFRM, OpenConnect, and names
+or descriptions that merely resemble a VPN are intentionally excluded pending
+separate evidence. `list_vpn` and `get_vpn` return only `name`, `type`,
+`description`, `state`, `link`, `address`, and `uptime`. These are interface
+observations, not tunnel-health, peer, role, encryption, or traffic-flow
+claims. The general `list_interfaces(detail: "full")` and `get_interface`
+contracts remain separate raw interface views.
 
 ## Log filters
 

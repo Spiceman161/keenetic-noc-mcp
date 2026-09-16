@@ -3,6 +3,7 @@ import type { Capabilities } from '../router/capabilities.js';
 import type { ConfigState } from '../router/config-state.js';
 import type { LogEntry } from '../tools/logs.js';
 import { redact, redactText } from '../security/redact.js';
+import { isVpnInterfaceType } from './project.js';
 
 export type DiagnosticStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
 export type CheckStatus = 'pass' | 'warning' | 'fail' | 'unknown';
@@ -143,7 +144,6 @@ export interface InternetDiagnosticReport {
   truncated: boolean;
 }
 
-const VPN = /wireguard|ipsec|openvpn|l2tp|pptp|sstp|openconnect|vpn/i;
 const BAD_STATE = new Set(['down', 'error', 'failed', 'disabled', 'offline', 'unavailable']);
 const LOG_TERMS = [
   'internet', 'gateway', 'ndhcpc', 'dns-proxy', 'https-dns-proxy',
@@ -235,10 +235,10 @@ export function projectInternet(raw: unknown): InternetEvidence {
   };
 }
 
-function peerRecords(item: Record<string, unknown>): Record<string, unknown>[] {
+function peerCount(item: Record<string, unknown>): number {
   const protocol = Object.keys(record(item['wireguard'])).length > 0 ? record(item['wireguard']) : item;
   const raw = protocol['peer'] ?? protocol['peers'];
-  return Array.isArray(raw) ? raw.map(record) : Object.values(record(raw)).map(record);
+  return Array.isArray(raw) ? raw.length : Object.keys(record(raw)).length;
 }
 
 export function projectInterfaces(raw: unknown): {
@@ -263,27 +263,13 @@ export function projectInterfaces(raw: unknown): {
       internetRole: typeof value['role'] === 'string' ? value['role'] === 'inet' : null
     };
     interfaces.push(base);
-    if (!VPN.test(`${id} ${base.type}`)) continue;
-    const peers = peerRecords(value);
-    let peersKnown = 0;
-    let peersOnline = 0;
-    const underlayInterfaces = new Set<string>();
-    for (const peer of peers) {
-      const online = nullableBoolean(peer['online']) ??
-        (peer['link'] === 'up' ? true : peer['link'] === 'down' ? false : null);
-      if (online !== null) {
-        peersKnown += 1;
-        if (online) peersOnline += 1;
-      }
-      const via = safeString(peer['via']);
-      if (via) underlayInterfaces.add(via);
-    }
+    if (!isVpnInterfaceType(value['type'])) continue;
     vpn.push({
       ...base,
-      peersTotal: peers.length,
-      peersKnown,
-      peersOnline,
-      underlayInterfaces: [...underlayInterfaces].sort()
+      peersTotal: peerCount(value),
+      peersKnown: 0,
+      peersOnline: 0,
+      underlayInterfaces: []
     });
   }
   interfaces.sort((a, b) => a.id.localeCompare(b.id));
@@ -444,7 +430,7 @@ export function relatedInterfaceIds(
   internet: InternetEvidence | null,
   routes: ListEvidence<RouteEvidence> | null,
   interfaces: ListEvidence<InterfaceEvidence> | null,
-  vpns: ListEvidence<VpnEvidence> | null
+  _vpns: ListEvidence<VpnEvidence> | null
 ): string[] {
   const active = selectActiveRouteList(
     routes?.items.filter(route => route.rejecting !== true) ?? [],
@@ -455,11 +441,7 @@ export function relatedInterfaceIds(
   const selected = new Set(active.items.map(route => route.interface).filter(Boolean));
   for (const iface of interfaces?.items ?? []) {
     if (iface.global === true || iface.defaultGateway === true || iface.internetRole === true ||
-      VPN.test(`${iface.id} ${iface.type}`)) selected.add(iface.id);
-  }
-  for (const vpn of vpns?.items ?? []) {
-    if (!selected.has(vpn.id)) continue;
-    for (const underlay of vpn.underlayInterfaces) selected.add(underlay);
+      isVpnInterfaceType(iface.type)) selected.add(iface.id);
   }
   return [...selected].sort();
 }
@@ -536,30 +518,17 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
 
   const defaultInterfaces = new Set(active.items.map(route => route.interface).filter(Boolean));
   const defaultVpns = vpns.filter(vpn => defaultInterfaces.has(vpn.id));
-  const underlays = new Set(defaultVpns.flatMap(vpn => vpn.underlayInterfaces));
-  const physical = interfaces.filter(iface => !VPN.test(`${iface.id} ${iface.type}`));
+  const physical = interfaces.filter(iface => !isVpnInterfaceType(iface.type));
   const globalPhysical = physical.filter(iface => iface.global === true || iface.defaultGateway === true ||
     iface.internetRole === true);
   const relevantDown = physical.filter(iface => down(iface) && (
-    defaultInterfaces.has(iface.id) || underlays.has(iface.id) ||
+    defaultInterfaces.has(iface.id) ||
     (globalPhysical.length === 1 && globalPhysical[0]?.id === iface.id && internetCurrent &&
       !internetConflict && internet?.gatewayAccessible === false)
   ));
   if (relevantDown.length > 0) {
     findings.push(finding('physical-uplink-down', 'critical',
       'A physical interface required by the active internet path is explicitly down.', ['wan-link', 'default-route']));
-  }
-
-  for (const vpn of defaultVpns) {
-    const peersExplicitlyOffline = vpn.peersTotal > 0 && vpn.peersKnown === vpn.peersTotal && vpn.peersOnline === 0;
-    if (down(vpn) || peersExplicitlyOffline) {
-      findings.push(finding('vpn-default-route-down', 'critical',
-        'The active IPv4 default-route VPN path is unavailable: its interface is down or all explicitly reported peers are offline.',
-        ['vpn-default-route', 'default-route']));
-    } else if (up(vpn) || vpn.peersOnline > 0) {
-      findings.push(finding('vpn-default-route-active', 'info',
-        'The active IPv4 default route uses a VPN interface.', ['vpn-default-route', 'default-route']));
-    }
   }
 
   if (evidence.configuration.data?.unsavedChanges === true) {
@@ -587,8 +556,7 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
   const defaultRouteUnknown = active.items.some(route => !knownInterfaces.has(route.interface));
   const vpnStatus: CheckStatus = evidence.vpn.status === 'unavailable' || evidence.routes.status === 'unavailable' ||
     routes.length === 0 || active.ambiguous || defaultRouteUnknown ? 'unknown'
-    : findings.some(item => item.id === 'vpn-default-route-down') ? 'fail'
-      : defaultVpns.some(vpn => !up(vpn) && vpn.peersOnline === 0) ? 'unknown' : 'pass';
+      : defaultVpns.length > 0 ? 'unknown' : 'pass';
 
   const checks: DiagnosticCheck[] = [
     check('system', evidence.system.status === 'available' && evidence.system.data?.versionAvailable === true
@@ -608,9 +576,11 @@ export function buildInternetDiagnostic(evidence: DiagnosticEvidence): InternetD
     check('dns', dnsStatus, dnsStatus === 'pass' ? 'DNS reachability evidence passes.' :
       dnsStatus === 'fail' ? 'The router reports DNS as unreachable.' :
         dnsStatus === 'warning' ? 'The DNS proxy reports an anomaly.' : 'DNS health is unknown.'),
-    check('vpn-default-route', vpnStatus, vpnStatus === 'fail' ? 'The default-route VPN path is unavailable.' :
-      vpnStatus === 'unknown' ? 'VPN default-route influence is unknown.' :
-        defaultVpns.length > 0 ? 'An available VPN carries the default route.' : 'No VPN carries the default route.'),
+    check('vpn-default-route', vpnStatus, vpnStatus === 'unknown'
+      ? defaultVpns.length > 0
+        ? 'An IPv4 default-route association with a VPN interface was observed; health, reachability, and traffic flow were not inferred.'
+        : 'VPN default-route association is unknown.'
+      : 'No IPv4 default-route association with an exactly classified VPN interface was observed.'),
     check('recent-logs', evidence.logs.status === 'available' ? 'pass' : 'unknown',
       evidence.logs.status === 'available' ? 'Bounded related logs were collected as untrusted evidence.' : 'Related logs are unavailable.'),
     check('configuration-state', evidence.configuration.status === 'unavailable' ||

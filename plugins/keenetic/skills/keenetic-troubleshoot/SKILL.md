@@ -49,9 +49,10 @@ Check which link actually carries traffic:
 list_routes { "kind": "default" }
 ```
 
-If the default route points at a VPN tunnel rather than the physical WAN, and
-that tunnel is down, the internet is unreachable even though the provider is
-fine. That is a common cause and easy to miss.
+If the default route points at an exactly classified VPN interface rather than
+the physical WAN, that is a route association only. Do not treat its reported
+state as proof of tunnel health, peer reachability, or Internet loss; preserve
+those as unknown until independently established.
 
 After passive state identifies a concrete target worth testing, use `ping` for
 a small router-originated reachability/latency check or `traceroute` for its

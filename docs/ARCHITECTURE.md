@@ -43,6 +43,13 @@ saved implicitly:
 guard -> startup-config backup once -> apply -> read back -> verify -> audit
 ```
 
+VPN discovery shares one local scalar predicate for the exact existing
+`Wireguard`, `OpenVPN`, `L2TP`, `PPTP`, `IPsec`, and `Sstp` interface types.
+VPN-specific tools project only top-level interface observations and neither
+copy peer data nor infer peer health, endpoint reachability, encryption,
+client/server role, or Internet traffic flow. This boundary does not alter the
+separate raw interface or configuration visibility contracts.
+
 `diagnose_internet` is the first composite read tool. It starts with a fresh
 bounded version read; authentication or transport failure stops the call, while
 an RCI-level version failure remains partial. It then gathers bounded core
