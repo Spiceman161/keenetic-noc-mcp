@@ -50,6 +50,24 @@ copy peer data nor infer peer health, endpoint reachability, encryption,
 client/server role, or Internet traffic flow. This boundary does not alter the
 separate raw interface or configuration visibility contracts.
 
+`get_wireguard_status` is a fixed, WireGuard-only projection in the existing
+VPN tool seam. It makes exactly one 256 KB `show/interface` read and accepts
+only non-array record roots, interface rows, and peer rows; arrays are allowed
+only at the established peer-collection location. The nested peer collection is
+primary and existing compatibility aliases are fallback-only. It reduces the
+fully classified source deterministically: unusable source evidence is
+`unavailable`, any structural defect in a usable source is `partial`, and only
+defect-free usable evidence is `complete`.
+
+The projection is a strict allowlist. It returns only interface state/link,
+nullable default-gateway observation, response-local peer ordinals,
+handshake-field presence, and safe current per-peer counters. It never returns
+peer keys, identifiers, endpoints, allowed ranges, raw peer objects, or stable
+peer fingerprints. Handshake representation and counter lifetime are unknown,
+so this tool provides no age, freshness, stale, health, reachability, rate, or
+traffic-flow conclusion. Detail is bounded after aggregates, status, and reason
+so the fixed envelope survives the response ceiling.
+
 `diagnose_internet` is the first composite read tool. It starts with a fresh
 bounded version read; authentication or transport failure stops the call, while
 an RCI-level version failure remains partial. It then gathers bounded core

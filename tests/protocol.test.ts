@@ -35,6 +35,7 @@ const READ_TOOLS = [
   'get_system_info',
   'get_wifi_status',
   'get_vpn',
+  'get_wireguard_status',
   'list_devices',
   'list_interfaces',
   'list_policies',
@@ -260,6 +261,20 @@ describe('assembled server over MCP', () => {
     const result = await client.callTool({ name: 'diagnose_internet', arguments: {} });
     const content = result.content as Array<{ type: string; text: string }>;
     expect(JSON.parse(content.map(part => part.text).join(''))).toMatchObject({ schemaVersion: 1 });
+  });
+
+  it('advertises the zero-argument WireGuard runtime evidence contract as read-only', async () => {
+    const client = await connectedClient(true);
+    const { tools } = await client.listTools();
+    const tool = tools.find(item => item.name === 'get_wireguard_status');
+    expect(tool?.inputSchema).toMatchObject({ type: 'object', properties: {} });
+    expect(tool?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+
+    const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content.map(part => part.text).join(''))).toMatchObject({
+      schemaVersion: 1, evidenceStatus: 'unavailable', evidenceReason: 'unexpected-response'
+    });
   });
 
   it('advertises the DNS diagnostic contracts as read-only', async () => {

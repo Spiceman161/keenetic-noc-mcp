@@ -194,6 +194,28 @@ observations, not tunnel-health, peer, role, encryption, or traffic-flow
 claims. The general `list_interfaces(detail: "full")` and `get_interface`
 contracts remain separate raw interface views.
 
+`get_wireguard_status` is a separate, zero-argument, read-only view of current
+WireGuard runtime evidence from one bounded `show/interface` read. It exposes
+only exact `Wireguard` interface state/link observations, nullable default-route
+observation, response-local peer ordinals, peer counts, handshake-field
+presence (`present`, `absent`, `unknown`, or `invalid`), and current per-peer
+RX/TX byte counters when they are finite nonnegative safe integers. Zero is a
+valid counter. Counter lifetime is unknown and the tool never calculates a
+rate, delta, reset, or interface total.
+
+The evidence status is `complete` for a usable source without structural
+defects, `partial` when valid evidence is retained alongside malformed or
+unavailable peer evidence, and `unavailable` only when the source cannot be
+used. Missing or malformed peer collections yield null peer counts, while a
+valid empty collection yields zero. Authentication and transport errors remain
+typed call errors rather than tunnel-status claims. Peer indexes are assigned
+only within one response; they are neither stable identifiers nor peer names.
+
+Handshake time format is unproven. Presence never implies age, freshness,
+staleness, health, Internet access, routing, DNS, endpoint reachability,
+encryption, or bidirectional traffic. The tool never exposes keys, peer IDs,
+endpoints, allowed IPs, raw peer objects, hashes, or fingerprints.
+
 ## Log filters
 
 `get_logs` accepts `filter`, `since`, `until`, `interface`, and `device` in
