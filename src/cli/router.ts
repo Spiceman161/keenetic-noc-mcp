@@ -10,7 +10,7 @@ import { stateDir } from '../router/backup.js';
 import { collectRouterSnapshot } from '../router/snapshot-collector.js';
 import { createSnapshotStore, type SnapshotWriteResult } from '../router/snapshot-store.js';
 import type { RouterSnapshotV1 } from '../shape/router-snapshot.js';
-import { currentMcpServerLaunch, registrationInvocation, registrationPreview, runRouterWizard, type McpServerLaunch, type RegistrationInvocation } from './router-wizard.js';
+import { codexVerificationInvocation, currentMcpServerLaunch, registrationGuidance, registrationInvocation, registrationPreview, runRouterWizard, type McpServerLaunch, type RegistrationInvocation, type RegistrationUsage } from './router-wizard.js';
 import { createPromptAdapter } from './ui/prompts.js';
 
 export interface Terminal { ask(question: string): Promise<string>; close(): void; out(line: string): void; }
@@ -31,6 +31,7 @@ export interface RouterRegistrationDependencies {
   getProfile(dir: string, id: string): ReturnType<typeof getProfile>;
   serverLaunch(): McpServerLaunch;
   runRegistration(invocation: RegistrationInvocation): Promise<number>;
+  runVerification(invocation: RegistrationInvocation): Promise<number>;
   saveRegistration(dir: string, id: string, client: 'codex' | 'claude', instanceName: string): Promise<void>;
 }
 
@@ -80,7 +81,12 @@ const registrationDependencies: RouterRegistrationDependencies = {
   getProfile,
   serverLaunch: currentMcpServerLaunch,
   runRegistration: invocation => new Promise(resolve => {
-    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit' });
+    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit', ...(invocation.env ? { env: invocation.env } : {}) });
+    child.on('close', code => resolve(code ?? 1));
+    child.on('error', () => resolve(1));
+  }),
+  runVerification: invocation => new Promise(resolve => {
+    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit', ...(invocation.env ? { env: invocation.env } : {}) });
     child.on('close', code => resolve(code ?? 1));
     child.on('error', () => resolve(1));
   }),
@@ -94,12 +100,13 @@ export async function runRouterRegistration(
   id: string,
   client: 'codex' | 'claude',
   ui: Terminal,
-  overrides: Partial<RouterRegistrationDependencies> = {}
+  overrides: Partial<RouterRegistrationDependencies> = {},
+  codexHome?: string
 ): Promise<number> {
   const deps = { ...registrationDependencies, ...overrides };
   if (!await deps.getProfile(dir, id)) throw new Error(`No profile named "${id}"`);
   let invocation: RegistrationInvocation;
-  try { invocation = registrationInvocation(client, id, deps.serverLaunch()); }
+  try { invocation = registrationInvocation(client, id, deps.serverLaunch(), codexHome); }
   catch {
     ui.out('✗ Registration launch path could not be resolved; the profile was not changed. Run this command from a durable installation.');
     return 1;
@@ -112,14 +119,33 @@ export async function runRouterRegistration(
     ui.out('✗ Registration failed; the profile was not changed.');
     return 1;
   }
+  if (client === 'codex') {
+    try { code = await deps.runVerification(codexVerificationInvocation(id, codexHome)); } catch { code = 1; }
+    if (code !== 0) {
+      ui.out('✗ Registration could not be verified; do not treat it as complete. The profile was not changed.');
+      return 1;
+    }
+  }
   const instanceName = `keenetic_${id}`;
+  let metadataSaved = true;
   try { await deps.saveRegistration(dir, id, client, instanceName); }
   catch {
     ui.out(`! Registered ${instanceName}, but its local profile metadata could not be updated.`);
-    return 1;
+    metadataSaved = false;
   }
-  ui.out('✓ Registered.');
-  return 0;
+  if (client === 'codex') {
+    const usage = await selectRegistrationUsage(ui);
+    ui.out(registrationGuidance(usage));
+  } else if (metadataSaved) ui.out('✓ Registered.');
+  return metadataSaved ? 0 : 1;
+}
+
+async function selectRegistrationUsage(ui: Terminal): Promise<RegistrationUsage> {
+  while (true) {
+    const usage = (await ui.ask('How will this MCP be used? (ductor/codex/openclaw/other): ')).toLowerCase();
+    if (usage === 'ductor' || usage === 'codex' || usage === 'openclaw' || usage === 'other') return usage;
+    ui.out('Choose ductor, codex, openclaw, or other.');
+  }
 }
 
 async function add(dir: string): Promise<number> {
@@ -215,13 +241,37 @@ async function test(dir: string, id: string): Promise<number> {
   return result.overall === 'healthy' ? 0 : 1;
 }
 
-async function register(dir: string, id: string, clientArg?: string): Promise<number> {
+interface RegistrationOptions { client?: string; codexHome?: string }
+
+export function parseRegistrationOptions(argv: readonly string[]): RegistrationOptions {
+  const options: RegistrationOptions = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index];
+    if (option !== '--client' && option !== '--codex-home') throw new Error(`Unknown router register option "${option}"`);
+    const value = argv[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`${option} requires a value`);
+    if (option === '--client') {
+      if (options.client !== undefined) throw new Error('--client may be specified only once');
+      options.client = value;
+    } else {
+      if (options.codexHome !== undefined) throw new Error('--codex-home may be specified only once');
+      if (!value.trim()) throw new Error('--codex-home requires a non-empty path');
+      options.codexHome = value;
+    }
+    index += 1;
+  }
+  return options;
+}
+
+async function register(dir: string, id: string, argv: readonly string[]): Promise<number> {
   requireTty();
   const ui = terminal();
   try {
-    const client = (clientArg ?? await ui.ask('Client (codex/claude): ')).toLowerCase();
+    const options = parseRegistrationOptions(argv);
+    const client = (options.client ?? await ui.ask('Client (codex/claude): ')).toLowerCase();
     if (client !== 'codex' && client !== 'claude') throw new Error('Client must be codex or claude');
-    return await runRouterRegistration(dir, id, client, ui);
+    if (options.codexHome !== undefined && client !== 'codex') throw new Error('--codex-home is supported only with --client codex');
+    return await runRouterRegistration(dir, id, client, ui, {}, options.codexHome);
   } finally { ui.close(); }
 }
 
@@ -229,4 +279,4 @@ async function rotate(dir: string, id: string): Promise<number> { requireTty(); 
 
 export function isWizardAction(action: string | undefined): boolean { return action === 'add' || action === 'init'; }
 
-export async function runRouterFromTerminal(argv: readonly string[]): Promise<number> { await migrateLegacyConfigDir(process.platform, process.env); const dir = configDir(process.platform, process.env); const [action, id, ...rest] = argv; if (isWizardAction(action)) return add(dir); if (action === 'list') return list(dir); if (!id) throw new Error('A router profile ID is required'); if (action === 'show') return show(dir, id); if (action === 'test') return test(dir, id); if (action === 'snapshot') return runRouterSnapshot(dir, id); if (action === 'register') return register(dir, id, rest[0] === '--client' ? rest[1] : undefined); if (action === 'rotate-password') return rotate(dir, id); if (action === 'set-default') { await setDefaultProfile(dir, id); console.log(`✓ Default profile is now ${id}.`); return 0; } if (action === 'remove') { requireTty(); const ui = terminal(); try { return await runRouterRemoval(dir, id, ui); } finally { ui.close(); } } throw new Error(`Unknown router command "${action ?? ''}"`); }
+export async function runRouterFromTerminal(argv: readonly string[]): Promise<number> { await migrateLegacyConfigDir(process.platform, process.env); const dir = configDir(process.platform, process.env); const [action, id, ...rest] = argv; if (isWizardAction(action)) return add(dir); if (action === 'list') return list(dir); if (!id) throw new Error('A router profile ID is required'); if (action === 'show') return show(dir, id); if (action === 'test') return test(dir, id); if (action === 'snapshot') return runRouterSnapshot(dir, id); if (action === 'register') return register(dir, id, rest); if (action === 'rotate-password') return rotate(dir, id); if (action === 'set-default') { await setDefaultProfile(dir, id); console.log(`✓ Default profile is now ${id}.`); return 0; } if (action === 'remove') { requireTty(); const ui = terminal(); try { return await runRouterRemoval(dir, id, ui); } finally { ui.close(); } } throw new Error(`Unknown router command "${action ?? ''}"`); }

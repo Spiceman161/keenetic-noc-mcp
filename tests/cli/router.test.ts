@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isWizardAction, runConnectionChecks, runRouterRegistration, runRouterRemoval, runRouterSnapshot, type RouterRegistrationDependencies, type Terminal } from '../../src/cli/router.js';
+import { isWizardAction, parseRegistrationOptions, runConnectionChecks, runRouterRegistration, runRouterRemoval, runRouterSnapshot, type RouterRegistrationDependencies, type Terminal } from '../../src/cli/router.js';
+import { codexVerificationInvocation, registrationInvocation } from '../../src/cli/router-wizard.js';
 import { AuthError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import type { RouterProfile } from '../../src/profiles/registry.js';
@@ -130,15 +131,16 @@ describe('router test checks', () => {
   });
 });
 
-function registrationHarness(answer = 'y', options: {
+function registrationHarness(answers = ['y', 'other'], options: {
   runCode?: number;
+  verificationCode?: number;
   runError?: Error;
   saveError?: Error;
   launchError?: Error;
 } = {}) {
   const outputs: string[] = [];
   const ui: Terminal = {
-    ask: vi.fn(async () => answer),
+    ask: vi.fn(async () => answers.shift() ?? ''),
     close: vi.fn(),
     out: line => { outputs.push(line); }
   };
@@ -152,6 +154,7 @@ function registrationHarness(answer = 'y', options: {
       if (options.runError) throw options.runError;
       return options.runCode ?? 0;
     }),
+    runVerification: vi.fn(async () => options.verificationCode ?? 0),
     saveRegistration: vi.fn(async () => {
       if (options.saveError) throw options.saveError;
     })
@@ -163,18 +166,16 @@ describe('standalone router registration', () => {
   it('passes an absolute launch argv with spaces as one argument and saves metadata', async () => {
     const { ui, deps, outputs } = registrationHarness();
     await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(0);
-    expect(deps.runRegistration).toHaveBeenCalledWith({
-      command: 'codex',
-      args: ['mcp', 'add', 'keenetic_test', '--', '/usr/bin/node',
-        '/opt/keenetic noc/dist/index.js', '--router', 'test', '--read-only']
-    });
+    expect(deps.runRegistration).toHaveBeenCalledWith(registrationInvocation('codex', 'test',
+      { command: '/usr/bin/node', args: ['/opt/keenetic noc/dist/index.js'] }));
+    expect(deps.runVerification).toHaveBeenCalledWith(codexVerificationInvocation('test'));
     expect(deps.saveRegistration).toHaveBeenCalledWith('/profiles', 'test', 'codex',
       'keenetic_test');
     expect(outputs.join('\n')).not.toContain('keenetic-noc-mcp --router');
   });
 
   it('cancels without invoking the client or changing metadata', async () => {
-    const { ui, deps } = registrationHarness('n');
+    const { ui, deps } = registrationHarness(['n']);
     await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(1);
     expect(deps.runRegistration).not.toHaveBeenCalled();
     expect(deps.saveRegistration).not.toHaveBeenCalled();
@@ -185,17 +186,60 @@ describe('standalone router registration', () => {
     ['spawn error', { runError: new Error('missing client') }],
     ['client exit', { runCode: 1 }]
   ] as const)('keeps the profile metadata unchanged after %s failure', async (_name, options) => {
-    const { ui, deps } = registrationHarness('y', options);
+    const { ui, deps } = registrationHarness(['y'], options);
     await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(1);
     expect(deps.saveRegistration).not.toHaveBeenCalled();
   });
 
   it('reports metadata failure after the external registration succeeds', async () => {
-    const { ui, deps, outputs } = registrationHarness('y',
+    const { ui, deps, outputs } = registrationHarness(['y'],
       { saveError: new Error('registry unavailable') });
     await expect(runRouterRegistration('/profiles', 'test', 'claude', ui, deps)).resolves.toBe(1);
     expect(deps.runRegistration).toHaveBeenCalledOnce();
     expect(outputs.at(-1)).toContain('metadata could not be updated');
+  });
+
+  it('uses an explicit CODEX_HOME for both add and verification without changing the launch argv', async () => {
+    const { ui, deps } = registrationHarness(['y', 'codex']);
+    await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps, '/target/codex')).resolves.toBe(0);
+    const add = vi.mocked(deps.runRegistration!).mock.calls[0]?.[0];
+    const verify = vi.mocked(deps.runVerification!).mock.calls[0]?.[0];
+    expect(add).toMatchObject({ command: 'codex', args: ['mcp', 'add', 'keenetic_test', '--', '/usr/bin/node',
+      '/opt/keenetic noc/dist/index.js', '--router', 'test', '--read-only'], env: expect.objectContaining({ CODEX_HOME: '/target/codex' }) });
+    expect(verify).toMatchObject({ command: 'codex', args: ['mcp', 'get', 'keenetic_test'],
+      env: expect.objectContaining({ CODEX_HOME: '/target/codex' }) });
+    expect(add?.args.join(' ')).not.toMatch(/password|secret/i);
+    expect(add?.args).not.toContain('--env');
+  });
+
+  it('does not save metadata or print completion guidance when Codex verification fails', async () => {
+    const { ui, deps, outputs } = registrationHarness(['y'], { verificationCode: 1 });
+    await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(1);
+    expect(deps.saveRegistration).not.toHaveBeenCalled();
+    expect(outputs.join('\n')).toContain('could not be verified');
+    expect(outputs.join('\n')).not.toContain('Registration is complete.');
+  });
+
+  it.each([
+    ['ductor', '/reset'],
+    ['codex', 'Start a new Codex conversation/session']
+  ])('prints the selected %s refresh guidance after verified registration', async (usage, expected) => {
+    const { ui, deps, outputs } = registrationHarness(['y', usage]);
+    await expect(runRouterRegistration('/profiles', 'test', 'codex', ui, deps)).resolves.toBe(0);
+    expect(outputs.join('\n')).toContain(expected);
+  });
+});
+
+describe('router register option parsing', () => {
+  it('accepts the explicit Codex target while rejecting arbitrary options', () => {
+    expect(parseRegistrationOptions(['--client', 'codex', '--codex-home', '/target/codex']))
+      .toEqual({ client: 'codex', codexHome: '/target/codex' });
+    expect(() => parseRegistrationOptions(['--environment', 'KEY=VALUE'])).toThrow('Unknown router register option');
+  });
+
+  it('keeps omission distinct from an explicit Codex target', () => {
+    expect(parseRegistrationOptions(['--client', 'codex'])).toEqual({ client: 'codex' });
+    expect(() => parseRegistrationOptions(['--codex-home', ''])).toThrow('--codex-home requires a value');
   });
 });
 

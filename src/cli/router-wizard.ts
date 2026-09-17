@@ -14,7 +14,8 @@ import { accountInstructions } from './ui/hints.js';
 import type { PromptAdapter, PromptResult } from './ui/prompts.js';
 import { deriveProfileId, normalizeWizardEndpoint } from './router-wizard-helpers.js';
 
-export type RegistrationChoice = 'neither' | 'codex' | 'claude' | 'both';
+export type RegistrationChoice = 'neither' | 'codex';
+export type RegistrationUsage = 'ductor' | 'codex' | 'openclaw' | 'other';
 
 export interface RouterWizardDraft {
   name: string;
@@ -25,10 +26,11 @@ export interface RouterWizardDraft {
   password: string;
   backend?: ProfileSecretBackend;
   registration: RegistrationChoice;
+  codexHome?: string;
   preflight?: PreflightReport;
 }
 
-export interface RegistrationInvocation { command: string; args: string[] }
+export interface RegistrationInvocation { command: string; args: string[]; env?: NodeJS.ProcessEnv }
 export interface McpServerLaunch { command: string; args: string[] }
 
 // Exact SemVer only: this value becomes part of an executable npm package
@@ -60,17 +62,34 @@ export function currentMcpServerLaunch(
 export function registrationInvocation(
   client: 'codex' | 'claude',
   id: string,
-  server = currentMcpServerLaunch()
+  server = currentMcpServerLaunch(),
+  codexHome?: string
 ): RegistrationInvocation {
   const instance = `keenetic_${id}`;
   return { command: client, args: ['mcp', 'add', instance, '--', server.command,
-    ...server.args, '--router', id, '--read-only'] };
+    ...server.args, '--router', id, '--read-only'],
+  ...(client === 'codex' && codexHome !== undefined
+    ? { env: { ...process.env, CODEX_HOME: codexHome } }
+    : {}) };
+}
+
+/** Uses Codex's public read-back command in the same selected CODEX_HOME. */
+export function codexVerificationInvocation(id: string, codexHome?: string): RegistrationInvocation {
+  return { command: 'codex', args: ['mcp', 'get', `keenetic_${id}`],
+    ...(codexHome !== undefined ? { env: { ...process.env, CODEX_HOME: codexHome } } : {}) };
 }
 
 export function registrationPreview(invocation: RegistrationInvocation): string {
   // JSON escaping keeps control characters and shell metacharacters inert on
   // every platform. This is deliberately display-only, not a shell command.
   return JSON.stringify([invocation.command, ...invocation.args]);
+}
+
+export function registrationGuidance(usage: RegistrationUsage): string {
+  if (usage === 'ductor') return 'Registration is complete.\n\nIn the target Ductor agent chat run:\n\n  /reset\n\nThen continue normally so the new Codex session loads the updated MCP tool set.';
+  if (usage === 'codex') return 'Registration is complete.\n\nStart a new Codex conversation/session so the updated MCP tool set is loaded.';
+  if (usage === 'openclaw') return 'Registration is complete.\n\nStart or reset the current OpenClaw agent session so it reloads MCP configuration.';
+  return 'Registration is complete.\n\nRestart or start a new agent session so it reloads MCP configuration.';
 }
 
 export interface RouterWizardDependencies {
@@ -83,6 +102,7 @@ export interface RouterWizardDependencies {
   addProfile(dir: string, profile: RouterProfile): Promise<void>;
   serverLaunch(): McpServerLaunch;
   runRegistration(invocation: RegistrationInvocation): Promise<number>;
+  runVerification(invocation: RegistrationInvocation): Promise<number>;
   saveRegistration(dir: string, id: string, client: 'codex' | 'claude', instanceName: string): Promise<void>;
   withPersistenceLock<T>(dir: string, task: (recoveredStaleLock: boolean) => Promise<T>): Promise<T>;
 }
@@ -156,7 +176,12 @@ const defaultDependencies: RouterWizardDependencies = {
   addProfile,
   serverLaunch: currentMcpServerLaunch,
   runRegistration: invocation => new Promise(resolve => {
-    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit' });
+    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit', ...(invocation.env ? { env: invocation.env } : {}) });
+    child.on('close', code => resolve(code ?? 1));
+    child.on('error', () => resolve(1));
+  }),
+  runVerification: invocation => new Promise(resolve => {
+    const child = spawn(invocation.command, invocation.args, { stdio: 'inherit', ...(invocation.env ? { env: invocation.env } : {}) });
     child.on('close', code => resolve(code ?? 1));
     child.on('error', () => resolve(1));
   }),
@@ -189,7 +214,7 @@ Login:            ${draft.login}
 Secret backend:   ${draft.backend === 'keychain' ? 'system keychain' : 'owner-only file'}
 Default profile:  ${isDefault ? 'yes' : 'no'}
 MCP mode:         read-only
-Registration:     ${draft.registration}`;
+Registration:     optional after profile save`;
 }
 
 function invalidatesPreflight<T>(previous: T, next: T, draft: RouterWizardDraft): void {
@@ -214,7 +239,7 @@ export async function runRouterWizard(
   let instructionsKey = '';
   let step = 0;
 
-  while (step < 9) {
+  while (step < 8) {
     if (step === 0) {
       const result = await ui.input('Router name', draft.name || 'Home router');
       if (result.kind !== 'value') return 1;
@@ -324,24 +349,18 @@ export async function runRouterWizard(
         }
       }
       step += 1;
-    } else if (step === 7) {
-      const result = await ui.select('Register this profile with an MCP client', [
-        { value: 'neither', label: 'Neither' }, { value: 'codex', label: 'Codex' },
-        { value: 'claude', label: 'Claude' }, { value: 'both', label: 'Both' }
-      ], draft.registration);
-      if (result.kind === 'cancel') return 1;
-      if (result.kind === 'back') {
-        if (draft.backend === 'file') { delete draft.backend; step = 6; }
-        else step = 5;
-        continue;
-      }
-      draft.registration = result.value;
-      step += 1;
     } else {
       ui.output(review(draft, registry.profiles.length === 0));
       const result = await ui.confirm('Save this profile', false);
       if (result.kind === 'cancel') return 1;
-      if (result.kind === 'back' || !result.value) { if (result.kind === 'back') { step -= 1; continue; } return 1; }
+      if (result.kind === 'back' || !result.value) {
+        if (result.kind === 'back') {
+          if (draft.backend === 'file') { delete draft.backend; step = 6; }
+          else step = 5;
+          continue;
+        }
+        return 1;
+      }
       step += 1;
     }
   }
@@ -371,26 +390,47 @@ export async function runRouterWizard(
   });
   ui.output(`✓ Profile "${draft.id}" saved.`);
 
-  const clients: Array<'codex' | 'claude'> = draft.registration === 'both'
-    ? ['codex', 'claude'] : draft.registration === 'neither' ? [] : [draft.registration];
-  for (const client of clients) {
-    const instanceName = `keenetic_${draft.id}`;
-    let code = 1;
-    try {
-      const invocation = registrationInvocation(client, draft.id, deps.serverLaunch());
-      code = await deps.runRegistration(invocation);
-    } catch { /* handled below */ }
-    if (code !== 0) {
-      ui.output(`! Registration with ${client} failed; the profile remains saved. Run router register again from a durable installation.`);
-      continue;
-    }
-    try {
-      await deps.saveRegistration(dir, draft.id, client, instanceName);
-      ui.output(`✓ Registered ${instanceName} with ${client}.`);
-    } catch {
-      ui.output(`! ${client} registration succeeded, but its local status could not be recorded. Profile "${draft.id}" remains saved.`);
-    }
+  const registration = await ui.select('Register this profile with Codex', [
+    { value: 'neither', label: 'Not now' }, { value: 'codex', label: 'Codex' }
+  ], draft.registration);
+  if (registration.kind !== 'value' || registration.value === 'neither') {
+    ui.output(`Optional: run "keenetic-noc-mcp router register ${draft.id} --client codex" later.`);
+    return 0;
   }
-  if (clients.length === 0) ui.output(`Optional: run "keenetic-noc-mcp router register ${draft.id}" later.`);
+  draft.registration = registration.value;
+  const homeChoice = await ui.select('Codex registration environment', [
+    { value: 'current', label: 'Current shell/default Codex home' },
+    { value: 'explicit', label: 'Explicit CODEX_HOME' }
+  ], 'current');
+  if (homeChoice.kind !== 'value') return 0;
+  if (homeChoice.value === 'explicit') {
+    const home = await ui.input('CODEX_HOME path');
+    if (home.kind !== 'value' || !home.value.trim()) {
+      ui.output(`Profile "${draft.id}" remains saved. Run router register when the Codex home path is available.`);
+      return 0;
+    }
+    draft.codexHome = home.value.trim();
+  }
+  const instanceName = `keenetic_${draft.id}`;
+  let code = 1;
+  try { code = await deps.runRegistration(registrationInvocation('codex', draft.id, deps.serverLaunch(), draft.codexHome)); }
+  catch { /* handled below */ }
+  if (code !== 0) {
+    ui.output(`! Codex registration failed; the profile remains saved. Run router register ${draft.id} --client codex again from a durable installation.`);
+    return 0;
+  }
+  try { code = await deps.runVerification(codexVerificationInvocation(draft.id, draft.codexHome)); }
+  catch { code = 1; }
+  if (code !== 0) {
+    ui.output(`! Codex registration could not be verified; do not treat it as complete. Profile "${draft.id}" remains saved.`);
+    return 0;
+  }
+  try { await deps.saveRegistration(dir, draft.id, 'codex', instanceName); }
+  catch { ui.output(`! Codex registration was verified, but its local status could not be recorded. Profile "${draft.id}" remains saved.`); }
+  const usage = await ui.select('How will this MCP be used?', [
+    { value: 'ductor', label: 'Ductor' }, { value: 'codex', label: 'Codex CLI' },
+    { value: 'openclaw', label: 'OpenClaw' }, { value: 'other', label: 'Other' }
+  ], 'other');
+  if (usage.kind === 'value') ui.output(registrationGuidance(usage.value));
   return 0;
 }

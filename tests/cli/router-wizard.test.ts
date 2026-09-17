@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { currentMcpServerLaunch, registrationInvocation, registrationPreview, runRouterWizard, withPersistenceLock, type McpServerLaunch, type RouterWizardDependencies } from '../../src/cli/router-wizard.js';
+import { codexVerificationInvocation, currentMcpServerLaunch, registrationInvocation, registrationPreview, runRouterWizard, withPersistenceLock, type McpServerLaunch, type RouterWizardDependencies } from '../../src/cli/router-wizard.js';
 import type { PromptAdapter, PromptResult } from '../../src/cli/ui/prompts.js';
 import type { ProfileSecretStore } from '../../src/profiles/secrets.js';
 
@@ -43,10 +43,11 @@ class FakePrompt implements PromptAdapter {
 
 function successfulScript(mode: 'remote' | 'lan' = 'remote', registration = 'neither'): PromptResult<unknown>[] {
   return [answer('My Router'), answer(mode), answer('mcp_agent'), answer(true),
-    answer(mode === 'remote' ? 'router.keenetic.pro' : '192.0.2.1'), answer('continue'), answer(registration), answer(true)];
+    answer(mode === 'remote' ? 'router.keenetic.pro' : '192.0.2.1'), answer('continue'), answer(true), answer(registration),
+    ...(registration === 'codex' ? [answer('current'), answer('other')] : [])];
 }
 
-function harness(options: { keychain?: boolean; addError?: Error; registrationCode?: number } = {}) {
+function harness(options: { keychain?: boolean; addError?: Error; registrationCode?: number; verificationCode?: number } = {}) {
   let stored: string | null = null;
   const store: ProfileSecretStore = {
     backend: options.keychain === false ? 'file' : 'keychain',
@@ -65,6 +66,7 @@ function harness(options: { keychain?: boolean; addError?: Error; registrationCo
     addProfile: vi.fn(async () => { if (options.addError) throw options.addError; }),
     serverLaunch: () => SERVER_LAUNCH,
     runRegistration: vi.fn(async () => options.registrationCode ?? 0),
+    runVerification: vi.fn(async () => options.verificationCode ?? 0),
     saveRegistration: vi.fn(async () => undefined),
     withPersistenceLock: vi.fn(async (_dir, task) => task(false))
   };
@@ -92,7 +94,7 @@ describe('router onboarding state machine', () => {
   it('requires explicit file fallback confirmation default path before saving', async () => {
     const ui = new FakePrompt([
       answer('Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('router.keenetic.pro'),
-      answer('continue'), answer(true), answer('neither'), answer(true)
+      answer('continue'), answer(true), answer(true), answer('neither')
     ]);
     const { deps } = harness({ keychain: false });
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
@@ -107,7 +109,7 @@ describe('router onboarding state machine', () => {
     expect(deps.addProfile).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1, 2, 3, 4, 5, 6, 7])('cancellation at prompt %i crosses no persistence boundary', async promptIndex => {
+  it.each([0, 1, 2, 3, 4, 5, 6])('cancellation before profile save crosses no persistence boundary', async promptIndex => {
     const script = successfulScript();
     script[promptIndex] = cancel;
     const { deps, store } = harness();
@@ -119,7 +121,7 @@ describe('router onboarding state machine', () => {
   it('retains answers on back and reruns preflight after an endpoint change', async () => {
     const ui = new FakePrompt([
       answer('Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('one.keenetic.pro'),
-      back, answer('two.keenetic.pro'), answer('continue'), answer('neither'), answer(true)
+      back, answer('two.keenetic.pro'), answer('continue'), answer(true), answer('neither')
     ]);
     const { deps } = harness();
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
@@ -131,7 +133,7 @@ describe('router onboarding state machine', () => {
     const ui = new FakePrompt([
       answer('Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('one.keenetic.pro'),
       answer('continue'), back, back, back, back, back, answer('lan'), answer('mcp_agent'), answer(true),
-      answer('router.lan'), answer('continue'), answer('neither'), answer(true)
+      answer('router.lan'), answer('continue'), answer(true), answer('neither')
     ]);
     const { deps } = harness();
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
@@ -140,30 +142,31 @@ describe('router onboarding state machine', () => {
     expect(ui.inputs.filter(item => item.message.includes('account')).at(-1)?.initial).toBe('mcp_agent');
   });
 
-  it('revisits explicit file fallback when registration goes back', async () => {
+  it('keeps the saved profile when post-save Codex registration is cancelled', async () => {
     const ui = new FakePrompt([
       answer('Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('router.keenetic.pro'),
-      answer('continue'), answer(true), back, answer(true), answer('neither'), answer(true)
+      answer('continue'), answer(true), answer(true), cancel
     ]);
     const { deps } = harness({ keychain: false });
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
-    expect(ui.confirmations.filter(item => item.message.includes('file fallback'))).toHaveLength(2);
+    expect(deps.addProfile).toHaveBeenCalledOnce();
+    expect(deps.runRegistration).not.toHaveBeenCalled();
   });
 
-  it('returns from mode to the retained router name and from review to registration', async () => {
+  it('returns from mode to the retained router name and from review to the saved-profile path', async () => {
     const ui = new FakePrompt([
       answer('Router'), back, answer('Router'), answer('remote'), answer('mcp_agent'), answer(true),
-      answer('router.keenetic.pro'), answer('continue'), answer('neither'), back, answer('neither'), answer(true)
+      answer('router.keenetic.pro'), answer('continue'), back, answer('continue'), answer(true), answer('neither')
     ]);
     const { deps } = harness();
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
     expect(ui.inputs.filter(item => item.message === 'Router name').at(-1)?.initial).toBe('Router');
-    expect(ui.selections.filter(item => item.message.includes('Register'))).toHaveLength(2);
+    expect(ui.selections.filter(item => item.message.includes('Register'))).toHaveLength(1);
   });
 
   it('declining review leaves both persistence boundaries untouched', async () => {
     const script = successfulScript();
-    script[script.length - 1] = answer(false);
+    script[6] = answer(false);
     const { deps, store } = harness();
     await expect(runRouterWizard('/safe/config', new FakePrompt(script), deps)).resolves.toBe(1);
     expect(store.save).not.toHaveBeenCalled();
@@ -294,7 +297,8 @@ describe('router onboarding state machine', () => {
     expect(deps.runRegistration).toHaveBeenCalledWith(
       registrationInvocation('codex', 'my-router', SERVER_LAUNCH)
     );
-    expect(ui.outputs.join('\n')).toContain('Run router register again');
+    expect(deps.runVerification).not.toHaveBeenCalled();
+    expect(ui.outputs.join('\n')).toContain('Run router register my-router');
     expect(ui.outputs.find(line => line.startsWith('Review'))).not.toContain('Abcdefghijk2345!Qrstuvwx');
     expect(ui.outputs.at(-1)).not.toContain('Abcdefghijk2345!Qrstuvwx');
   });
@@ -308,7 +312,7 @@ describe('router onboarding state machine', () => {
       await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
       expect(store.remove).not.toHaveBeenCalled();
       expect(deps.addProfile).toHaveBeenCalledOnce();
-      expect(ui.outputs.at(-1)).toContain('remains saved');
+      expect(ui.outputs.join('\n')).toContain('remains saved');
     }
   });
 
@@ -323,14 +327,40 @@ describe('router onboarding state machine', () => {
     expect(ui.outputs.at(-1)).toContain('profile remains saved');
   });
 
-  it('registers both clients with separate argv calls and metadata', async () => {
+  it('registers Codex only after the profile is persisted', async () => {
     const { deps } = harness();
-    await expect(runRouterWizard('/safe/config', new FakePrompt(successfulScript('remote', 'both')), deps)).resolves.toBe(0);
-    expect(deps.runRegistration).toHaveBeenNthCalledWith(1,
-      registrationInvocation('codex', 'my-router', SERVER_LAUNCH));
-    expect(deps.runRegistration).toHaveBeenNthCalledWith(2,
-      registrationInvocation('claude', 'my-router', SERVER_LAUNCH));
-    expect(deps.saveRegistration).toHaveBeenCalledTimes(2);
+    const order: string[] = [];
+    vi.mocked(deps.addProfile!).mockImplementation(async () => { order.push('profile'); });
+    vi.mocked(deps.runRegistration!).mockImplementation(async () => { order.push('add'); return 0; });
+    await expect(runRouterWizard('/safe/config', new FakePrompt(successfulScript('remote', 'codex')), deps)).resolves.toBe(0);
+    expect(order).toEqual(['profile', 'add']);
+    expect(deps.saveRegistration).toHaveBeenCalledWith('/safe/config', 'my-router', 'codex', 'keenetic_my-router');
+  });
+
+  it('uses an explicit CODEX_HOME for both Codex calls and only prints Ductor guidance', async () => {
+    const { deps } = harness();
+    const ui = new FakePrompt([
+      answer('My Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('router.keenetic.pro'),
+      answer('continue'), answer(true), answer('codex'), answer('explicit'), answer('/target/codex'), answer('ductor')
+    ]);
+    await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
+    expect(deps.runRegistration).toHaveBeenCalledWith(expect.objectContaining({ command: 'codex',
+      env: expect.objectContaining({ CODEX_HOME: '/target/codex' }) }));
+    expect(deps.runVerification).toHaveBeenCalledWith(expect.objectContaining({ command: 'codex',
+      args: ['mcp', 'get', 'keenetic_my-router'], env: expect.objectContaining({ CODEX_HOME: '/target/codex' }) }));
+    expect(ui.outputs.join('\n')).toContain('/reset');
+    expect(vi.mocked(deps.runRegistration!).mock.calls.map(([invocation]) => invocation.command)).toEqual(['codex']);
+    expect(vi.mocked(deps.runVerification!).mock.calls.map(([invocation]) => invocation.command)).toEqual(['codex']);
+  });
+
+  it('does not claim completion or persist registration metadata when verification fails', async () => {
+    const { deps } = harness({ verificationCode: 1 });
+    const ui = new FakePrompt(successfulScript('remote', 'codex'));
+    await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
+    expect(deps.addProfile).toHaveBeenCalledOnce();
+    expect(deps.saveRegistration).not.toHaveBeenCalled();
+    expect(ui.outputs.join('\n')).toContain('could not be verified');
+    expect(ui.outputs.join('\n')).not.toContain('Registration is complete.');
   });
 
   it('changing login invalidates preflight while retaining the endpoint', async () => {
@@ -338,7 +368,7 @@ describe('router onboarding state machine', () => {
     const ui = new FakePrompt([
       answer('Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('router.keenetic.pro'),
       answer('continue'), back, back, back, back, answer('new_agent'), answer(true),
-      answer('router.keenetic.pro'), answer('continue'), answer('neither'), answer(true)
+      answer('router.keenetic.pro'), answer('continue'), answer(true), answer('neither')
     ]);
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
     expect(deps.preflight).toHaveBeenCalledTimes(2);
@@ -353,7 +383,7 @@ describe('router onboarding state machine', () => {
       .mockReturnValueOnce('Zyxwvutsrq9876!Ponmlkji');
     const ui = new FakePrompt([
       answer('My Router'), answer('remote'), answer('mcp_agent'), answer(true), answer('router.keenetic.pro'),
-      answer('regenerate'), answer(true), answer('router.keenetic.pro'), answer('continue'), answer('neither'), answer(true)
+      answer('regenerate'), answer(true), answer('router.keenetic.pro'), answer('continue'), answer(true), answer('neither')
     ]);
     await expect(runRouterWizard('/safe/config', ui, deps)).resolves.toBe(0);
     expect(deps.preflight).toHaveBeenCalledTimes(2);
