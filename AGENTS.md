@@ -22,11 +22,118 @@ Use Node.js 20 or newer.
 
 Never run a live mutation as part of tests or smoke checks.
 
+## Pipeline Classification and Proportional Workflow
+
+At the start of every slice, record exactly one classification: `Pipeline: LIGHT`
+or `Pipeline: FULL`. Ambiguity defaults to FULL. A requested LIGHT slice must
+escalate to FULL as soon as an excluded risk is discovered.
+
+Write the final completion report for both LIGHT and FULL slices in Russian.
+Keep required command names, status values, identifiers, and other
+machine-readable tokens unchanged.
+
+LIGHT is suitable only when all material conditions hold:
+
+- narrow, well-defined scope with few directly related modules;
+- no router-mutation semantic change, credential handling or storage change,
+  secret/redaction/privacy-boundary change, MCP permission or tool-contract
+  expansion, persistent migration, backup-before-write behavior change,
+  dependency/supply-chain change, or large architecture/refactor;
+- existing security invariants are unchanged; and
+- failure is covered by automated tests or bounded read-only smoke evidence.
+
+Security-adjacent work can remain LIGHT when its security contract is unchanged.
+For example, remote-address failover can be LIGHT only when it preserves verified
+TLS, SNI, hostname verification, and `rejectUnauthorized=true`.
+
+For LIGHT, read the relevant implementation, adjacent tests, and contracts;
+state the observable bug/change and acceptance criteria; add focused regression
+coverage; make the smallest cohesive patch; run focused iteration tests; inspect
+the final diff once for scope, security invariants, and compatibility; then run
+final verification. Do not use LIGHT for speculative refactoring, opportunistic
+cleanup, unnecessary abstractions, unrelated documentation rewrites, reviewer
+fan-out "just in case", or repeated full-suite runs during iteration. Use focused
+tests while implementing; for code changes, run `npm run typecheck`, `npm test`,
+`npm run build`, and `git diff --check` once after the final relevant edit.
+Documentation-only slices use proportional validation unless repository tooling
+requires more. LIGHT has no mandatory multi-agent review, design document,
+implementation plan, automatic architecture/security/adversarial/NOC reviewer
+fan-out, or repeated review-fix loops without a concrete risk or finding.
+
+Live smoke is optional only when behavior materially depends on a real
+router/network environment. It requires explicit authorization where required,
+must be read-only, bounded, and sanitized, and must not store raw router
+responses. One meaningful smoke is normally sufficient. Do not require a
+transient production failure to be reproduced when deterministic regression
+tests already model it.
+
+FULL applies to every excluded, ambiguous, security-contract, cross-cutting, or
+high-risk slice and follows the existing Independent Review-Fix Cycle below. In
+particular, use FULL for meaningful changes to credential/authentication
+handling, secret storage, redaction/privacy or security-trust boundaries,
+router writes, backup-before-write, save/apply configuration semantics, MCP
+permissions or mutation surface, persistent state/migration, major protocol or
+tool contracts, dependencies/supply chain, multi-router/fleet architecture,
+cross-cutting refactors, inadequate focused validation, or substantial safety
+uncertainty.
+
+If a LIGHT slice discovers a material issue outside its eligibility, stop scope
+expansion and report:
+
+```text
+LIGHT -> FULL ESCALATION
+
+Reason:
+<concrete reason>
+
+Affected boundary:
+<security / persistence / mutation / contract / architecture>
+
+Recommended next step:
+<short>
+```
+
+Do not continue a large or security-sensitive change under LIGHT merely because
+the original prompt requested it. This workflow changes development
+proportionality, not product safety: preserve verified TLS, secret handling,
+read-only semantics, response bounds, backup-before-write, write read-back
+verification, sanitized fixtures, the ban on live mutation in tests/smoke, and
+explicit reporting of untested live paths.
+
+### LIGHT completion report
+
+Keep the completion report compact:
+
+```text
+SLICE: <name>
+PIPELINE: LIGHT
+STATUS: READY_FOR_USER | HOLD
+
+Changed:
+<short>
+
+Tests:
+<short>
+
+Candidate:
+<SHA>
+
+Live:
+not run | short result
+
+Residual risk:
+<short>
+
+Recommendation:
+ACCEPT | HOLD
+```
+
 ## Existing-Project Change Workflow
 
-Use this workflow for fixes, compatibility work, refactors, and incremental
-features in this repository. It is intentionally for changing an existing
-system, not for greenfield product ideation.
+This is the repository-wide FULL baseline for fixes, compatibility work,
+refactors, and incremental features in an existing system. A classified LIGHT
+slice follows the proportional flow above while preserving all applicable
+technical and safety guarantees.
 
 1. Ground the change in repository evidence. Read the relevant implementation,
    adjacent tests, contracts, documentation, and current diff before editing.
@@ -56,10 +163,9 @@ system, not for greenfield product ideation.
 
 ## Independent Review-Fix Cycle
 
-Every material feature slice, security-sensitive fix, compatibility change, or
-cross-cutting refactor must complete an independent review-fix cycle before it
-is called complete. Documentation-only typo fixes and equivalent mechanical
-changes may use one proportional review instead.
+Every FULL material feature slice, security-sensitive fix, compatibility change,
+or cross-cutting refactor must complete an independent review-fix cycle before
+it is called complete. LIGHT review follows the proportional policy above.
 
 1. Finish a cohesive implementation and its focused tests first. Record the
    intended behavior, compatibility surfaces, and known live-evidence limits.
