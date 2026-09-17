@@ -19,8 +19,8 @@ export interface PreflightReport {
 }
 
 export interface PreflightDependencies {
-  resolveDns(hostname: string): Promise<number>;
-  verifyTls(hostname: string, port: number, timeoutMs: number): Promise<void>;
+  resolveDns(hostname: string): Promise<readonly string[]>;
+  verifyTls(hostname: string, address: string, port: number, timeoutMs: number): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -42,8 +42,8 @@ const warning = (detail: string): PreflightCheck => ({ status: 'warning', detail
 const fail = (detail: string): PreflightCheck => ({ status: 'fail', detail });
 const skipped = (detail: string): PreflightCheck => ({ status: 'skipped', detail });
 
-async function resolveDns(hostname: string): Promise<number> {
-  return (await lookup(hostname, { all: true })).length;
+async function resolveDns(hostname: string): Promise<readonly string[]> {
+  return (await lookup(hostname, { all: true, verbatim: true })).map(result => result.address);
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -115,11 +115,13 @@ function tlsFailureCategory(error: unknown): TlsFailureCategory {
   return retryableTransportCodes.has(errorCode(error) ?? '') ? 'transient' : 'unknown';
 }
 
-async function verifyTls(hostname: string, port: number, timeoutMs: number): Promise<void> {
+async function verifyTls(hostname: string, address: string, port: number, timeoutMs: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     // `servername` enables SNI and certificate hostname verification. The
-    // default trust store and rejectUnauthorized=true remain in effect.
-    const socket = connect({ host: hostname, port, servername: hostname, rejectUnauthorized: true });
+    // address is used only for the TCP connection; the original hostname is
+    // retained for SNI and verification. The default trust store and
+    // rejectUnauthorized=true remain in effect.
+    const socket = connect({ host: address, port, servername: hostname, rejectUnauthorized: true });
     let finished = false;
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (error?: Error): void => {
@@ -174,6 +176,7 @@ interface TlsProbeResult {
 async function verifyRemoteTls(
   hostname: string,
   port: number,
+  addresses: readonly string[],
   deps: PreflightDependencies
 ): Promise<TlsProbeResult> {
   const deadline = deps.now() + TLS_TOTAL_BUDGET_MS;
@@ -184,7 +187,9 @@ async function verifyRemoteTls(
     if (remaining <= 0) return { failure: 'timeout', recovered: false };
     try {
       const attemptTimeout = Math.min(TLS_ATTEMPT_TIMEOUT_MS, remaining);
-      await withinDeadline(deps.verifyTls(hostname, port, attemptTimeout), attemptTimeout);
+      const address = addresses[(attempt - 1) % addresses.length];
+      if (!address) return { failure: 'unknown', recovered: false };
+      await withinDeadline(deps.verifyTls(hostname, address, port, attemptTimeout), attemptTimeout);
       if (deps.now() >= deadline) return { failure: 'timeout', recovered: false };
       return { failure: null, recovered: attempt > 1 };
     } catch (error) {
@@ -192,6 +197,10 @@ async function verifyRemoteTls(
       if (lastFailure === 'certificate' || lastFailure === 'unknown' || attempt === TLS_MAX_ATTEMPTS) {
         return { failure: lastFailure, recovered: false };
       }
+      // Move directly to each fresh DNS candidate before backing off and
+      // retrying an address. A dead address therefore cannot consume the
+      // shared deadline while another current candidate is untried.
+      if (attempt % addresses.length !== 0) continue;
       const delay = 1_000 * 2 ** (attempt - 1);
       const remainingAfterFailure = deadline - deps.now();
       if (delay >= remainingAfterFailure) return { failure: 'timeout', recovered: false };
@@ -266,10 +275,11 @@ export async function runRouterPreflight(
     }
     checks['Endpoint'] = pass('valid HTTPS endpoint');
 
+    let addresses: readonly string[];
     try {
-      const count = await deps.resolveDns(origin.hostname);
-      if (count < 1) throw new Error('no addresses');
-      checks['DNS resolution'] = pass(`${count} address${count === 1 ? '' : 'es'}`);
+      addresses = await deps.resolveDns(origin.hostname);
+      if (addresses.length < 1) throw new Error('no addresses');
+      checks['DNS resolution'] = pass(`${addresses.length} address${addresses.length === 1 ? '' : 'es'}`);
     } catch {
       checks['DNS resolution'] = fail('failed');
       checks['TLS'] = skipped('DNS resolution failed');
@@ -279,7 +289,7 @@ export async function runRouterPreflight(
       return { ready: false, checks };
     }
 
-    const tls = await verifyRemoteTls(origin.hostname, origin.port, deps);
+    const tls = await verifyRemoteTls(origin.hostname, origin.port, addresses, deps);
     if (!tls.failure) {
       checks['TLS'] = pass(tls.recovered
         ? 'certificate and hostname verified after retry'

@@ -46,7 +46,7 @@ function client(options: { baseError?: Error; diagnosticError?: string; startupA
   } as unknown as KeeneticClient;
 }
 
-const remoteDeps = { resolveDns: async () => 1, verifyTls: async () => undefined };
+const remoteDeps = { resolveDns: async () => ['192.0.2.10'], verifyTls: async () => undefined };
 
 describe('router test checks', () => {
   it('keeps both add spellings routed to the wizard', () => {
@@ -81,7 +81,7 @@ describe('router test checks', () => {
       .mockResolvedValueOnce(undefined);
 
     const result = await runConnectionChecks(profile('remote'), instance, {
-      resolveDns: async () => 1,
+      resolveDns: async () => ['192.0.2.10'],
       verifyTls,
       sleep,
       now: () => now
@@ -95,7 +95,7 @@ describe('router test checks', () => {
 
   it('projects the refined terminal TLS detail as unhealthy', async () => {
     const result = await runConnectionChecks(profile('remote'), client(), {
-      resolveDns: async () => 1,
+      resolveDns: async () => ['192.0.2.10'],
       verifyTls: async () => {
         throw Object.assign(new Error('certificate raw-secret'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' });
       },
