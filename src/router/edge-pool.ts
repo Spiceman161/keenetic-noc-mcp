@@ -1,9 +1,11 @@
+import { isIP } from 'node:net';
+
 export interface EdgeEntry {
   readonly ip: string;
-  readonly firstSeen: number;
-  lastSeen: number;
-  lastSuccess?: number;
-  lastFailure?: number;
+  readonly firstObservedAt: number;
+  lastObservedAt: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
 }
 
 export interface EdgePoolOptions {
@@ -13,7 +15,18 @@ export interface EdgePoolOptions {
 }
 
 const DEFAULT_MAX_ENTRIES = 10;
-const DEFAULT_STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
+const DEFAULT_STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+
+export function canonicalIp(value: string): string | null {
+  const family = isIP(value);
+  if (family === 4) return value;
+  if (family !== 6) return null;
+  try {
+    return new URL(`http://[${value}]/`).hostname.slice(1, -1);
+  } catch {
+    return null;
+  }
+}
 
 export class EdgePool {
   private readonly entries = new Map<string, EdgeEntry>();
@@ -27,121 +40,92 @@ export class EdgePool {
     this.staleThresholdMs = opts.staleThresholdMs ?? DEFAULT_STALE_THRESHOLD_MS;
   }
 
-  observe(ip: string): void {
-    const timestamp = this.now();
+  observe(value: string): void {
+    const ip = canonicalIp(value);
+    if (ip === null) return;
+    const observedAt = this.now();
     const existing = this.entries.get(ip);
     if (existing) {
-      existing.lastSeen = timestamp;
+      existing.lastObservedAt = observedAt;
       return;
     }
 
-    if (this.entries.size >= this.maxEntries) {
-      this.evictOldest();
-    }
-
+    if (this.maxEntries <= 0) return;
+    if (this.entries.size >= this.maxEntries) this.evictOldest();
     this.entries.set(ip, {
       ip,
-      firstSeen: timestamp,
-      lastSeen: timestamp
+      firstObservedAt: observedAt,
+      lastObservedAt: observedAt
     });
   }
 
-  recordSuccess(ip: string): void {
-    const timestamp = this.now();
-    let entry = this.entries.get(ip);
-    if (!entry) {
-      this.observe(ip);
-      entry = this.entries.get(ip);
-    }
-    if (entry) {
-      entry.lastSuccess = timestamp;
-      entry.lastSeen = timestamp;
-    }
+  recordSuccess(value: string): void {
+    const ip = canonicalIp(value);
+    if (ip === null) return;
+    const entry = this.entries.get(ip);
+    if (entry) entry.lastSuccessAt = this.now();
   }
 
-  recordFailure(ip: string): void {
-    const timestamp = this.now();
-    let entry = this.entries.get(ip);
-    if (!entry) {
-      this.observe(ip);
-      entry = this.entries.get(ip);
-    }
-    if (entry) {
-      entry.lastFailure = timestamp;
-      entry.lastSeen = timestamp;
-    }
+  recordFailure(value: string): void {
+    const ip = canonicalIp(value);
+    if (ip === null) return;
+    const entry = this.entries.get(ip);
+    if (entry) entry.lastFailureAt = this.now();
   }
 
-  candidates(exclude?: ReadonlySet<string> | readonly string[], limit = 2): string[] {
-    const excludeSet = exclude instanceof Set ? exclude : new Set(exclude ?? []);
-    const currentTime = this.now();
+  candidates(excluded: ReadonlySet<string> | readonly string[] = [], limit = 2): string[] {
+    const excludedCanonical = new Set<string>();
+    for (const value of excluded) {
+      const ip = canonicalIp(value);
+      if (ip !== null) excludedCanonical.add(ip);
+    }
+    const now = this.now();
+    const healthy: EdgeEntry[] = [];
+    const unknown: EdgeEntry[] = [];
+    const failed: EdgeEntry[] = [];
 
-    const eligible: EdgeEntry[] = [];
     for (const entry of this.entries.values()) {
-      if (excludeSet.has(entry.ip)) continue;
-      if (currentTime - entry.lastSeen > this.staleThresholdMs) continue;
-      eligible.push(entry);
-    }
-
-    // Tier 1 (Recent success): lastSuccess > lastFailure, or lastSuccess present with no failure.
-    // Tier 2 (Unknown / untried): neither lastSuccess nor lastFailure.
-    // Tier 3 (Recent failure): lastFailure >= lastSuccess, or lastFailure present with no success.
-    const tier1: EdgeEntry[] = [];
-    const tier2: EdgeEntry[] = [];
-    const tier3: EdgeEntry[] = [];
-
-    for (const entry of eligible) {
-      const hasSuccess = entry.lastSuccess !== undefined;
-      const hasFailure = entry.lastFailure !== undefined;
-
-      if (hasSuccess && (!hasFailure || entry.lastSuccess! > entry.lastFailure!)) {
-        tier1.push(entry);
-      } else if (!hasSuccess && !hasFailure) {
-        tier2.push(entry);
+      if (excludedCanonical.has(entry.ip)) continue;
+      if (now - entry.lastObservedAt > this.staleThresholdMs) continue;
+      if (entry.lastSuccessAt !== undefined &&
+          (entry.lastFailureAt === undefined || entry.lastSuccessAt > entry.lastFailureAt)) {
+        healthy.push(entry);
+      } else if (entry.lastSuccessAt === undefined && entry.lastFailureAt === undefined) {
+        unknown.push(entry);
       } else {
-        tier3.push(entry);
+        failed.push(entry);
       }
     }
 
-    tier1.sort((a, b) => {
-      const diff = b.lastSuccess! - a.lastSuccess!;
-      if (diff !== 0) return diff;
-      return a.ip.localeCompare(b.ip);
-    });
+    healthy.sort((left, right) =>
+      right.lastSuccessAt! - left.lastSuccessAt! || left.ip.localeCompare(right.ip));
+    unknown.sort((left, right) =>
+      right.lastObservedAt - left.lastObservedAt || left.ip.localeCompare(right.ip));
+    failed.sort((left, right) =>
+      left.lastFailureAt! - right.lastFailureAt! || left.ip.localeCompare(right.ip));
 
-    tier2.sort((a, b) => {
-      const diff = b.lastSeen - a.lastSeen;
-      if (diff !== 0) return diff;
-      return a.ip.localeCompare(b.ip);
-    });
-
-    tier3.sort((a, b) => {
-      const diff = a.lastFailure! - b.lastFailure!;
-      if (diff !== 0) return diff;
-      return a.ip.localeCompare(b.ip);
-    });
-
-    return [...tier1, ...tier2, ...tier3].slice(0, Math.max(0, limit)).map(e => e.ip);
+    return [...healthy, ...unknown, ...failed]
+      .slice(0, Math.max(0, Math.min(2, limit)))
+      .map(entry => entry.ip);
   }
 
   size(): number {
     return this.entries.size;
   }
 
-  getEntry(ip: string): Readonly<EdgeEntry> | undefined {
-    return this.entries.get(ip);
+  getEntry(value: string): Readonly<EdgeEntry> | undefined {
+    const ip = canonicalIp(value);
+    return ip === null ? undefined : this.entries.get(ip);
   }
 
   private evictOldest(): void {
-    let oldest: EdgeEntry | null = null;
+    let oldest: EdgeEntry | undefined;
     for (const entry of this.entries.values()) {
-      if (!oldest || entry.lastSeen < oldest.lastSeen ||
-          (entry.lastSeen === oldest.lastSeen && entry.ip.localeCompare(oldest.ip) < 0)) {
+      if (oldest === undefined || entry.lastObservedAt < oldest.lastObservedAt ||
+          (entry.lastObservedAt === oldest.lastObservedAt && entry.ip.localeCompare(oldest.ip) < 0)) {
         oldest = entry;
       }
     }
-    if (oldest) {
-      this.entries.delete(oldest.ip);
-    }
+    if (oldest !== undefined) this.entries.delete(oldest.ip);
   }
 }

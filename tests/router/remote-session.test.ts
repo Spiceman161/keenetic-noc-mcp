@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { digestAuthorization, parseChallenges, RemoteSession } from '../../src/router/remote-session.js';
-import { AuthError, RemoteCapabilityError, TransportError } from '../../src/router/errors.js';
+import { AuthError, RciError, RemoteCapabilityError, TransportError } from '../../src/router/errors.js';
+import { Rci } from '../../src/router/rci.js';
 
 const opts = { endpoint: 'https://rci.example.test/rci/', login: 'agent', password: 'not-a-real-password', routerId: 'lab' };
 
@@ -228,5 +229,89 @@ describe('remote failure policy', () => {
     }).request('GET', '/rci/show/version')).rejects.toThrow(/deadline/i);
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('remote replay-safety gate', () => {
+  async function warmedSession(fetch: ReturnType<typeof vi.fn>, attempts = 2): Promise<RemoteSession> {
+    fetch.mockResolvedValueOnce(new Response('{}'));
+    const session = new RemoteSession({
+      ...opts,
+      fetch: fetch as typeof globalThis.fetch,
+      attempts,
+      sleep: async () => undefined
+    });
+    await session.request('GET', '/rci/show/version');
+    fetch.mockClear();
+    return session;
+  }
+
+  it('retries only an exact single-root POST /rci/ show object', async () => {
+    const fetch = vi.fn();
+    const session = await warmedSession(fetch);
+    fetch.mockRejectedValue(new Error('synthetic transport failure'));
+    await expect(session.request('POST', '/rci/', { show: { version: {} } }))
+      .rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['write', '/rci/', { system: { configuration: { save: {} } } }],
+    ['multi-root', '/rci/', { show: {}, system: {} }],
+    ['null show', '/rci/', { show: null }],
+    ['array show', '/rci/', { show: [] }],
+    ['malformed body', '/rci/', 'show'],
+    ['alternate path', '/rci/other', { show: {} }],
+    ['query path', '/rci/?mode=show', { show: {} }],
+    ['active diagnostic', '/rci/tools/ping', { host: '192.0.2.1' }]
+  ])('does not retry unsafe POST form %s', async (_name, path, body) => {
+    const fetch = vi.fn();
+    const session = await warmedSession(fetch);
+    fetch.mockRejectedValue(new Error('synthetic transport failure'));
+    await expect(session.request('POST', path, body)).rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('does not retry DELETE but retains ordinary GET polling retries', async () => {
+    const deleteFetch = vi.fn();
+    const deleteSession = await warmedSession(deleteFetch);
+    deleteFetch.mockRejectedValue(new Error('synthetic transport failure'));
+    await expect(deleteSession.request('DELETE', '/rci/tools/ping'))
+      .rejects.toBeInstanceOf(TransportError);
+    expect(deleteFetch).toHaveBeenCalledOnce();
+
+    const getFetch = vi.fn();
+    const getSession = await warmedSession(getFetch);
+    getFetch.mockRejectedValue(new Error('synthetic transport failure'));
+    await expect(getSession.request('GET', '/rci/tools/ping'))
+      .rejects.toBeInstanceOf(TransportError);
+    expect(getFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry the allowRetry=false authentication-discovery request', async () => {
+    const fetch = vi.fn().mockRejectedValue(new Error('synthetic transport failure'));
+    const session = new RemoteSession({ ...opts, fetch, attempts: 5, sleep: async () => undefined });
+    await expect(session.request('POST', '/rci/tools/ping', { host: '192.0.2.1' }))
+      .rejects.toBeInstanceOf(TransportError);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![0].toString()).toContain('/rci/show/version');
+  });
+
+  it('stops transport fallback on an HTTP application response', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 500 }));
+    const response = await new RemoteSession({ ...opts, fetch }).request('GET', '/rci/show/version');
+    expect(response.status).toBe(500);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('does not convert a parsed semantic RCI failure into another transport attempt', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('{}'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: [{ status: 'error', code: 'synthetic', ident: 'rci', message: 'rejected' }]
+      })));
+    const session = new RemoteSession({ ...opts, fetch });
+    await expect(new Rci(session).post({ show: { version: {} } })).rejects.toBeInstanceOf(RciError);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
