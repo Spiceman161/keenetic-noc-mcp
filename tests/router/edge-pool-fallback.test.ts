@@ -256,9 +256,72 @@ describe('FallbackRemoteSession integration tests', () => {
     const response = await fallbackSession.request('GET', '/rci/show/version');
     expect(response.status).toBe(200);
 
-    // Inner request succeeded -> fallback path never entered
-    expect(resolveDnsMock).not.toHaveBeenCalled();
+    // A successful ordinary request learns the live DNS answers, but never
+    // creates a fallback Agent.
+    expect(resolveDnsMock).toHaveBeenCalledWith('router.keendns.example');
+    expect(pool.getEntry('192.0.2.1')).toBeDefined();
+    expect(pool.getEntry('192.0.2.2')).toBeDefined();
     expect(createAgentMock).not.toHaveBeenCalled();
+    expect(fallbackSession.activeAgentCount).toBe(0);
+  });
+
+  it('learns an alternate from successful normal traffic for a later transport fallback', async () => {
+    const pool = new EdgePool();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"first":true}', { status: 200 }))
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce(new Response('{"recovered":true}', { status: 200 }));
+    const inner = new RemoteSession({ ...baseOpts, attempts: 1, fetch: fetchMock });
+    const alternateAgent = createMockAgent();
+    const createAgentMock = vi.fn().mockReturnValue(alternateAgent);
+    const resolveDnsMock = vi.fn()
+      // The ordinary successful request sees an edge absent from the later
+      // failed DNS answer. Candidate 3cdd78f never consumes this response.
+      .mockResolvedValueOnce(['192.0.2.1', '192.0.2.2', '198.51.100.3'])
+      .mockResolvedValueOnce(['192.0.2.1', '192.0.2.2'])
+      .mockResolvedValueOnce(['192.0.2.1', '192.0.2.2']);
+    const session = new FallbackRemoteSession(inner, pool, {
+      ...baseOpts,
+      attempts: 1,
+      fetch: fetchMock,
+      resolveDns: resolveDnsMock,
+      createAgent: createAgentMock
+    });
+
+    await expect(session.request('GET', '/rci/show/version')).resolves.toHaveProperty('status', 200);
+    expect(pool.getEntry('198.51.100.3')).toBeDefined();
+
+    await expect(session.request('GET', '/rci/show/version')).resolves.toHaveProperty('status', 200);
+    expect(createAgentMock).toHaveBeenCalledWith('198.51.100.3');
+    expect(alternateAgent.close).toHaveBeenCalledOnce();
+    expect(alternateAgent.destroy).not.toHaveBeenCalled();
+    expect(session.activeAgentCount).toBe(0);
+  });
+
+  it('does not delay a successful response when its DNS observation is cancelled', async () => {
+    const controller = new AbortController();
+    let resolveDns!: (addresses: readonly string[]) => void;
+    const pendingDns = new Promise<readonly string[]>(resolve => { resolveDns = resolve; });
+    const pool = new EdgePool();
+    const inner = {
+      effectiveTimeoutMs: (requestedMs: number) => Math.min(10_000, requestedMs),
+      request: vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    } as unknown as RemoteSession;
+    const session = new FallbackRemoteSession(inner, pool, {
+      ...baseOpts,
+      resolveDns: vi.fn().mockReturnValue(pendingDns),
+      createAgent: vi.fn()
+    });
+
+    const request = session.request('GET', '/rci/show/version', undefined, { signal: controller.signal });
+    await vi.waitFor(() => expect(resolveDns).toBeTypeOf('function'));
+    controller.abort();
+
+    await expect(request).resolves.toHaveProperty('status', 200);
+    resolveDns(['198.51.100.3']);
+    await Promise.resolve();
+    expect(pool.getEntry('198.51.100.3')).toBeUndefined();
+    expect(session.activeAgentCount).toBe(0);
   });
 
   it('Criterion 2: First DNS address fails, second succeeds -> existing failover only', async () => {
@@ -275,7 +338,7 @@ describe('FallbackRemoteSession integration tests', () => {
       sleep: () => Promise.resolve()
     });
     const pool = new EdgePool();
-    const resolveDnsMock = vi.fn();
+    const resolveDnsMock = vi.fn().mockResolvedValue([]);
     const createAgentMock = vi.fn();
 
     const fallbackSession = new FallbackRemoteSession(inner, pool, {
@@ -287,8 +350,9 @@ describe('FallbackRemoteSession integration tests', () => {
     const response = await fallbackSession.request('GET', '/rci/show/version');
     expect(response.status).toBe(200);
 
-    // Handled entirely by existing failover in RemoteSession; pool fallback was not triggered
-    expect(resolveDnsMock).not.toHaveBeenCalled();
+    // Handled entirely by existing failover in RemoteSession; the successful
+    // ordinary request observes DNS but never enters the pool fallback path.
+    expect(resolveDnsMock).toHaveBeenCalledWith('router.keendns.example');
     expect(createAgentMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -724,7 +788,11 @@ describe('FallbackRemoteSession integration tests', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{"healthy":true}', { status: 200 }));
     const inner = new RemoteSession({ ...baseOpts, fetch: fetchMock });
 
-    const session = new FallbackRemoteSession(inner, pool, { ...baseOpts, fetch: fetchMock });
+    const session = new FallbackRemoteSession(inner, pool, {
+      ...baseOpts,
+      fetch: fetchMock,
+      resolveDns: vi.fn().mockRejectedValue(new Error('ENOTFOUND'))
+    });
     const response = await session.request('GET', '/rci/show/version');
     expect(response.status).toBe(200);
 

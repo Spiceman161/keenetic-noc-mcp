@@ -70,7 +70,9 @@ export class FallbackRemoteSession implements RciSession {
     const deadline = this.now() + totalTimeoutMs;
 
     try {
-      return await this.inner.request(method, path, body, controls);
+      const response = await this.inner.request(method, path, body, controls);
+      await this.observeSuccessfulDns(deadline, controls.signal);
+      return response;
     } catch (error) {
       if (!(error instanceof TransportError)) {
         throw error;
@@ -84,6 +86,40 @@ export class FallbackRemoteSession implements RciSession {
       }
 
       return await this.fallback(method, path, body, controls, deadline, error);
+    }
+  }
+
+  /**
+   * `fetch` does not expose the addresses it resolved. After a successful
+   * ordinary request, passively resolve the endpoint so its current answers
+   * can seed the pool for a later edge-specific transport failure.
+   */
+  private async observeSuccessfulDns(deadline: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted || deadline - this.now() <= 0) return;
+
+    const hostname = new URL(this.opts.endpoint).hostname;
+    const observation = this.resolveDns(hostname).then(addresses => {
+      if (signal?.aborted || this.now() >= deadline) return;
+      for (const address of addresses) this.pool.observe(address);
+    }).catch(() => undefined);
+    const remainingMs = deadline - this.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
+    const waits: Promise<void>[] = [observation, new Promise<void>(resolve => {
+      timer = setTimeout(resolve, remainingMs);
+    })];
+    if (signal) {
+      waits.push(new Promise<void>(resolve => {
+        abort = resolve;
+        signal.addEventListener('abort', abort, { once: true });
+      }));
+    }
+
+    try {
+      await Promise.race(waits);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (signal && abort) signal.removeEventListener('abort', abort);
     }
   }
 
