@@ -2,6 +2,8 @@ import { fetchCapabilities, type Capabilities } from './capabilities.js';
 import { Rci } from './rci.js';
 import { Session, type SessionOptions } from './session.js';
 import { RemoteSession, type RemoteSessionOptions } from './remote-session.js';
+import { EdgePool } from './edge-pool.js';
+import { FallbackRemoteSession, type FallbackRemoteSessionOptions } from './fallback-session.js';
 import {
   hasRecoverableCapabilityFailure,
   probeOperationalCapabilities,
@@ -61,6 +63,13 @@ export function createClient(opts: SessionOptions): KeeneticClient {
   return clientFor(new Rci(new Session(opts)), 'lan');
 }
 
-export function createRemoteClient(opts: RemoteSessionOptions): KeeneticClient {
-  return clientFor(new Rci(new RemoteSession(opts)), 'remote');
+export const defaultEdgePool = new EdgePool();
+
+export function createRemoteClient(
+  opts: FallbackRemoteSessionOptions & { pool?: EdgePool }
+): KeeneticClient {
+  const pool = opts.pool ?? defaultEdgePool;
+  const inner = new RemoteSession(opts);
+  const session = new FallbackRemoteSession(inner, pool, opts);
+  return clientFor(new Rci(session), 'remote');
 }
