@@ -226,7 +226,34 @@ describe('documented Undici 6.28.1 diagnostics contract', () => {
     const metadata = JSON.parse(readFileSync('node_modules/undici/package.json', 'utf8')) as {
       version: string;
     };
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as {
+      packages: Record<string, { dependencies?: Record<string, string>; version?: string }>;
+    };
     expect(metadata.version).toBe('6.28.1');
+    expect(manifest.dependencies['undici']).toBe('6.28.1');
+    expect(lock.packages['']?.dependencies?.['undici']).toBe('6.28.1');
+    expect(lock.packages['node_modules/undici']?.version).toBe('6.28.1');
+  });
+
+  it('ships the exact consumer dependency in the packed artifact without network access', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'keenetic-packed-artifact-'));
+    try {
+      const packed = JSON.parse(execFileSync('npm', [
+        'pack', '--json', '--ignore-scripts', '--pack-destination', directory
+      ], { encoding: 'utf8' })) as Array<{ filename: string }>;
+      const tarball = join(directory, packed[0]!.filename);
+      const manifest = JSON.parse(execFileSync('tar', [
+        '-xOf', tarball, 'package/package.json'
+      ], { encoding: 'utf8' })) as {
+        dependencies: Record<string, string>;
+      };
+      expect(manifest.dependencies['undici']).toBe('6.28.1');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('correlates distinct reused requests to the same public socket peer with one lookup', async () => {
@@ -580,6 +607,81 @@ describe('RemoteSession pool fallback integration', () => {
     }
   });
 
+  it('ignores valid sendHeaders diagnostics replayed after a settled success', async () => {
+    let now = 10;
+    const server = await startTlsServer(validCertificate);
+    const pool = new EdgePool({ now: () => now });
+    const endpoint = `https://${logicalHostname}:${server.port}/rci/`;
+    const origin = new URL(endpoint).origin;
+    let sent: { request: object; socket: object } | undefined;
+    const sendChannel = channel('undici:client:sendHeaders');
+    const onSend = (message: unknown): void => {
+      const value = message as { request?: { origin?: unknown }; socket?: object };
+      if (value.request !== undefined && value.socket !== undefined &&
+          String(value.request.origin) === origin) {
+        sent = { request: value.request, socket: value.socket };
+      }
+    };
+    sendChannel.subscribe(onSend);
+    const session = new RemoteSession({ ...baseOptions, endpoint }, {
+      ca: validCertificate.cert,
+      edgePool: pool,
+      lookup: lookupFrom(() => [{ address: '127.0.0.1', family: 4 }])
+    });
+    try {
+      await (await session.request('GET', '/rci/show/version')).text();
+      sendChannel.unsubscribe(onSend);
+      if (sent === undefined) throw new Error('Missing captured sendHeaders diagnostics.');
+      const before = { ...pool.getEntry('127.0.0.1')! };
+      now = 20;
+
+      sendChannel.publish(sent);
+
+      expect(pool.getEntry('127.0.0.1')).toEqual(before);
+    } finally {
+      sendChannel.unsubscribe(onSend);
+      await server.close();
+    }
+  });
+
+  it('ignores valid request:error diagnostics replayed after a settled failure', async () => {
+    let now = 10;
+    const server = await startTlsServer(validCertificate);
+    const pool = new EdgePool({ now: () => now });
+    const endpoint = `https://${logicalHostname}:${server.port}/rci/`;
+    const origin = new URL(endpoint).origin;
+    let failed: { request: object; error: object } | undefined;
+    const errorChannel = channel('undici:request:error');
+    const onError = (message: unknown): void => {
+      const value = message as { request?: { origin?: unknown }; error?: object };
+      if (value.request !== undefined && value.error !== undefined &&
+          String(value.request.origin) === origin) {
+        failed = { request: value.request, error: value.error };
+      }
+    };
+    errorChannel.subscribe(onError);
+    const session = new RemoteSession({ ...baseOptions, endpoint }, {
+      ca: validCertificate.cert,
+      edgePool: pool,
+      lookup: lookupFrom(() => [{ address: '127.0.0.2', family: 4 }])
+    });
+    try {
+      await expect(session.request('GET', '/rci/show/version'))
+        .rejects.toBeInstanceOf(TransportError);
+      errorChannel.unsubscribe(onError);
+      if (failed === undefined) throw new Error('Missing captured request:error diagnostics.');
+      const before = { ...pool.getEntry('127.0.0.2')! };
+      now = 20;
+
+      errorChannel.publish(failed);
+
+      expect(pool.getEntry('127.0.0.2')).toEqual(before);
+    } finally {
+      errorChannel.unsubscribe(onError);
+      await server.close();
+    }
+  });
+
   it('bounds a never-settling lookup and ignores its late callback', async () => {
     const pool = new EdgePool();
     let lateCallback: Parameters<TestLookup>[2] | undefined;
@@ -622,6 +724,56 @@ describe('RemoteSession pool fallback integration', () => {
       const response = await session.request('POST', '/rci/', { show: { version: {} } });
       await response.text();
       expect(pinned).toEqual(['127.0.0.1']);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('sends the immutable show snapshot through pinned fallback after caller mutation', async () => {
+    const receivedBodies: string[] = [];
+    const server = await startTlsServer(validCertificate, '127.0.0.1', (request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      request.on('end', () => {
+        if (request.method === 'POST') receivedBodies.push(Buffer.concat(chunks).toString('utf8'));
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+    });
+    const pool = new EdgePool();
+    const pinned: string[] = [];
+    const body: Record<string, unknown> = { show: { version: {} } };
+    let failLookup = false;
+    const lookup: TestLookup = (_hostname, options, callback) => {
+      if (!failLookup) {
+        if (options.all) callback(null, [{ address: '127.0.0.1', family: 4 }]);
+        else callback(null, '127.0.0.1', 4);
+        return;
+      }
+      delete body['show'];
+      body['system'] = { configuration: { save: {} } };
+      callback(Object.assign(new Error('synthetic DNS failure'), { code: 'ENOTFOUND' }), '', 0);
+    };
+    const session = new RemoteSession({
+      ...baseOptions,
+      endpoint: `https://${logicalHostname}:${server.port}/rci/`
+    }, {
+      ca: validCertificate.cert,
+      edgePool: pool,
+      lookup,
+      onPinnedAgent: (_agent, ip) => pinned.push(ip)
+    });
+    try {
+      await (await session.request('GET', '/rci/show/version')).text();
+      server.closeConnections();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      failLookup = true;
+
+      await (await session.request('POST', '/rci/', body)).text();
+
+      expect(pinned).toEqual(['127.0.0.1']);
+      expect(receivedBodies).toEqual(['{"show":{"version":{}}}']);
+      expect(receivedBodies[0]).not.toContain('configuration');
     } finally {
       await server.close();
     }
@@ -797,7 +949,7 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     }
   });
 
-  it('uses one absolute deadline across a pinned attempt and creates no later Agent', async () => {
+  it('treats a pinned timeout as terminal with a stable clock and creates no later Agent', async () => {
     const server = await startTlsServer(validCertificate, '127.0.0.1', () => undefined);
     const pool = new EdgePool();
     pool.observe('127.0.0.1');
@@ -806,6 +958,7 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     const session = new RemoteSession({
       ...baseOptions,
       timeoutMs: 50,
+      now: () => 0,
       endpoint: `https://${logicalHostname}:${server.port}/rci/`
     }, {
       ca: validCertificate.cert,
@@ -817,9 +970,17 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       }
     });
     try {
-      await expect(session.request('GET', '/rci/show/version')).rejects.toThrow(/deadline/i);
+      let failure: unknown;
+      try {
+        await session.request('GET', '/rci/show/version');
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(TransportError);
+      expect((failure as Error).message).toMatch(/deadline/i);
       expect(agents).toHaveLength(1);
       expect(agents[0]!.destroy).toHaveBeenCalled();
+      expect(pool.getEntry('127.0.0.1')?.lastFailureAt).toBeUndefined();
     } finally {
       await server.close();
     }

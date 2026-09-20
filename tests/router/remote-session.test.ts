@@ -1,19 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import { digestAuthorization, parseChallenges, RemoteSession } from '../../src/router/remote-session.js';
 import { AuthError, RciError, RemoteCapabilityError, TransportError } from '../../src/router/errors.js';
+import { EdgePool } from '../../src/router/edge-pool.js';
 import { Rci } from '../../src/router/rci.js';
 
 const opts = { endpoint: 'https://rci.example.test/rci/', login: 'agent', password: 'not-a-real-password', routerId: 'lab' };
 
+function seededFallbackGuard() {
+  const edgePool = new EdgePool();
+  edgePool.observe('192.0.2.200');
+  const pinned = vi.fn((_agent: unknown, _ip: string): void => undefined);
+  return { dependencies: { edgePool, onPinnedAgent: pinned }, pinned };
+}
+
 describe('remote Digest authentication', () => {
   it('parses multiple challenges and prefers Digest', async () => {
+    const body: Record<string, unknown> = { show: { version: {} } };
     const fetch = vi.fn()
-      .mockResolvedValueOnce(new Response('', { status: 401, headers: { 'www-authenticate': 'Basic realm="proxy", Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5' } }))
+      .mockImplementationOnce(() => {
+        delete body['show'];
+        body['system'] = { configuration: { save: {} } };
+        return Promise.resolve(new Response('', { status: 401, headers: { 'www-authenticate': 'Basic realm="proxy", Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5' } }));
+      })
       .mockResolvedValueOnce(new Response('{}', { status: 200 }));
-    await new RemoteSession({ ...opts, fetch }).request('POST', '/rci/', { show: { version: {} } });
+    await new RemoteSession({ ...opts, fetch }).request('POST', '/rci/', body);
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[0]![1].headers).not.toHaveProperty('authorization');
     expect(fetch.mock.calls[1]![1].headers.authorization).toMatch(/^Digest /);
+    expect(fetch.mock.calls[1]![1].body).toBe('{"show":{"version":{}}}');
     expect(fetch.mock.calls[1]![0].toString()).not.toContain(opts.password);
   });
 
@@ -106,35 +120,45 @@ describe('remote failure policy', () => {
   });
   it.each([401, 403])('classifies HTTP %s as auth and does not retry', async status => {
     const fetch = vi.fn().mockResolvedValue(new Response('', { status }));
-    await expect(new RemoteSession({ ...opts, fetch }).request('GET', '/rci/show/version')).rejects.toBeInstanceOf(AuthError);
+    const guard = seededFallbackGuard();
+    await expect(new RemoteSession({ ...opts, fetch }, guard.dependencies)
+      .request('GET', '/rci/show/version')).rejects.toBeInstanceOf(AuthError);
     expect(fetch).toHaveBeenCalledTimes(status === 401 ? 1 : 1);
+    expect(guard.pinned).not.toHaveBeenCalled();
   });
 
   it('distinguishes a remote proxy denial of config export from RCI authentication', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('', { status: 403 }));
+    const guard = seededFallbackGuard();
     await expect(
-      new RemoteSession({ ...opts, fetch }).request('GET', '/ci/startup-config.txt')
+      new RemoteSession({ ...opts, fetch }, guard.dependencies).request('GET', '/ci/startup-config.txt')
     ).rejects.toBeInstanceOf(RemoteCapabilityError);
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(guard.pinned).not.toHaveBeenCalled();
   });
 
   it('distinguishes denial of the candidate RCI startup path from bad credentials', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(new Response('{}', { status: 200 }))
       .mockResolvedValueOnce(new Response('', { status: 403 }));
-    const session = new RemoteSession({ ...opts, fetch });
+    const guard = seededFallbackGuard();
+    const session = new RemoteSession({ ...opts, fetch }, guard.dependencies);
     await session.request('GET', '/rci/show/version');
     await expect(
       session.request('GET', '/rci/more?filename=startup-config')
     ).rejects.toBeInstanceOf(RemoteCapabilityError);
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(guard.pinned).not.toHaveBeenCalled();
   });
 
   it('keeps an initial candidate-path 403 classified as authentication failure', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('', { status: 403 }));
+    const guard = seededFallbackGuard();
     await expect(
-      new RemoteSession({ ...opts, fetch }).request('GET', '/rci/more?filename=startup-config')
+      new RemoteSession({ ...opts, fetch }, guard.dependencies)
+        .request('GET', '/rci/more?filename=startup-config')
     ).rejects.toBeInstanceOf(AuthError);
+    expect(guard.pinned).not.toHaveBeenCalled();
   });
 
   it('retries transport errors at most five times', async () => {
@@ -255,6 +279,30 @@ describe('remote replay-safety gate', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('reuses one immutable body snapshot when the caller mutates it during backoff', async () => {
+    const body: Record<string, unknown> = { show: { version: {} } };
+    const fetch = vi.fn().mockResolvedValueOnce(new Response('{}'));
+    const sleep = vi.fn(async () => {
+      delete body['show'];
+      body['system'] = { configuration: { save: {} } };
+    });
+    const session = new RemoteSession({
+      ...opts, fetch, attempts: 2, sleep, random: () => 0
+    });
+    await session.request('GET', '/rci/show/version');
+    fetch.mockClear();
+    fetch.mockRejectedValue(new Error('synthetic transport failure'));
+
+    await expect(session.request('POST', '/rci/', body)).rejects.toBeInstanceOf(TransportError);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.map(call => call[1].body)).toEqual([
+      '{"show":{"version":{}}}', '{"show":{"version":{}}}'
+    ]);
+    expect(JSON.stringify(fetch.mock.calls.map(call => call[1].body)))
+      .not.toContain('configuration');
+  });
+
   it.each([
     ['write', '/rci/', { system: { configuration: { save: {} } } }],
     ['multi-root', '/rci/', { show: {}, system: {} }],
@@ -299,9 +347,12 @@ describe('remote replay-safety gate', () => {
 
   it('stops transport fallback on an HTTP application response', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 500 }));
-    const response = await new RemoteSession({ ...opts, fetch }).request('GET', '/rci/show/version');
+    const guard = seededFallbackGuard();
+    const response = await new RemoteSession({ ...opts, fetch }, guard.dependencies)
+      .request('GET', '/rci/show/version');
     expect(response.status).toBe(500);
     expect(fetch).toHaveBeenCalledOnce();
+    expect(guard.pinned).not.toHaveBeenCalled();
   });
 
   it('does not convert a parsed semantic RCI failure into another transport attempt', async () => {
@@ -310,8 +361,10 @@ describe('remote replay-safety gate', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         status: [{ status: 'error', code: 'synthetic', ident: 'rci', message: 'rejected' }]
       })));
-    const session = new RemoteSession({ ...opts, fetch });
+    const guard = seededFallbackGuard();
+    const session = new RemoteSession({ ...opts, fetch }, guard.dependencies);
     await expect(new Rci(session).post({ show: { version: {} } })).rejects.toBeInstanceOf(RciError);
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(guard.pinned).not.toHaveBeenCalled();
   });
 });

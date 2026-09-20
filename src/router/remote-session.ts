@@ -61,6 +61,11 @@ interface ConnectorRecord {
   observationClaimed: boolean;
 }
 
+interface BodySnapshot {
+  readonly provided: boolean;
+  readonly serialized: string | null;
+}
+
 const requestCreation = new AsyncLocalStorage<RequestBinding>();
 const connectorCreation = new AsyncLocalStorage<ConnectorRecord>();
 const requestBindings = new WeakMap<object, RequestBinding>();
@@ -162,12 +167,20 @@ type AuthorizationState =
 const hash = (algorithm: string, value: string): string =>
   createHash(algorithm.replace('-sess', '').toLowerCase()).update(value).digest('hex');
 
-function isReplaySafe(method: string, url: URL, body: unknown, allowRetry: boolean): boolean {
+function isReplaySafe(method: string, url: URL, body: BodySnapshot,
+  allowRetry: boolean): boolean {
   if (!allowRetry) return false;
   if (method === 'GET') return true;
   if (method !== 'POST' || url.pathname !== '/rci/' || url.search !== '' ||
-      typeof body !== 'object' || body === null || Array.isArray(body)) return false;
-  const entries = Object.entries(body as Record<string, unknown>);
+      body.serialized === null) return false;
+  let value: unknown;
+  try {
+    value = JSON.parse(body.serialized);
+  } catch {
+    return false;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
   const show = entries[0]?.[1];
   return entries.length === 1 && entries[0]?.[0] === 'show' &&
     typeof show === 'object' && show !== null && !Array.isArray(show);
@@ -287,6 +300,10 @@ export class RemoteSession {
     if (controls.signal?.aborted) {
       throw this.transportError('request cancelled before it started', method, url);
     }
+    const bodySnapshot: BodySnapshot = {
+      provided: body !== undefined,
+      serialized: body === undefined ? null : JSON.stringify(body) ?? null
+    };
 
     if (this.authorization === null) {
       const existing = this.handshake;
@@ -302,7 +319,9 @@ export class RemoteSession {
         const flight = { promise: Promise.resolve<Response | null>(null), controller,
           waiters: 0, settled: false };
         flight.promise = this.discoverAuthorization(discoveryIsOperational ? method : 'GET',
-          discoveryUrl, discoveryIsOperational ? body : undefined, sharedDeadline,
+          discoveryUrl, discoveryIsOperational
+            ? bodySnapshot
+            : { provided: false, serialized: null }, sharedDeadline,
           controller.signal, discoveryIsOperational).finally(() => {
           flight.settled = true;
           if (this.handshake === flight) this.handshake = null;
@@ -316,10 +335,10 @@ export class RemoteSession {
       }
     }
 
-    let response = await this.send(method, url, body, deadline, true, controls.signal);
+    let response = await this.send(method, url, bodySnapshot, deadline, true, controls.signal);
     if (response.status === 401) {
       this.acceptChallenge(response, method, url);
-      response = await this.send(method, url, body, deadline, true, controls.signal);
+      response = await this.send(method, url, bodySnapshot, deadline, true, controls.signal);
     }
     return this.classify(response, method, url);
   }
@@ -355,7 +374,7 @@ export class RemoteSession {
     }
   }
 
-  private async discoverAuthorization(method: string, url: URL, body: unknown, deadline: number,
+  private async discoverAuthorization(method: string, url: URL, body: BodySnapshot, deadline: number,
     signal?: AbortSignal, allowRetry = true): Promise<Response | null> {
     const response = await this.send(method, url, body, deadline, false, signal, allowRetry);
     if (response.status !== 401) {
@@ -377,7 +396,8 @@ export class RemoteSession {
     else throw this.authError('HTTP 401 without a supported Digest or Basic challenge', method, url);
   }
 
-  private async send(method: string, url: URL, body: unknown, deadline: number, authenticate = true,
+  private async send(method: string, url: URL, body: BodySnapshot, deadline: number,
+    authenticate = true,
     signal?: AbortSignal, allowRetry = true): Promise<Response> {
     const replaySafe = isReplaySafe(method, url, body, allowRetry);
     const attempts = replaySafe ? this.opts.attempts ?? 5 : 1;
@@ -396,7 +416,7 @@ export class RemoteSession {
         if (remaining <= 0) throw this.transportError('request deadline exceeded', method, url);
         const headers: Record<string, string> = { accept: 'application/json' };
         if (authorization) headers['authorization'] = authorization;
-        if (body !== undefined) headers['content-type'] = 'application/json';
+        if (body.provided) headers['content-type'] = 'application/json';
         const attempt: NormalAttempt = {
           selected: new Set(),
           supplied: new Set(),
@@ -410,7 +430,7 @@ export class RemoteSession {
           const response = await this.fetch(url, {
             method,
             headers,
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            ...(body.provided ? { body: body.serialized } : {}),
             signal: attemptSignal,
             redirect: 'manual'
           }, this.normalAgent, { context, attempt });
@@ -458,7 +478,7 @@ export class RemoteSession {
     }
   }
 
-  private async fallback(method: string, url: URL, body: unknown,
+  private async fallback(method: string, url: URL, body: BodySnapshot,
     headers: Record<string, string>, deadline: number, signal: AbortSignal | undefined,
     context: SendContext, original: TransportError): Promise<Response> {
     if (signal?.aborted || deadline <= this.now()) throw original;
@@ -475,6 +495,7 @@ export class RemoteSession {
       if (remaining <= 0) throw this.transportError('request deadline exceeded', method, url);
 
       let agent: Agent | undefined;
+      let timeout: AbortSignal | undefined;
       try {
         const candidateAgent = this.createPinnedAgent(ip);
         agent = candidateAgent;
@@ -483,12 +504,12 @@ export class RemoteSession {
         } catch {
           // Test-only observation cannot alter the production request.
         }
-        const timeout = AbortSignal.timeout(Math.max(1, Math.ceil(remaining)));
+        timeout = AbortSignal.timeout(Math.max(1, Math.ceil(remaining)));
         const attemptSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
         const response = await this.fetch(url, {
           method,
           headers,
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(body.provided ? { body: body.serialized } : {}),
           signal: attemptSignal,
           redirect: 'manual'
         }, candidateAgent);
@@ -501,6 +522,7 @@ export class RemoteSession {
           this.trackCleanup(() => failedAgent.destroy());
         }
         if (signal?.aborted) throw this.transportError('request cancelled', method, url);
+        if (timeout?.aborted) throw this.transportError('request deadline exceeded', method, url);
         if (deadline <= this.now()) throw this.transportError('request deadline exceeded', method, url);
         this.pool.recordFailure(ip);
         lastError = this.transportError(
