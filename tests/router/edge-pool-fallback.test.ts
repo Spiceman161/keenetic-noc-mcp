@@ -1006,6 +1006,108 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     expect(pinned).not.toHaveBeenCalled();
   });
 
+  it('reports cancellation after the final normal failure before fallback selection', async () => {
+    const server = await startTlsServer(validCertificate);
+    const pool = new EdgePool();
+    const controller = new AbortController();
+    const pinned = vi.fn();
+    let race = false;
+    let failLookup = false;
+    let clockReads = 0;
+    const session = new RemoteSession({
+      ...baseOptions,
+      endpoint: `https://${logicalHostname}:${server.port}/rci/`,
+      now: () => {
+        if (!race) return 0;
+        clockReads += 1;
+        if (clockReads === 4) controller.abort();
+        return 0;
+      }
+    }, {
+      ca: validCertificate.cert,
+      edgePool: pool,
+      lookup: lookupFrom(() => failLookup
+        ? Object.assign(new Error('synthetic DNS failure'), { code: 'ENOTFOUND' })
+        : [{ address: '127.0.0.1', family: 4 }]),
+      onPinnedAgent: pinned
+    });
+    try {
+      await (await session.request('GET', '/rci/show/version')).text();
+      const before = { ...pool.getEntry('127.0.0.1')! };
+      server.closeConnections();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      failLookup = true;
+      race = true;
+
+      let failure: unknown;
+      try {
+        await session.request('GET', '/rci/show/system', undefined, {
+          signal: controller.signal
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(clockReads).toBe(4);
+      expect(failure).toBeInstanceOf(TransportError);
+      expect((failure as Error).message).toMatch(/request cancelled/i);
+      expect((failure as Error).message).not.toMatch(/failed after/i);
+      expect(pinned).not.toHaveBeenCalled();
+      expect(pool.getEntry('127.0.0.1')).toEqual(before);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports deadline expiry after the final normal failure before fallback selection', async () => {
+    const server = await startTlsServer(validCertificate);
+    const pool = new EdgePool();
+    const pinned = vi.fn();
+    let race = false;
+    let failLookup = false;
+    let clockReads = 0;
+    const session = new RemoteSession({
+      ...baseOptions,
+      endpoint: `https://${logicalHostname}:${server.port}/rci/`,
+      now: () => {
+        if (!race) return 0;
+        clockReads += 1;
+        return clockReads >= 5 ? baseOptions.timeoutMs : 0;
+      }
+    }, {
+      ca: validCertificate.cert,
+      edgePool: pool,
+      lookup: lookupFrom(() => failLookup
+        ? Object.assign(new Error('synthetic DNS failure'), { code: 'ENOTFOUND' })
+        : [{ address: '127.0.0.1', family: 4 }]),
+      onPinnedAgent: pinned
+    });
+    try {
+      await (await session.request('GET', '/rci/show/version')).text();
+      const before = { ...pool.getEntry('127.0.0.1')! };
+      server.closeConnections();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      failLookup = true;
+      race = true;
+
+      let failure: unknown;
+      try {
+        await session.request('GET', '/rci/show/system');
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(clockReads).toBe(5);
+      expect(failure).toBeInstanceOf(TransportError);
+      expect((failure as Error).message).toMatch(/request deadline exceeded/i);
+      expect((failure as Error).message).not.toMatch(/failed after/i);
+      expect(pinned).not.toHaveBeenCalled();
+      expect(pool.getEntry('127.0.0.1')).toEqual(before);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('starts graceful close on success and cleanup rejection cannot replace the response', async () => {
     vi.restoreAllMocks();
     const server = await startTlsServer(validCertificate);

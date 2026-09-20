@@ -481,7 +481,10 @@ export class RemoteSession {
   private async fallback(method: string, url: URL, body: BodySnapshot,
     headers: Record<string, string>, deadline: number, signal: AbortSignal | undefined,
     context: SendContext, original: TransportError): Promise<Response> {
-    if (signal?.aborted || deadline <= this.now()) throw original;
+    if (signal?.aborted) throw this.transportError('request cancelled', method, url);
+    if (deadline <= this.now()) {
+      throw this.transportError('request deadline exceeded', method, url);
+    }
     const candidates = this.pool.candidates(context.attempted, 2);
     if (candidates.length === 0) throw original;
     let lastError = original;
