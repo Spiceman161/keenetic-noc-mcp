@@ -958,12 +958,15 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     }
   });
 
-  it('does not count caller cancellation as an edge-health failure', async () => {
+  it('flushes post-connect cancellation evidence without mutating pool health', async () => {
     let requestStarted!: () => void;
     const started = new Promise<void>(resolve => { requestStarted = resolve; });
     const server = await startTlsServer(validCertificate, '127.0.0.1', () => requestStarted());
     const pool = new EdgePool();
     const controller = new AbortController();
+    const collector = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
     const session = new RemoteSession({
       ...baseOptions,
       timeoutMs: 5_000,
@@ -974,16 +977,48 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       lookup: lookupFrom(() => [{ address: '127.0.0.1', family: 4 }])
     });
     try {
-      const pending = session.request('GET', '/rci/show/version', undefined, {
-        signal: controller.signal
-      });
+      const pending = runWithRciTransportCollector(collector, () => session.request(
+        'GET', '/rci/show/version', undefined, { signal: controller.signal }
+      ));
       await started;
       controller.abort();
       await expect(pending).rejects.toBeInstanceOf(TransportError);
-      expect(pool.getEntry('127.0.0.1')?.lastFailureAt).toBeUndefined();
+      expect(pool.size()).toBe(0);
+      await expect(Promise.resolve(collector.seal())).resolves.toMatchObject({
+        normal_attempts: 1,
+        observed_edge_ips: ['127.0.0.1'],
+        selected_normal_edge_ips: ['127.0.0.1'],
+        correlation_complete: true,
+        terminal_reasons: { cancelled: 1 }
+      });
     } finally {
       await server.close();
     }
+  });
+
+  it('records an honest incomplete pre-correlation deadline without mutating pool health', async () => {
+    const pool = new EdgePool();
+    const collector = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const fetch = vi.fn((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('synthetic abort')), {
+          once: true
+        });
+      }));
+    const session = new RemoteSession({ ...baseOptions, fetch, timeoutMs: 20 }, { edgePool: pool });
+
+    await expect(runWithRciTransportCollector(collector,
+      () => session.request('GET', '/rci/show/version'))).rejects.toThrow(/deadline/i);
+    expect(pool.size()).toBe(0);
+    await expect(Promise.resolve(collector.seal())).resolves.toMatchObject({
+      normal_attempts: 1,
+      observed_edge_ips: [],
+      selected_normal_edge_ips: [],
+      correlation_complete: false,
+      terminal_reasons: { deadline_exceeded: 1 }
+    });
   });
 
   it('destroys an in-flight pinned Agent on cancellation and starts no later candidate', async () => {
@@ -1065,7 +1100,7 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       expect(agents).toHaveLength(1);
       expect(agents[0]!.destroy).toHaveBeenCalled();
       expect(pool.getEntry('127.0.0.1')?.lastFailureAt).toBeUndefined();
-      expect(collector.seal()).toMatchObject({
+      await expect(Promise.resolve(collector.seal())).resolves.toMatchObject({
         fallback_attempts: 1, terminal_reasons: { deadline_exceeded: 1 },
         fallback_events: [{ outcome: 'deadline_exceeded', candidates: [{ attempted: true }, { attempted: false }] }]
       });

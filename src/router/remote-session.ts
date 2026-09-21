@@ -311,6 +311,7 @@ export class RemoteSession {
     // operation alive through the eventual post-auth dispatch and terminal
     // outcome, rather than sealing it when discovery alone settles.
     const releaseTelemetryLease = operation?.acquireLease();
+    let authTerminalObserved = false;
     try {
       if (controls.signal?.aborted) {
         operation?.terminal('cancelled');
@@ -326,7 +327,10 @@ export class RemoteSession {
         if (existing) {
           collector?.sharedAuthWait();
           try {
-            await this.waitForHandshake(existing, deadline, method, url, controls.signal, operation);
+            const direct = await this.waitForHandshake(
+              existing, deadline, method, url, controls.signal, operation
+            );
+            authTerminalObserved = direct === null;
           } catch (error) {
             this.sharedAuthTerminal(operation, error, controls.signal, deadline);
             throw error;
@@ -341,6 +345,9 @@ export class RemoteSession {
           const flight: NonNullable<RemoteSession['handshake']> = {
             promise: Promise.resolve<Response | null>(null), controller, waiters: 0, settled: false
           };
+          // The initiating operation owns discovery evidence even if its caller
+          // leaves while another waiter keeps this shared flight alive.
+          const releaseFlightTelemetryLease = operation?.acquireLease();
           flight.promise = this.discoverAuthorization(discoveryIsOperational ? method : 'GET',
             discoveryUrl, discoveryIsOperational
               ? bodySnapshot
@@ -349,6 +356,7 @@ export class RemoteSession {
             () => flight.interruption).finally(() => {
             flight.settled = true;
             if (this.handshake === flight) this.handshake = null;
+            releaseFlightTelemetryLease?.();
           });
           // Every caller can independently leave the shared flight. Keep the
           // flight's eventual rejection observed when the final waiter cancels.
@@ -357,6 +365,7 @@ export class RemoteSession {
           const direct = await this.waitForHandshake(
             flight, deadline, method, url, controls.signal, operation
           );
+          authTerminalObserved = direct === null;
           if (direct && discoveryIsOperational) {
             operation?.terminal('normal_response');
             return this.classify(direct, method, url);
@@ -368,6 +377,7 @@ export class RemoteSession {
         method, url, bodySnapshot, deadline, true, controls.signal, true, operation
       );
       if (response.status === 401) {
+        authTerminalObserved = true;
         try {
           this.acceptChallenge(response, method, url);
         } catch (error) {
@@ -380,6 +390,11 @@ export class RemoteSession {
       }
       operation?.terminal('normal_response');
       return this.classify(response, method, url);
+    } catch (error) {
+      if (authTerminalObserved && error instanceof AuthError) {
+        operation?.terminal('normal_response');
+      }
+      throw error;
     } finally {
       releaseTelemetryLease?.();
     }
@@ -453,11 +468,6 @@ export class RemoteSession {
     const digest = offered.find(challenge => challenge.scheme === 'digest');
     const basic = offered.find(challenge => challenge.scheme === 'basic');
     if (digest) {
-      // Validate a chosen Digest challenge before sharing it. Otherwise every
-      // joiner observes a later local header-construction error as though no
-      // HTTP/auth terminal had occurred.
-      digestAuthorization({ challenge: digest, username: this.opts.login, password: this.opts.password,
-        method, uri: `${url.pathname}${url.search}` });
       this.authorization = {
         kind: 'digest', challenge: digest, cnonce: randomBytes(12).toString('hex'), nonceCount: 0
       };
@@ -517,6 +527,8 @@ export class RemoteSession {
           const interrupted = signal?.aborted || timeout.aborted || deadline <= this.now();
           if (!finalAttempt) {
             this.finishNormalAttempt(attempt, interrupted ? 'neutral' : 'failure', operation);
+          } else if (interrupted) {
+            this.recordNormalAttemptEvidence(attempt, operation);
           }
           context.correlationComplete &&= attempt.correlationComplete;
           if (signal?.aborted) {
@@ -566,9 +578,7 @@ export class RemoteSession {
 
   private finishNormalAttempt(attempt: NormalAttempt,
     outcome: 'success' | 'failure' | 'neutral', operation?: RciTransportOperation): void {
-    for (const ip of attempt.observation) operation?.observedEdge(ip);
-    for (const ip of attempt.selected) operation?.selectedNormalEdge(ip);
-    operation?.correlationComplete(attempt.correlationComplete);
+    this.recordNormalAttemptEvidence(attempt, operation);
     for (const ip of attempt.observation) this.pool.observe(ip);
     if (!attempt.correlationComplete || outcome === 'neutral') return;
     const healthSet = attempt.selected.size > 0 ? attempt.selected : attempt.supplied;
@@ -578,6 +588,13 @@ export class RemoteSession {
     }
   }
 
+  private recordNormalAttemptEvidence(attempt: NormalAttempt,
+    operation?: RciTransportOperation): void {
+    for (const ip of attempt.observation) operation?.observedEdge(ip);
+    for (const ip of attempt.selected) operation?.selectedNormalEdge(ip);
+    operation?.correlationComplete(attempt.correlationComplete);
+  }
+
   private async fallback(method: string, url: URL, body: BodySnapshot,
     headers: Record<string, string>, deadline: number, signal: AbortSignal | undefined,
     context: SendContext, normalAttempt: NormalAttempt, original: TransportError,
@@ -585,6 +602,7 @@ export class RemoteSession {
     abortReason?: () => 'cancelled' | 'deadline_exceeded' | undefined): Promise<Response> {
     if (signal?.aborted) {
       const reason = abortReason?.() ?? 'cancelled';
+      this.recordNormalAttemptEvidence(normalAttempt, operation);
       operation?.terminal(reason);
       throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
     }
@@ -592,10 +610,12 @@ export class RemoteSession {
     // The clock read is the last synchronous admission boundary before pool evidence is committed.
     if (signal?.aborted) {
       const reason = abortReason?.() ?? 'cancelled';
+      this.recordNormalAttemptEvidence(normalAttempt, operation);
       operation?.terminal(reason);
       throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
     }
     if (deadline <= now) {
+      this.recordNormalAttemptEvidence(normalAttempt, operation);
       operation?.terminal('deadline_exceeded');
       throw this.transportError('request deadline exceeded', method, url);
     }

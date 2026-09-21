@@ -101,7 +101,8 @@ describe('remote Digest authentication', () => {
   it('accounts for an unusable shared Digest challenge as an HTTP/auth terminal without copying attempts', async () => {
     let releaseChallenge!: (response: Response) => void;
     const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
-    const session = new RemoteSession({ ...opts, fetch: vi.fn().mockReturnValueOnce(challenge), attempts: 1 });
+    const fetch = vi.fn().mockReturnValueOnce(challenge);
+    const session = new RemoteSession({ ...opts, fetch, attempts: 1 });
     const initiator = new RciTransportCollector({
       connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
     });
@@ -117,10 +118,21 @@ describe('remote Digest authentication', () => {
     } }));
     await expect(first).rejects.toBeInstanceOf(AuthError);
     await expect(second).rejects.toBeInstanceOf(AuthError);
+    expect(initiator.seal()).toMatchObject({
+      shared_auth_waits: 0, normal_attempts: 1, correlation_complete: false,
+      terminal_reasons: { normal_response: 1 }
+    });
     expect(joiner.seal()).toMatchObject({
       shared_auth_waits: 1, normal_attempts: 0, correlation_complete: null,
       terminal_reasons: { normal_response: 1 }
     });
+
+    const repeat = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    await expect(runWithRciTransportCollector(repeat,
+      () => session.request('GET', '/rci/show/version'))).rejects.toBeInstanceOf(AuthError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('accounts for final HTTP responses before auth or capability classification throws', async () => {
@@ -182,6 +194,47 @@ describe('remote Digest authentication', () => {
       'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5'
     } }));
     await expect(second).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('keeps the initiating telemetry flight leased after cancellation while a joiner survives', async () => {
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => challenge)
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+    const session = new RemoteSession({ ...opts, fetch, attempts: 1 });
+    const controller = new AbortController();
+    const initiator = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const joiner = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const first = runWithRciTransportCollector(initiator,
+      () => session.request('GET', '/rci/show/version', undefined, { signal: controller.signal }));
+    const second = runWithRciTransportCollector(joiner,
+      () => session.request('GET', '/rci/show/system'));
+
+    controller.abort();
+    await expect(first).rejects.toBeInstanceOf(TransportError);
+    const delayed = initiator.seal();
+    expect(delayed).toBeInstanceOf(Promise);
+    let sealed = false;
+    void Promise.resolve(delayed).then(() => { sealed = true; });
+    await Promise.resolve();
+    expect(sealed).toBe(false);
+
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Basic realm="proxy"'
+    } }));
+    await expect(second).resolves.toMatchObject({ status: 200 });
+    await expect(delayed).resolves.toMatchObject({
+      normal_attempts: 1,
+      correlation_complete: false,
+      terminal_reasons: { cancelled: 1 },
+      finalized_after_handler: true
+    });
+    expect(joiner.seal()).toMatchObject({ shared_auth_waits: 1, normal_attempts: 1 });
   });
 
   it('never shares a cold active POST as the authorization-discovery flight', async () => {
