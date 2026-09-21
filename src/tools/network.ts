@@ -1,6 +1,7 @@
 import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { boundedArrayEnvelope } from '../shape/config.js';
+import { projectPingCheck } from '../shape/internet-diagnostic.js';
 import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -28,7 +29,8 @@ export function registerNetworkTools(server: ToolRegistrar, ctx: ToolContext): v
         reliable: s['reliable'] === true,
         gatewayAccessible: s['gateway-accessible'] === true,
         dnsAccessible: s['dns-accessible'] === true,
-        captiveAccessible: s['captive-accessible'] === true
+        captiveAccessible: s['captive-accessible'] === true,
+        pingCheck: projectPingCheck(s)
       }, ctx.maxResponseBytes);
     })
   );

@@ -96,6 +96,15 @@ Remote composite diagnosis does not request `/ci/startup-config.txt`; it keeps
 the saved-state comparison unknown without broadening the credentialed request
 surface.
 
+`get_internet_status` and `diagnose_internet` share one fixed-size allowlisted
+Ping Check projection from their existing bounded `show/internet/status` read.
+It reports only configured state, a current verdict and bounded verdict basis,
+exact gateway exclusion and safe failure-count observations, plus an explicit
+unknown/not-applicable transition-reason value. It does not add a router read
+or derive a threshold, transition time, active path, successful failover, or
+historical causality from current fields, logs, configuration, routes, or
+interface state.
+
 `diagnose_dns` follows the same sequential KeenDNS-safe collection model. It
 keeps proxy runtime, internet reachability, the `dns-proxy` and
 `ip/name-server` configuration branches, route/interface association, and log

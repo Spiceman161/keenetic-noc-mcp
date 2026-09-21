@@ -155,6 +155,14 @@ describe('diagnose_internet', () => {
       'vpn-default-route', 'recent-logs', 'configuration-state'
     ]);
     expect(out.evidence.internet.data.checkedAt).toBe('Fri Aug 7 03:54:06 2026');
+    expect(out.evidence.internet.data.pingCheck).toEqual({
+      configured: true,
+      verdict: 'pass',
+      verdictReason: 'check-passed',
+      gatewayExcluded: null,
+      gatewayFailures: null,
+      transitionReason: 'unknown'
+    });
     expect(out.evidence.routes.data.items[0]).not.toHaveProperty('gateway');
     expect(out.findings).toEqual([]);
     expect(config.annotations?.readOnlyHint).toBe(true);
@@ -792,5 +800,72 @@ describe('diagnose_internet', () => {
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8_000);
     expect(JSON.parse(text)).toMatchObject({ schemaVersion: 1, truncated: true });
     expect(text).not.toContain('endpoint-sentinel');
+  });
+
+  it('keeps disabled, unknown, and conflicting Ping Check semantics separate from diagnostic findings', async () => {
+    const disabled = payload(await setup({ values: { 'show/internet/status': {
+      checked: false, enabled: false, reliable: true, internet: false,
+      'gateway-accessible': false, 'dns-accessible': false
+    } } }).handler({}));
+    expect(disabled.evidence.internet.data.pingCheck).toMatchObject({
+      configured: false,
+      verdict: 'no-active-check',
+      verdictReason: 'no-active-check',
+      transitionReason: 'not-applicable'
+    });
+    expect(disabled.findings.some((finding: any) => finding.severity === 'critical')).toBe(false);
+
+    for (const status of [
+      { checked: false, enabled: true, reliable: true, internet: false },
+      { checked: true, enabled: true, reliable: false, internet: true },
+      { checked: true, enabled: true, reliable: true, internet: true, 'gateway-accessible': false },
+      { checked: true, enabled: {}, reliable: [], internet: 'up' }
+    ]) {
+      const out = payload(await setup({ values: { 'show/internet/status': status } }).handler({}));
+      expect(out.evidence.internet.data.pingCheck.verdict).toBe('unknown');
+    }
+  });
+
+  it('keeps an RCI-level internet source failure unavailable without a synthetic Ping Check value', async () => {
+    const out = payload(await setup({ failures: {
+      'show/internet/status': new RciError('private response sentinel', {
+        path: 'show/internet/status', code: '500', ident: 'http'
+      })
+    } }).handler({}));
+    expect(out.evidence.internet).toEqual({ status: 'unavailable', reason: 'rci-error', data: null });
+    expect(JSON.stringify(out)).not.toContain('private response sentinel');
+  });
+
+  it('does not derive Ping Check state or a transition reason from untrusted fields or logs', async () => {
+    const transition = 'transition-secret-sentinel';
+    const logs = { show: { log: { log: {
+      '1': { ident: 'Network', message: { message: `transition-reason=${transition}` } }
+    } } } };
+    const result = await setup({
+      values: { 'show/internet/status': {
+        checked: true, enabled: true, reliable: true, internet: false,
+        'gateway-accessible': true, 'dns-accessible': false,
+        'transition-reason': transition,
+        gateway: {
+          excluded: true, failures: 4, interface: 'GigabitEthernet1',
+          address: transition, secret: transition
+        }
+      } },
+      logs,
+      maxResponseBytes: 8_000
+    }).handler({});
+    const text = result.content.map(part => part.text).join('');
+    const out = JSON.parse(text);
+    expect(out.evidence.internet.data.pingCheck).toEqual({
+      configured: true,
+      verdict: 'fail',
+      verdictReason: 'dns-unreachable',
+      gatewayExcluded: true,
+      gatewayFailures: 4,
+      transitionReason: 'unknown'
+    });
+    expect(out.checks.map((check: any) => check.id)).toHaveLength(8);
+    expect(text).not.toContain(transition);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(8_000);
   });
 });

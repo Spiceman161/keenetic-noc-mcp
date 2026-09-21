@@ -182,6 +182,29 @@ only untrusted availability/count metadata remains, and it never creates a
 finding. B1 does not diagnose IPv6 routes and does not apply CPU, memory, or
 connection-table thresholds.
 
+Both `diagnose_internet.evidence.internet.data` and `get_internet_status` add
+the same fixed-size `pingCheck` observation from their existing
+`show/internet/status` read. Its six fields are `configured`, `verdict`,
+`verdictReason`, `gatewayExcluded`, `gatewayFailures`, and `transitionReason`.
+`configured` is only the exact observed `enabled` boolean. `verdict` is `pass`
+or `fail` only for a current, non-conflicting explicit aggregate result;
+otherwise it is `unknown`, except exact `enabled: false` is
+`no-active-check`. `verdictReason` is a bounded current-verdict basis, not a
+historical transition cause. `gatewayExcluded` and `gatewayFailures` are only
+exact current gateway observations and do not establish a threshold, timing,
+active path, or successful failover.
+
+`transitionReason` is `not-applicable` only for an explicit no-active-check;
+it is otherwise `unknown` because no structured historical transition reason
+is established. Logs and configuration are never used to populate it. A
+successful source with absent, malformed, stale, unreliable, or contradictory
+fields produces `null` or `unknown`; that differs from
+`diagnose_internet.evidence.internet.status: "unavailable"`, where its existing
+safe reason applies and data is null. `get_internet_status` retains its typed
+MCP errors for an unreadable source. Its legacy boolean scalars remain for
+compatibility and still use their existing false-coercing behavior; use
+`pingCheck` when unknown-aware semantics are required.
+
 ## VPN interface discovery
 
 VPN-only views use exactly these existing interface type literals: `Wireguard`,

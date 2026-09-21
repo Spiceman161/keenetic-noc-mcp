@@ -49,6 +49,24 @@ export interface InternetEvidence {
   captiveAccessible: boolean | null;
   internet: boolean | null;
   gatewayInterface: string | null;
+  pingCheck: PingCheckState;
+}
+
+export interface PingCheckState {
+  configured: boolean | null;
+  verdict: 'pass' | 'fail' | 'no-active-check' | 'unknown';
+  verdictReason:
+    | 'check-passed'
+    | 'gateway-unreachable'
+    | 'dns-unreachable'
+    | 'captive-unreachable'
+    | 'internet-check-failed'
+    | 'conflicting-status'
+    | 'no-active-check'
+    | 'unknown';
+  gatewayExcluded: boolean | null;
+  gatewayFailures: number | null;
+  transitionReason: 'not-applicable' | 'unknown';
 }
 
 export interface InterfaceEvidence {
@@ -234,8 +252,56 @@ export function projectInternet(raw: unknown): InternetEvidence {
     dnsAccessible: nullableBoolean(value['dns-accessible']),
     captiveAccessible: nullableBoolean(value['captive-accessible']),
     internet: nullableBoolean(value['internet']),
-    gatewayInterface: safeString(gateway['interface']) || null
+    gatewayInterface: safeString(gateway['interface']) || null,
+    pingCheck: projectPingCheckFields(value, gateway)
   };
+}
+
+export function projectPingCheck(raw: unknown): PingCheckState {
+  const value = record(raw);
+  return projectPingCheckFields(value, record(value['gateway']));
+}
+
+function projectPingCheckFields(
+  value: Record<string, unknown>,
+  gateway: Record<string, unknown>
+): PingCheckState {
+  const configured = nullableBoolean(value['enabled']);
+  const gatewayExcluded = nullableBoolean(gateway['excluded']);
+  const failures = gateway['failures'];
+  const gatewayFailures = typeof failures === 'number' && Number.isSafeInteger(failures) && failures >= 0
+    ? failures
+    : null;
+  const state = (verdict: PingCheckState['verdict'], verdictReason: PingCheckState['verdictReason'],
+    transitionReason: PingCheckState['transitionReason']): PingCheckState => ({
+    configured,
+    verdict,
+    verdictReason,
+    gatewayExcluded,
+    gatewayFailures,
+    transitionReason
+  });
+
+  if (value['enabled'] === false) return state('no-active-check', 'no-active-check', 'not-applicable');
+
+  const checked = value['checked'];
+  const current = (checked === true || typeof checked === 'string' && checked !== '') &&
+    value['reliable'] !== false;
+  if (!current) return state('unknown', 'unknown', 'unknown');
+
+  const internet = value['internet'];
+  const gatewayAccessible = value['gateway-accessible'];
+  const dnsAccessible = value['dns-accessible'];
+  const captiveAccessible = value['captive-accessible'];
+  if (internet === true && (gatewayAccessible === false || dnsAccessible === false || captiveAccessible === false)) {
+    return state('unknown', 'conflicting-status', 'unknown');
+  }
+  if (internet === true) return state('pass', 'check-passed', 'unknown');
+  if (internet !== false) return state('unknown', 'unknown', 'unknown');
+  if (gatewayAccessible === false) return state('fail', 'gateway-unreachable', 'unknown');
+  if (gatewayAccessible === true && dnsAccessible === false) return state('fail', 'dns-unreachable', 'unknown');
+  if (captiveAccessible === false) return state('fail', 'captive-unreachable', 'unknown');
+  return state('fail', 'internet-check-failed', 'unknown');
 }
 
 export function projectInterfaces(raw: unknown): {
