@@ -1006,13 +1006,15 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     expect(pinned).not.toHaveBeenCalled();
   });
 
-  it('reports cancellation after the final normal failure before fallback selection', async () => {
+  it('discards correlated supplied-IP updates when cancellation wins fallback admission', async () => {
     const server = await startTlsServer(validCertificate);
-    const pool = new EdgePool();
+    let poolNow = 10;
+    const pool = new EdgePool({ now: () => poolNow });
+    pool.observe('127.0.0.2');
     const controller = new AbortController();
     const pinned = vi.fn();
     let race = false;
-    let failLookup = false;
+    let useFailingAddress = false;
     let clockReads = 0;
     const session = new RemoteSession({
       ...baseOptions,
@@ -1020,23 +1022,25 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       now: () => {
         if (!race) return 0;
         clockReads += 1;
-        if (clockReads === 4) controller.abort();
+        if (clockReads === 5) controller.abort();
         return 0;
       }
     }, {
       ca: validCertificate.cert,
       edgePool: pool,
-      lookup: lookupFrom(() => failLookup
-        ? Object.assign(new Error('synthetic DNS failure'), { code: 'ENOTFOUND' })
-        : [{ address: '127.0.0.1', family: 4 }]),
+      lookup: lookupFrom(() => [{
+        address: useFailingAddress ? '127.0.0.2' : '127.0.0.1', family: 4
+      }]),
       onPinnedAgent: pinned
     });
     try {
       await (await session.request('GET', '/rci/show/version')).text();
-      const before = { ...pool.getEntry('127.0.0.1')! };
+      const beforeWorking = { ...pool.getEntry('127.0.0.1')! };
+      const beforeSupplied = { ...pool.getEntry('127.0.0.2')! };
       server.closeConnections();
       await new Promise(resolve => setTimeout(resolve, 20));
-      failLookup = true;
+      useFailingAddress = true;
+      poolNow = 20;
       race = true;
 
       let failure: unknown;
@@ -1048,23 +1052,33 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
         failure = error;
       }
 
-      expect(clockReads).toBe(4);
+      expect(clockReads).toBe(5);
       expect(failure).toBeInstanceOf(TransportError);
       expect((failure as Error).message).toMatch(/request cancelled/i);
       expect((failure as Error).message).not.toMatch(/failed after/i);
       expect(pinned).not.toHaveBeenCalled();
-      expect(pool.getEntry('127.0.0.1')).toEqual(before);
+      expect(pool.getEntry('127.0.0.1')).toEqual(beforeWorking);
+      expect(pool.getEntry('127.0.0.2')).toEqual(beforeSupplied);
     } finally {
       await server.close();
     }
   });
 
-  it('reports deadline expiry after the final normal failure before fallback selection', async () => {
-    const server = await startTlsServer(validCertificate);
-    const pool = new EdgePool();
+  it('discards correlated selected-IP updates when deadline wins fallback admission', async () => {
+    let failNormalRequest = false;
+    const server = await startTlsServer(validCertificate, '127.0.0.1', (_request, response) => {
+      if (failNormalRequest) {
+        response.destroy();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{}');
+    });
+    let poolNow = 10;
+    const pool = new EdgePool({ now: () => poolNow });
+    pool.observe('127.0.0.2');
     const pinned = vi.fn();
     let race = false;
-    let failLookup = false;
     let clockReads = 0;
     const session = new RemoteSession({
       ...baseOptions,
@@ -1077,17 +1091,17 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     }, {
       ca: validCertificate.cert,
       edgePool: pool,
-      lookup: lookupFrom(() => failLookup
-        ? Object.assign(new Error('synthetic DNS failure'), { code: 'ENOTFOUND' })
-        : [{ address: '127.0.0.1', family: 4 }]),
+      lookup: lookupFrom(() => [{ address: '127.0.0.1', family: 4 }]),
       onPinnedAgent: pinned
     });
     try {
       await (await session.request('GET', '/rci/show/version')).text();
-      const before = { ...pool.getEntry('127.0.0.1')! };
+      const beforeSelected = { ...pool.getEntry('127.0.0.1')! };
+      const beforeCandidate = { ...pool.getEntry('127.0.0.2')! };
       server.closeConnections();
       await new Promise(resolve => setTimeout(resolve, 20));
-      failLookup = true;
+      failNormalRequest = true;
+      poolNow = 20;
       race = true;
 
       let failure: unknown;
@@ -1102,7 +1116,8 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       expect((failure as Error).message).toMatch(/request deadline exceeded/i);
       expect((failure as Error).message).not.toMatch(/failed after/i);
       expect(pinned).not.toHaveBeenCalled();
-      expect(pool.getEntry('127.0.0.1')).toEqual(before);
+      expect(pool.getEntry('127.0.0.1')).toEqual(beforeSelected);
+      expect(pool.getEntry('127.0.0.2')).toEqual(beforeCandidate);
     } finally {
       await server.close();
     }

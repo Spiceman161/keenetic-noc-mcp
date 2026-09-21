@@ -437,21 +437,29 @@ export class RemoteSession {
           this.finishNormalAttempt(attempt, 'success');
           return response;
         } catch (cause) {
+          const finalAttempt = attemptNumber >= attempts;
           const interrupted = signal?.aborted || timeout.aborted || deadline <= this.now();
-          this.finishNormalAttempt(attempt, interrupted ? 'neutral' : 'failure');
+          if (!finalAttempt) {
+            this.finishNormalAttempt(attempt, interrupted ? 'neutral' : 'failure');
+          }
           context.correlationComplete &&= attempt.correlationComplete;
           if (signal?.aborted) throw this.transportError('request cancelled', method, url);
           if (timeout.aborted || deadline <= this.now()) {
             throw this.transportError('request deadline exceeded', method, url);
           }
-          if (attemptNumber >= attempts) {
+          if (finalAttempt) {
             const original = this.transportError(
               `failed after ${attempts} attempts: ${redactText(this.causeMessage(cause))}`,
               method,
               url
             );
-            if (!replaySafe || !context.correlationComplete) throw original;
-            return await this.fallback(method, url, body, headers, deadline, signal, context, original);
+            if (!replaySafe || !context.correlationComplete) {
+              this.finishNormalAttempt(attempt, 'failure');
+              throw original;
+            }
+            return await this.fallback(
+              method, url, body, headers, deadline, signal, context, attempt, original
+            );
           }
           const base = 1000 * 2 ** (attemptNumber - 1);
           const delay = base * (1 + (this.opts.random ?? Math.random)() * 0.25);
@@ -480,11 +488,15 @@ export class RemoteSession {
 
   private async fallback(method: string, url: URL, body: BodySnapshot,
     headers: Record<string, string>, deadline: number, signal: AbortSignal | undefined,
-    context: SendContext, original: TransportError): Promise<Response> {
+    context: SendContext, normalAttempt: NormalAttempt, original: TransportError): Promise<Response> {
     if (signal?.aborted) throw this.transportError('request cancelled', method, url);
-    if (deadline <= this.now()) {
+    const now = this.now();
+    // The clock read is the last synchronous admission boundary before pool evidence is committed.
+    if (signal?.aborted) throw this.transportError('request cancelled', method, url);
+    if (deadline <= now) {
       throw this.transportError('request deadline exceeded', method, url);
     }
+    this.finishNormalAttempt(normalAttempt, 'failure');
     const candidates = this.pool.candidates(context.attempted, 2);
     if (candidates.length === 0) throw original;
     let lastError = original;
