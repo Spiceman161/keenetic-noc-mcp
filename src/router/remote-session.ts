@@ -239,6 +239,7 @@ export class RemoteSession {
     controller: AbortController;
     waiters: number;
     settled: boolean;
+    interruption?: 'cancelled' | 'deadline_exceeded';
   } | null = null;
   private rciAccessProven = false;
   private readonly owner: OwnerToken = {};
@@ -306,74 +307,82 @@ export class RemoteSession {
     // ambient telemetry context.
     const collector = currentRciTransportCollector();
     const operation = collector?.beginOperation();
-    if (controls.signal?.aborted) {
-      operation?.terminal('cancelled');
-      throw this.transportError('request cancelled before it started', method, url);
-    }
-    const bodySnapshot: BodySnapshot = {
-      provided: body !== undefined,
-      serialized: body === undefined ? null : JSON.stringify(body) ?? null
-    };
+    // A handler can return while a cold POST is still authenticating. Keep its
+    // operation alive through the eventual post-auth dispatch and terminal
+    // outcome, rather than sealing it when discovery alone settles.
+    const releaseTelemetryLease = operation?.acquireLease();
+    try {
+      if (controls.signal?.aborted) {
+        operation?.terminal('cancelled');
+        throw this.transportError('request cancelled before it started', method, url);
+      }
+      const bodySnapshot: BodySnapshot = {
+        provided: body !== undefined,
+        serialized: body === undefined ? null : JSON.stringify(body) ?? null
+      };
 
-    if (this.authorization === null) {
-      const existing = this.handshake;
-      if (existing) {
-        collector?.sharedAuthWait();
-        try {
-          await this.waitForHandshake(existing, deadline, method, url, controls.signal, operation);
-        } catch (error) {
-          operation?.terminal('transport_failure');
-          throw error;
-        }
-      } else {
-        const controller = new AbortController();
-        const sharedDeadline = this.now() + (this.opts.timeoutMs ?? 10_000);
-        const discoveryIsOperational = method === 'GET';
-        const discoveryUrl = discoveryIsOperational
-          ? url
-          : new URL('/rci/show/version', base.origin);
-        const flight = { promise: Promise.resolve<Response | null>(null), controller,
-          waiters: 0, settled: false };
-        const releaseTelemetryLease = operation?.acquireLease();
-        flight.promise = this.discoverAuthorization(discoveryIsOperational ? method : 'GET',
-          discoveryUrl, discoveryIsOperational
-            ? bodySnapshot
-            : { provided: false, serialized: null }, sharedDeadline,
-          controller.signal, discoveryIsOperational, operation).finally(() => {
-          flight.settled = true;
-          if (this.handshake === flight) this.handshake = null;
-          releaseTelemetryLease?.();
-        });
-        // Every caller can independently leave the shared flight. Keep the
-        // flight's eventual rejection observed when the final waiter cancels.
-        void flight.promise.catch(() => undefined);
-        this.handshake = flight;
-        const direct = await this.waitForHandshake(
-          flight, deadline, method, url, controls.signal, operation
-        );
-        if (direct && discoveryIsOperational) {
-          operation?.terminal('normal_response');
-          return this.classify(direct, method, url);
+      if (this.authorization === null) {
+        const existing = this.handshake;
+        if (existing) {
+          collector?.sharedAuthWait();
+          try {
+            await this.waitForHandshake(existing, deadline, method, url, controls.signal, operation);
+          } catch (error) {
+            this.sharedAuthTerminal(operation, error, controls.signal, deadline);
+            throw error;
+          }
+        } else {
+          const controller = new AbortController();
+          const sharedDeadline = this.now() + (this.opts.timeoutMs ?? 10_000);
+          const discoveryIsOperational = method === 'GET';
+          const discoveryUrl = discoveryIsOperational
+            ? url
+            : new URL('/rci/show/version', base.origin);
+          const flight: NonNullable<RemoteSession['handshake']> = {
+            promise: Promise.resolve<Response | null>(null), controller, waiters: 0, settled: false
+          };
+          flight.promise = this.discoverAuthorization(discoveryIsOperational ? method : 'GET',
+            discoveryUrl, discoveryIsOperational
+              ? bodySnapshot
+              : { provided: false, serialized: null }, sharedDeadline,
+            controller.signal, discoveryIsOperational, operation,
+            () => flight.interruption).finally(() => {
+            flight.settled = true;
+            if (this.handshake === flight) this.handshake = null;
+          });
+          // Every caller can independently leave the shared flight. Keep the
+          // flight's eventual rejection observed when the final waiter cancels.
+          void flight.promise.catch(() => undefined);
+          this.handshake = flight;
+          const direct = await this.waitForHandshake(
+            flight, deadline, method, url, controls.signal, operation
+          );
+          if (direct && discoveryIsOperational) {
+            operation?.terminal('normal_response');
+            return this.classify(direct, method, url);
+          }
         }
       }
-    }
 
-    let response = await this.send(
-      method, url, bodySnapshot, deadline, true, controls.signal, true, operation
-    );
-    if (response.status === 401) {
-      try {
-        this.acceptChallenge(response, method, url);
-      } catch (error) {
-        operation?.terminal('normal_response');
-        throw error;
-      }
-      response = await this.send(
+      let response = await this.send(
         method, url, bodySnapshot, deadline, true, controls.signal, true, operation
       );
+      if (response.status === 401) {
+        try {
+          this.acceptChallenge(response, method, url);
+        } catch (error) {
+          operation?.terminal('normal_response');
+          throw error;
+        }
+        response = await this.send(
+          method, url, bodySnapshot, deadline, true, controls.signal, true, operation
+        );
+      }
+      operation?.terminal('normal_response');
+      return this.classify(response, method, url);
+    } finally {
+      releaseTelemetryLease?.();
     }
-    operation?.terminal('normal_response');
-    return this.classify(response, method, url);
   }
 
   private observedLookup(hostname: string, options: LookupOptions, callback: LookupCallback): void {
@@ -401,18 +410,30 @@ export class RemoteSession {
     operation?: RciTransportOperation): Promise<Response | null> {
     flight.waiters += 1;
     try {
-      return await this.withinDeadline(flight.promise, deadline, method, url, signal, operation);
+      return await this.withinDeadline(flight.promise, deadline, method, url, signal, operation,
+        reason => { flight.interruption = reason; });
     } finally {
       flight.waiters -= 1;
       if (flight.waiters === 0 && !flight.settled) flight.controller.abort();
     }
   }
 
+  private sharedAuthTerminal(operation: RciTransportOperation | undefined, error: unknown,
+    signal: AbortSignal | undefined, deadline: number): void {
+    if (signal?.aborted) operation?.terminal('cancelled');
+    else if (deadline <= this.now()) operation?.terminal('deadline_exceeded');
+    // A rejected Digest/Basic challenge is an observed HTTP/auth terminal, not
+    // a joiner's independent transport failure.
+    else if (error instanceof AuthError) operation?.terminal('normal_response');
+    else operation?.terminal('transport_failure');
+  }
+
   private async discoverAuthorization(method: string, url: URL, body: BodySnapshot, deadline: number,
     signal?: AbortSignal, allowRetry = true,
-    operation?: RciTransportOperation): Promise<Response | null> {
+    operation?: RciTransportOperation,
+    abortReason?: () => 'cancelled' | 'deadline_exceeded' | undefined): Promise<Response | null> {
     const response = await this.send(
-      method, url, body, deadline, false, signal, allowRetry, operation
+      method, url, body, deadline, false, signal, allowRetry, operation, abortReason
     );
     if (response.status !== 401) {
       this.authorization = { kind: 'none' };
@@ -431,9 +452,16 @@ export class RemoteSession {
     const offered = parseChallenges(response.headers.get('www-authenticate') ?? '');
     const digest = offered.find(challenge => challenge.scheme === 'digest');
     const basic = offered.find(challenge => challenge.scheme === 'basic');
-    if (digest) this.authorization = {
-      kind: 'digest', challenge: digest, cnonce: randomBytes(12).toString('hex'), nonceCount: 0
-    };
+    if (digest) {
+      // Validate a chosen Digest challenge before sharing it. Otherwise every
+      // joiner observes a later local header-construction error as though no
+      // HTTP/auth terminal had occurred.
+      digestAuthorization({ challenge: digest, username: this.opts.login, password: this.opts.password,
+        method, uri: `${url.pathname}${url.search}` });
+      this.authorization = {
+        kind: 'digest', challenge: digest, cnonce: randomBytes(12).toString('hex'), nonceCount: 0
+      };
+    }
     else if (basic) this.authorization = { kind: 'basic' };
     else throw this.authError('HTTP 401 without a supported Digest or Basic challenge', method, url);
   }
@@ -441,7 +469,8 @@ export class RemoteSession {
   private async send(method: string, url: URL, body: BodySnapshot, deadline: number,
     authenticate = true,
     signal?: AbortSignal, allowRetry = true,
-    operation?: RciTransportOperation): Promise<Response> {
+    operation?: RciTransportOperation,
+    abortReason?: () => 'cancelled' | 'deadline_exceeded' | undefined): Promise<Response> {
     const replaySafe = isReplaySafe(method, url, body, allowRetry);
     const attempts = replaySafe ? this.opts.attempts ?? 5 : 1;
     const authorization = authenticate ? this.authorizationHeader(method, url) : null;
@@ -516,7 +545,8 @@ export class RemoteSession {
               throw original;
             }
             return await this.fallback(
-              method, url, body, headers, deadline, signal, context, attempt, original, operation
+              method, url, body, headers, deadline, signal, context, attempt, original, operation,
+              abortReason
             );
           }
           const base = 1000 * 2 ** (attemptNumber - 1);
@@ -551,16 +581,19 @@ export class RemoteSession {
   private async fallback(method: string, url: URL, body: BodySnapshot,
     headers: Record<string, string>, deadline: number, signal: AbortSignal | undefined,
     context: SendContext, normalAttempt: NormalAttempt, original: TransportError,
-    operation?: RciTransportOperation): Promise<Response> {
+    operation?: RciTransportOperation,
+    abortReason?: () => 'cancelled' | 'deadline_exceeded' | undefined): Promise<Response> {
     if (signal?.aborted) {
-      operation?.terminal('cancelled');
-      throw this.transportError('request cancelled', method, url);
+      const reason = abortReason?.() ?? 'cancelled';
+      operation?.terminal(reason);
+      throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
     }
     const now = this.now();
     // The clock read is the last synchronous admission boundary before pool evidence is committed.
     if (signal?.aborted) {
-      operation?.terminal('cancelled');
-      throw this.transportError('request cancelled', method, url);
+      const reason = abortReason?.() ?? 'cancelled';
+      operation?.terminal(reason);
+      throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
     }
     if (deadline <= now) {
       operation?.terminal('deadline_exceeded');
@@ -581,9 +614,10 @@ export class RemoteSession {
 
     for (const [candidateIndex, ip] of candidates.entries()) {
       if (signal?.aborted) {
-        fallbackEvent?.finish('cancelled');
-        operation?.terminal('cancelled');
-        throw this.transportError('request cancelled', method, url);
+        const reason = abortReason?.() ?? 'cancelled';
+        fallbackEvent?.finish(reason);
+        operation?.terminal(reason);
+        throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
       }
       let remaining = deadline - this.now();
       if (remaining <= 0) {
@@ -592,9 +626,10 @@ export class RemoteSession {
         throw this.transportError('request deadline exceeded', method, url);
       }
       if (signal?.aborted) {
-        fallbackEvent?.finish('cancelled');
-        operation?.terminal('cancelled');
-        throw this.transportError('request cancelled', method, url);
+        const reason = abortReason?.() ?? 'cancelled';
+        fallbackEvent?.finish(reason);
+        operation?.terminal(reason);
+        throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
       }
       remaining = deadline - this.now();
       if (remaining <= 0) {
@@ -635,9 +670,10 @@ export class RemoteSession {
           this.trackCleanup(() => failedAgent.destroy());
         }
         if (signal?.aborted) {
-          fallbackEvent?.finish('cancelled');
-          operation?.terminal('cancelled');
-          throw this.transportError('request cancelled', method, url);
+          const reason = abortReason?.() ?? 'cancelled';
+          fallbackEvent?.finish(reason);
+          operation?.terminal(reason);
+          throw this.transportError(reason === 'cancelled' ? 'request cancelled' : 'request deadline exceeded', method, url);
         }
         if (timeout?.aborted || deadline <= this.now()) {
           fallbackEvent?.finish('deadline_exceeded');
@@ -728,13 +764,16 @@ export class RemoteSession {
   }
 
   private async withinDeadline<T>(promise: Promise<T>, deadline: number, method: string, url: URL,
-    signal?: AbortSignal, operation?: RciTransportOperation): Promise<T> {
+    signal?: AbortSignal, operation?: RciTransportOperation,
+    onInterrupt?: (reason: 'cancelled' | 'deadline_exceeded') => void): Promise<T> {
     if (signal?.aborted) {
+      onInterrupt?.('cancelled');
       operation?.terminal('cancelled');
       throw this.transportError('request cancelled while waiting for authentication', method, url);
     }
     const remaining = deadline - this.now();
     if (remaining <= 0) {
+      onInterrupt?.('deadline_exceeded');
       operation?.terminal('deadline_exceeded');
       throw this.transportError('request deadline exceeded while waiting for authentication', method, url);
     }
@@ -745,11 +784,13 @@ export class RemoteSession {
         promise,
         new Promise<T>((_resolve, reject) => {
           timer = setTimeout(() => {
+            onInterrupt?.('deadline_exceeded');
             operation?.terminal('deadline_exceeded');
             reject(this.transportError('request deadline exceeded while waiting for authentication', method, url));
           }, remaining);
           if (signal) {
             abort = () => {
+              onInterrupt?.('cancelled');
               operation?.terminal('cancelled');
               reject(this.transportError('request cancelled while waiting for authentication', method, url));
             };

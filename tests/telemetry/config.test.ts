@@ -14,8 +14,7 @@ describe('telemetry configuration', () => {
       KEENETIC_STATE_DIR: '/tmp/keenetic-state-test'
     })).toEqual({
       enabled: true,
-      path: '/tmp/keenetic-state-test/mcp-calls.jsonl',
-      retainRciEdgeIps: false
+      path: '/tmp/keenetic-state-test/mcp-calls.jsonl'
     });
   });
 
@@ -25,8 +24,7 @@ describe('telemetry configuration', () => {
       KEENETIC_TELEMETRY_PATH: '/tmp/keenetic-calls-test.jsonl'
     })).toEqual({
       enabled: true,
-      path: '/tmp/keenetic-calls-test.jsonl',
-      retainRciEdgeIps: false
+      path: '/tmp/keenetic-calls-test.jsonl'
     });
     expect(() => loadTelemetryConfig('linux', {
       KEENETIC_TELEMETRY_ENABLED: 'yes'
@@ -37,18 +35,10 @@ describe('telemetry configuration', () => {
     })).toThrow(/must be absolute/);
   });
 
-  it('retains Cloud edge IPs only for the exact opt-in spelling', () => {
+  it('has no edge-IP retention configuration field', () => {
     expect(loadTelemetryConfig('linux', {
       KEENETIC_TELEMETRY_ENABLED: 'true',
-      KEENETIC_TELEMETRY_RCI_EDGE_IPS: 'true',
       KEENETIC_STATE_DIR: '/tmp/keenetic-state-test'
-    })).toMatchObject({ enabled: true, retainRciEdgeIps: true });
-    for (const value of ['TRUE', 'false', '', ' ', '1']) {
-      expect(loadTelemetryConfig('linux', {
-        KEENETIC_TELEMETRY_ENABLED: 'true',
-        KEENETIC_TELEMETRY_RCI_EDGE_IPS: value,
-        KEENETIC_STATE_DIR: '/tmp/keenetic-state-test'
-      })).toMatchObject({ enabled: true, retainRciEdgeIps: false });
-    }
+    })).toEqual({ enabled: true, path: '/tmp/keenetic-state-test/mcp-calls.jsonl' });
   });
 });

@@ -62,26 +62,18 @@ which makes no `RemoteSession` request has zero counters rather than a
 fabricated success.
 
 The normal case is appended after the handler. A cold shared-auth flight may
-outlive its initiating handler; its record is deliberately appended after that
-flight settles with `finalized_after_handler: true`, so journal order can differ
-from handler completion order while timestamp, finished time, and duration keep
-their original meaning.
+outlive its initiating handler; its record is deliberately appended after the
+logical request settles with `finalized_after_handler: true`, so journal order
+can differ from handler completion order while timestamp, finished time, and
+duration keep their original meaning.
 
-Cloud edge IP retention is separately opt-in and deliberately strict:
-
-```sh
-export KEENETIC_TELEMETRY_RCI_EDGE_IPS=true
-```
-
-Even then, an IP is retained only for a canonical `https` endpoint at exactly
-`/rci/`, with no userinfo, port, query, or fragment, whose hostname is a
-recognized subdomain of `.keenetic.pro` or `.netcraze.club`. The address must
-also be canonical public-unicast IPv4/IPv6; private, loopback, link-local,
-multicast, unspecified, and documentation ranges are suppressed. At most 16
-first-seen values are retained in each edge list. Other endpoints, any other
-spelling, LAN, and unknown mode keep the counters but replace every edge-IP
-slot/list with `null`. These bounds keep the complete JSONL record within the
-writer's 16 KiB ceiling.
+Remote records always retain syntactically canonical observed, selected, and
+fallback-candidate IPv4/IPv6 literals, including private, loopback,
+link-local, multicast, unspecified, and documentation ranges. Endpoint scheme,
+suffix, path, and hostname never gate this bounded diagnostic evidence and are
+never recorded themselves. At most 16 first-seen values are retained in each
+edge list and at most two candidates in each of eight fallback events. These
+bounds keep the complete JSONL record within the writer's 16 KiB ceiling.
 
 The MCP result `_meta` contains the same `call_id` under
 `io.github.spiceman161/telemetry`. An integration can use this identifier for a
@@ -108,8 +100,8 @@ The journal does not contain:
 `rci_transport` follows the same boundary. It never contains endpoint
 hostnames or URLs, credentials, authorization/cookie/request headers, TLS
 material, RCI methods/paths/bodies, response/router/configuration/log text, or
-error text. Fallback candidate evidence has a nullable IP slot specifically so
-that aggregate effectiveness counts remain useful when retention is disabled.
+error text. Candidate slots are null only for malformed non-IP input; canonical
+IP literals are retained for complete remote transport diagnostics.
 
 SDK input-schema failures and unknown tool names are rejected before the public
 registered callback runs and are not recorded in OBS-1. Runtime validation in a

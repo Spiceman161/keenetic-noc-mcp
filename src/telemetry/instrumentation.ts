@@ -30,7 +30,6 @@ export interface InstrumentationOptions {
   monotonicNow?: () => number;
   onWriteError?: () => void;
   connection?: { mode: 'lan' | 'remote'; endpoint: string };
-  retainRciEdgeIps?: boolean;
 }
 
 type RegistrationCallback = (
@@ -107,8 +106,7 @@ export function instrumentToolRegistration(
       let didThrow = false;
 
       const transport = new RciTransportCollector({
-        ...(options.connection === undefined ? {} : { connection: options.connection }),
-        retainEdgeIps: options.retainRciEdgeIps === true
+        ...(options.connection === undefined ? {} : { connection: options.connection })
       });
       try {
         result = await runWithRciTransportCollector(transport, () => callback(args, context));

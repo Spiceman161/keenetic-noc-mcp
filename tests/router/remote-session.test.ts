@@ -98,10 +98,10 @@ describe('remote Digest authentication', () => {
     });
   });
 
-  it('accounts for a rejected shared-auth join as transport failure without copying attempts', async () => {
-    let rejectFlight!: (error: Error) => void;
-    const flight = new Promise<Response>((_resolve, reject) => { rejectFlight = reject; });
-    const session = new RemoteSession({ ...opts, fetch: vi.fn().mockReturnValueOnce(flight), attempts: 1 });
+  it('accounts for an unusable shared Digest challenge as an HTTP/auth terminal without copying attempts', async () => {
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const session = new RemoteSession({ ...opts, fetch: vi.fn().mockReturnValueOnce(challenge), attempts: 1 });
     const initiator = new RciTransportCollector({
       connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
     });
@@ -112,12 +112,14 @@ describe('remote Digest authentication', () => {
       () => session.request('GET', '/rci/show/version'));
     const second = runWithRciTransportCollector(joiner,
       () => session.request('GET', '/rci/show/system'));
-    rejectFlight(new Error('synthetic transport failure'));
-    await expect(first).rejects.toBeInstanceOf(TransportError);
-    await expect(second).rejects.toBeInstanceOf(TransportError);
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth-int"'
+    } }));
+    await expect(first).rejects.toBeInstanceOf(AuthError);
+    await expect(second).rejects.toBeInstanceOf(AuthError);
     expect(joiner.seal()).toMatchObject({
       shared_auth_waits: 1, normal_attempts: 0, correlation_complete: null,
-      terminal_reasons: { transport_failure: 1 }
+      terminal_reasons: { normal_response: 1 }
     });
   });
 

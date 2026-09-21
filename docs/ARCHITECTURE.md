@@ -27,7 +27,9 @@ one explicit operation from it. The operation follows the existing request,
 connector, socket and error correlations through normal and pinned attempts;
 late diagnostics, mutable session snapshots, and post-handler pool reads do
 not participate. A shared authentication flight is leased to its initiating
-operation, while joining calls record only their wait before their own request.
+operation, while joining calls record their wait and their own eventual
+terminal outcome. A logical request lease spans cold discovery through its
+post-auth dispatch, so delayed telemetry cannot seal after discovery alone.
 
 The tool layer depends on an RCI client interface, not on either authentication
 mechanism. LAN mode keeps `/auth` challenge-response and cookie sessions. Remote

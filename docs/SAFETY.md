@@ -58,9 +58,10 @@ Optional remote transport evidence is bounded to the causal MCP call and does
 not subscribe to a global request stream or infer ownership after the fact. It
 does not change remote retries, fallback admission, TLS/SNI verification,
 authentication, resolver behavior, or router traffic. Cloud edge IPs require
-the separate exact `KEENETIC_TELEMETRY_RCI_EDGE_IPS=true` opt-in, a canonical
-HTTPS recognized Cloud `/rci/` endpoint, and a canonical public-unicast
-address; all other raw-IP fields are null.
+no opt-in or endpoint/address-class gate: every syntactically canonical
+observed, selected, and fallback candidate IP literal is retained within the
+existing bounds. Endpoint URL/hostname, credentials, headers/cookies, TLS
+material, RCI body/response/configuration, and error text remain excluded.
 
 `ping` and `traceroute` do not change router configuration, but they are active:
 the router sends packets to the requested target. They accept exactly one

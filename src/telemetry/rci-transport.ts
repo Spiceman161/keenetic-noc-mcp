@@ -2,8 +2,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { canonicalIp } from '../router/edge-pool.js';
 
 export type RciTransportApplicability = 'remote' | 'not_applicable' | 'unknown';
-export type EdgeIpRetention = 'enabled' | 'suppressed_by_config' |
-  'suppressed_unrecognized_endpoint' | 'not_applicable' | 'unknown';
 export type TerminalReason = 'normal_response' | 'fallback_recovered' |
   'fallback_exhausted' | 'fallback_no_candidates' | 'fallback_replay_unsafe' |
   'fallback_correlation_incomplete' | 'cancelled' | 'deadline_exceeded' | 'transport_failure';
@@ -13,7 +11,6 @@ export type EdgeHealth = 'healthy' | 'unknown' | 'failed';
 
 export interface RciTransportSnapshot {
   applicability: RciTransportApplicability;
-  edge_ip_retention: EdgeIpRetention;
   remote_requests: number | null;
   shared_auth_waits: number | null;
   normal_attempts: number | null;
@@ -48,8 +45,7 @@ export interface RciFallbackEvent {
 }
 
 export interface RciTransportCollectorOptions {
-  connection?: { mode: 'lan' | 'remote'; endpoint: string };
-  retainEdgeIps?: boolean;
+  connection?: { mode: 'lan' | 'remote'; endpoint?: string };
 }
 
 export interface FallbackCandidateInput {
@@ -88,45 +84,6 @@ const terminals: readonly TerminalReason[] = [
 
 const storage = new AsyncLocalStorage<RciTransportCollector>();
 
-function recognizedCloudEndpoint(endpoint: string | undefined): boolean {
-  if (endpoint === undefined) return false;
-  try {
-    const url = new URL(endpoint);
-    if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' ||
-      url.port !== '' || url.pathname !== '/rci/' || url.search !== '' || url.hash !== '' ||
-      url.toString() !== endpoint) return false;
-    const hostname = url.hostname.toLowerCase();
-    return (hostname.endsWith('.keenetic.pro') && hostname.length > '.keenetic.pro'.length) ||
-      (hostname.endsWith('.netcraze.club') && hostname.length > '.netcraze.club'.length);
-  } catch {
-    return false;
-  }
-}
-
-function publicUnicastIp(value: string): string | null {
-  const ip = canonicalIp(value);
-  if (ip === null) return null;
-  if (ip.includes('.')) {
-    const [a, b, c] = ip.split('.').map(Number);
-    if (a === undefined || b === undefined || c === undefined) return null;
-    if (a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 0 && c === 0) ||
-      (a === 192 && b === 0 && c === 2) || (a === 192 && b === 88 && c === 99) ||
-      (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) ||
-      (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113)) return null;
-    return ip;
-  }
-  const [firstText, secondText] = ip.split(':');
-  const first = Number.parseInt(firstText ?? '', 16);
-  const second = Number.parseInt(secondText ?? '', 16);
-  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
-  if (ip === '::' || ip === '::1' || (first & 0xfe00) === 0xfc00 ||
-    (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00 ||
-    (first === 0x2001 && second === 0x0db8) || ip.startsWith('::ffff:')) return null;
-  return ip;
-}
-
 function zeroTerminals(): Record<TerminalReason, number> {
   return Object.fromEntries(terminals.map(reason => [reason, 0])) as Record<TerminalReason, number>;
 }
@@ -148,8 +105,6 @@ function copyEvent(event: RciFallbackEvent): RciFallbackEvent {
  */
 export class RciTransportCollector {
   private readonly applicability: RciTransportApplicability;
-  private readonly retention: EdgeIpRetention;
-  private readonly allowIps: boolean;
   private sealed = false;
   private leases = 0;
   private delayedResolver: ((snapshot: RciTransportSnapshot) => void) | undefined;
@@ -172,22 +127,6 @@ export class RciTransportCollector {
   constructor(options: RciTransportCollectorOptions = {}) {
     const mode = options.connection?.mode;
     this.applicability = mode === 'remote' ? 'remote' : mode === 'lan' ? 'not_applicable' : 'unknown';
-    if (this.applicability === 'not_applicable') {
-      this.retention = 'not_applicable';
-      this.allowIps = false;
-    } else if (this.applicability === 'unknown') {
-      this.retention = 'unknown';
-      this.allowIps = false;
-    } else if (options.retainEdgeIps !== true) {
-      this.retention = 'suppressed_by_config';
-      this.allowIps = false;
-    } else if (!recognizedCloudEndpoint(options.connection?.endpoint)) {
-      this.retention = 'suppressed_unrecognized_endpoint';
-      this.allowIps = false;
-    } else {
-      this.retention = 'enabled';
-      this.allowIps = true;
-    }
   }
 
   beginOperation(): RciTransportOperation | undefined {
@@ -226,9 +165,8 @@ export class RciTransportCollector {
   }
 
   private addIp(target: Set<string>, value: string): void {
-    if (!this.allowIps) return;
     try {
-      const ip = publicUnicastIp(value);
+      const ip = canonicalIp(value);
       if (ip === null || target.has(ip)) return;
       if (target.size >= MAX_EDGE_IPS) {
         this.edgeIpsTruncated = true;
@@ -281,8 +219,7 @@ export class RciTransportCollector {
   }
 
   private safeIp(value: string): string | null {
-    if (!this.allowIps) return null;
-    try { return publicUnicastIp(value); } catch { return null; }
+    try { return canonicalIp(value); } catch { return null; }
   }
 
   private terminal(reason: TerminalReason): void {
@@ -308,7 +245,6 @@ export class RciTransportCollector {
     if (this.applicability !== 'remote') {
       return {
         applicability: this.applicability,
-        edge_ip_retention: this.retention,
         remote_requests: null, shared_auth_waits: null, normal_attempts: null,
         fallback_considered: null, fallback_activations: null, fallback_attempts: null,
         fallback_recoveries: null, fallback_exhaustions: null, correlation_complete: null,
@@ -319,7 +255,6 @@ export class RciTransportCollector {
     }
     return {
       applicability: 'remote',
-      edge_ip_retention: this.retention,
       remote_requests: this.remoteRequests,
       shared_auth_waits: this.sharedAuthWaits,
       normal_attempts: this.normalAttempts,
@@ -330,9 +265,9 @@ export class RciTransportCollector {
       fallback_exhaustions: this.fallbackExhaustions,
       correlation_complete: this.normalAttempts === 0 ? null : this.correlationComplete,
       finalized_after_handler: finalizedAfterHandler,
-      observed_edge_ips: this.allowIps ? [...this.observed] : null,
-      selected_normal_edge_ips: this.allowIps ? [...this.selected] : null,
-      edge_ips_truncated: this.allowIps ? this.edgeIpsTruncated : null,
+      observed_edge_ips: [...this.observed],
+      selected_normal_edge_ips: [...this.selected],
+      edge_ips_truncated: this.edgeIpsTruncated,
       terminal_reasons: { ...this.terminalReasons },
       fallback_events: this.fallbackEvents.map(copyEvent),
       fallback_events_total: this.fallbackEventsTotal,

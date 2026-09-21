@@ -492,8 +492,7 @@ describe('RemoteSession pool fallback integration', () => {
       await new Promise(resolve => setTimeout(resolve, 20));
       phase = 'rotated';
       const collector = new RciTransportCollector({
-        connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' },
-        retainEdgeIps: true
+        connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
       });
       const response = await runWithRciTransportCollector(collector,
         () => session.request('GET', '/rci/show/system'));
@@ -1023,7 +1022,7 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       expect(agents[0]!.destroy).toHaveBeenCalled();
       expect(collector.seal()).toMatchObject({
         fallback_attempts: 1, terminal_reasons: { cancelled: 1 },
-        fallback_events: [{ candidates: [{ attempted: true }, { attempted: false }] }]
+        fallback_events: [{ outcome: 'cancelled', candidates: [{ attempted: true }, { attempted: false }] }]
       });
     } finally {
       await server.close();
@@ -1036,6 +1035,9 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     pool.observe('127.0.0.1');
     pool.observe('127.0.0.2');
     const agents: Agent[] = [];
+    const collector = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
     const session = new RemoteSession({
       ...baseOptions,
       timeoutMs: 50,
@@ -1053,7 +1055,8 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
     try {
       let failure: unknown;
       try {
-        await session.request('GET', '/rci/show/version');
+        await runWithRciTransportCollector(collector,
+          () => session.request('GET', '/rci/show/version'));
       } catch (error) {
         failure = error;
       }
@@ -1062,6 +1065,10 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
       expect(agents).toHaveLength(1);
       expect(agents[0]!.destroy).toHaveBeenCalled();
       expect(pool.getEntry('127.0.0.1')?.lastFailureAt).toBeUndefined();
+      expect(collector.seal()).toMatchObject({
+        fallback_attempts: 1, terminal_reasons: { deadline_exceeded: 1 },
+        fallback_events: [{ outcome: 'deadline_exceeded', candidates: [{ attempted: true }, { attempted: false }] }]
+      });
     } finally {
       await server.close();
     }

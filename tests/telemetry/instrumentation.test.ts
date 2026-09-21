@@ -19,7 +19,6 @@ function setup(options?: {
   rejectWrite?: boolean;
   times?: number[];
   connection?: { mode: 'lan' | 'remote'; endpoint: string };
-  retainRciEdgeIps?: boolean;
 }) {
   let callback: Callback | undefined;
   const server = {
@@ -44,9 +43,6 @@ function setup(options?: {
     now: () => new Date(timeIndex === 0 ? '2026-09-12T00:00:00.000Z' : '2026-09-12T00:00:00.438Z'),
     monotonicNow: () => monotonic[timeIndex++] ?? monotonic.at(-1) ?? 0,
     ...(options?.connection === undefined ? {} : { connection: options.connection }),
-    ...(options?.retainRciEdgeIps === undefined
-      ? {}
-      : { retainRciEdgeIps: options.retainRciEdgeIps })
   });
   const request = { mcpReq: { id: 17 } } as unknown as ServerContext;
   return { registrar, records, writer, request, callback: () => callback! };
@@ -157,7 +153,6 @@ describe('tool-call instrumentation', () => {
   it('writes bounded remote evidence without changing the existing call metadata', async () => {
     const fixture = setup({
       connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' },
-      retainRciEdgeIps: true
     });
     register(fixture, async () => {
       const operation = currentRciTransportCollector()?.beginOperation();
@@ -249,21 +244,62 @@ describe('tool-call instrumentation', () => {
     });
     await callback!({}, { mcpReq: { id: 1 } } as unknown as ServerContext);
     await callback!({}, { mcpReq: { id: 2 } } as unknown as ServerContext);
-    expect(records).toHaveLength(1);
-    expect(records[0]?.rci_transport).toMatchObject({ shared_auth_waits: 1, normal_attempts: 0 });
+    expect(records).toHaveLength(0);
     releaseChallenge(new Response('', { status: 401, headers: {
       'www-authenticate': 'Basic realm="synthetic"'
     } }));
     await vi.waitFor(() => expect(records).toHaveLength(2));
-    expect(records[1]?.rci_transport).toMatchObject({
-      shared_auth_waits: 0, normal_attempts: 1, finalized_after_handler: true
+    expect(records.map(record => record.rci_transport)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ shared_auth_waits: 0, normal_attempts: 2,
+        finalized_after_handler: true }),
+      expect.objectContaining({ shared_auth_waits: 1, normal_attempts: 1,
+        finalized_after_handler: true })
+    ]));
+  });
+
+  it('defers concurrent unusable Digest joiners and records the observed HTTP/auth terminal', async () => {
+    let callback: Callback | undefined;
+    const records: TelemetryRecord[] = [];
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const session = new RemoteSession({
+      endpoint: 'https://rci.example.test/rci/', login: 'agent', password: 'synthetic',
+      routerId: 'test', attempts: 1, fetch: vi.fn().mockImplementationOnce(() => challenge)
     });
+    const server = { registerTool: vi.fn((_name, _config, handler) => { callback = handler; }) } as
+      unknown as McpServer;
+    const registrar = instrumentToolRegistration(server, {
+      writer: { write: async record => { records.push(record); } },
+      routerProfile: 'tupik', serverVersion: '0.0.0-dev',
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    let invocation = 0;
+    register({ registrar }, async () => {
+      invocation += 1;
+      void session.request('GET', invocation === 1 ? '/rci/show/version' : '/rci/show/system')
+        .catch(() => undefined);
+      return ok({ done: true });
+    });
+    await callback!({}, { mcpReq: { id: 1 } } as unknown as ServerContext);
+    await callback!({}, { mcpReq: { id: 2 } } as unknown as ServerContext);
+    expect(records).toHaveLength(0);
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth-int"'
+    } }));
+    await vi.waitFor(() => expect(records).toHaveLength(2));
+    expect(records.map(record => record.rci_transport)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ shared_auth_waits: 0, normal_attempts: 1,
+        terminal_reasons: expect.objectContaining({ normal_response: 1 }),
+        finalized_after_handler: true }),
+      expect.objectContaining({ shared_auth_waits: 1, normal_attempts: 0,
+        terminal_reasons: expect.objectContaining({ normal_response: 1 }),
+        finalized_after_handler: true })
+    ]));
   });
 
   it('never serializes remote endpoint or request/result privacy sentinels through instrumentation', async () => {
     const fixture = setup({
       connection: { mode: 'remote', endpoint: 'https://user:secret-url-marker@edge.keenetic.pro/rci/?q=x' },
-      retainRciEdgeIps: true
     });
     register(fixture, async () => {
       const operation = currentRciTransportCollector()?.beginOperation();
@@ -284,7 +320,7 @@ describe('tool-call instrumentation', () => {
       'secret-configuration-marker', 'secret-error-marker'
     ]) expect(serialized).not.toContain(marker);
     expect(fixture.records[0]?.rci_transport).toMatchObject({
-      edge_ip_retention: 'suppressed_unrecognized_endpoint', observed_edge_ips: null
+      observed_edge_ips: ['8.8.8.8']
     });
   });
 

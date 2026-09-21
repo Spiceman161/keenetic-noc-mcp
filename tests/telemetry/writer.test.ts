@@ -44,7 +44,7 @@ function maximumTransport(): RciTransportSnapshot {
     transport_failure: 99
   };
   return {
-    applicability: 'remote', edge_ip_retention: 'enabled', remote_requests: 99,
+    applicability: 'remote', remote_requests: 99,
     shared_auth_waits: 99, normal_attempts: 99, fallback_considered: 99,
     fallback_activations: 99, fallback_attempts: 99, fallback_recoveries: 99,
     fallback_exhaustions: 99, correlation_complete: true, finalized_after_handler: true,
