@@ -5,6 +5,7 @@ import {
   ResourceError,
   ValidationError
 } from '../../src/router/errors.js';
+import { RemoteSession } from '../../src/router/remote-session.js';
 import { fail, guard, ok, type ToolResult } from '../../src/tools/registry.js';
 import { instrumentToolRegistration } from '../../src/telemetry/instrumentation.js';
 import { currentRciTransportCollector } from '../../src/telemetry/rci-transport.js';
@@ -161,7 +162,7 @@ describe('tool-call instrumentation', () => {
     register(fixture, async () => {
       const operation = currentRciTransportCollector()?.beginOperation();
       operation?.normalAttempt();
-      operation?.observedEdge('192.0.2.1');
+      operation?.observedEdge('8.8.8.8');
       operation?.terminal('normal_response');
       return ok({ done: true });
     });
@@ -170,7 +171,7 @@ describe('tool-call instrumentation', () => {
     expect(fixture.records.at(-1)?.rci_transport).toMatchObject({
       remote_requests: 1,
       normal_attempts: 1,
-      observed_edge_ips: ['192.0.2.1']
+      observed_edge_ips: ['8.8.8.8']
     });
   });
 
@@ -196,6 +197,95 @@ describe('tool-call instrumentation', () => {
     release();
     await vi.waitFor(() => expect(records).toHaveLength(1));
     expect(records[0]?.rci_transport?.finalized_after_handler).toBe(true);
+  });
+
+  it('uses the precomputed sanitized record base for a delayed lease', async () => {
+    let callback: Callback | undefined;
+    const records: TelemetryRecord[] = [];
+    const server = { registerTool: vi.fn((_name, _config, handler) => { callback = handler; }) } as
+      unknown as McpServer;
+    const registrar = instrumentToolRegistration(server, {
+      writer: { write: async record => { records.push(record); } },
+      routerProfile: 'tupik',
+      serverVersion: '0.0.0-dev',
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    let release!: () => void;
+    register({ registrar }, async () => {
+      const operation = currentRciTransportCollector()?.beginOperation()!;
+      release = operation.acquireLease();
+      return ok({ done: true });
+    });
+    const args = { query: 'x' };
+    await callback!(args, { mcpReq: { id: 1 } } as unknown as ServerContext);
+    args.query = 'value-that-must-not-be-read-by-the-delayed-continuation';
+    release();
+    await vi.waitFor(() => expect(records).toHaveLength(1));
+    expect(records[0]?.args_summary.fields['query']).toEqual({ type: 'string', length: 1 });
+  });
+
+  it('writes real delayed shared-auth attribution after the handler without cross-attribution', async () => {
+    let callback: Callback | undefined;
+    const records: TelemetryRecord[] = [];
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const session = new RemoteSession({
+      endpoint: 'https://rci.example.test/rci/', login: 'agent', password: 'synthetic',
+      routerId: 'test', attempts: 1,
+      fetch: vi.fn().mockImplementationOnce(() => challenge).mockResolvedValue(new Response('{}'))
+    });
+    const server = { registerTool: vi.fn((_name, _config, handler) => { callback = handler; }) } as
+      unknown as McpServer;
+    const registrar = instrumentToolRegistration(server, {
+      writer: { write: async record => { records.push(record); } },
+      routerProfile: 'tupik', serverVersion: '0.0.0-dev',
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    let invocation = 0;
+    register({ registrar }, async () => {
+      invocation += 1;
+      void session.request('GET', invocation === 1 ? '/rci/show/version' : '/rci/show/system');
+      return ok({ done: true });
+    });
+    await callback!({}, { mcpReq: { id: 1 } } as unknown as ServerContext);
+    await callback!({}, { mcpReq: { id: 2 } } as unknown as ServerContext);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.rci_transport).toMatchObject({ shared_auth_waits: 1, normal_attempts: 0 });
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Basic realm="synthetic"'
+    } }));
+    await vi.waitFor(() => expect(records).toHaveLength(2));
+    expect(records[1]?.rci_transport).toMatchObject({
+      shared_auth_waits: 0, normal_attempts: 1, finalized_after_handler: true
+    });
+  });
+
+  it('never serializes remote endpoint or request/result privacy sentinels through instrumentation', async () => {
+    const fixture = setup({
+      connection: { mode: 'remote', endpoint: 'https://user:secret-url-marker@edge.keenetic.pro/rci/?q=x' },
+      retainRciEdgeIps: true
+    });
+    register(fixture, async () => {
+      const operation = currentRciTransportCollector()?.beginOperation();
+      operation?.normalAttempt();
+      operation?.observedEdge('8.8.8.8');
+      operation?.terminal('normal_response');
+      return ok({ response: 'secret-raw-response-marker' });
+    });
+    await fixture.callback()({
+      authorization: 'secret-authorization-marker', cookie: 'secret-cookie-marker',
+      payload: 'secret-payload-marker', configuration: 'secret-configuration-marker',
+      error: 'secret-error-marker'
+    }, fixture.request);
+    const serialized = JSON.stringify(fixture.records[0]);
+    for (const marker of [
+      'secret-url-marker', 'secret-authorization-marker', 'secret-cookie-marker',
+      'secret-payload-marker', 'secret-raw-response-marker',
+      'secret-configuration-marker', 'secret-error-marker'
+    ]) expect(serialized).not.toContain(marker);
+    expect(fixture.records[0]?.rci_transport).toMatchObject({
+      edge_ip_retention: 'suppressed_unrecognized_endpoint', observed_edge_ips: null
+    });
   });
 
   it('does not let record-construction failures replace a successful result', async () => {

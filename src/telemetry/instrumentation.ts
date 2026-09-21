@@ -140,7 +140,11 @@ export function instrumentToolRegistration(
         // Preserve the historical fail-open boundary: an unserializable result
         // must leave the original handler object untouched and skip telemetry.
         const resultSizeBytes = candidate === undefined ? 0 : resultBytes(candidate);
-        const createRecord = (rciTransport: RciTransportSnapshot): TelemetryRecord => ({
+        // A shared-auth lease can outlive the handler. Build an immutable,
+        // sanitized base now so the delayed continuation has no raw args,
+        // result, context, or hostile proxy to retain.
+        const argsSummary = summarizeArguments(args, registeredArgumentFields(config));
+        const recordBase: Readonly<Omit<TelemetryRecord, 'rci_transport'>> = Object.freeze({
           schema_version: 1,
           timestamp: started.toISOString(),
           finished_at: finished.toISOString(),
@@ -152,16 +156,20 @@ export function instrumentToolRegistration(
           duration_ms: duration,
           status,
           error_code: errorCode,
-          args_summary: summarizeArguments(args, registeredArgumentFields(config)),
+          args_summary: Object.freeze({
+            ...argsSummary,
+            fields: Object.freeze(Object.fromEntries(Object.entries(argsSummary.fields).map(
+              ([field, description]) => [field, Object.freeze({ ...description })]
+            )))
+          }),
           result_size_bytes: resultSizeBytes,
           output_truncated: telemetry?.outputTruncated ?? false,
-          server_version: serverVersion,
-          rci_transport: rciTransport
+          server_version: serverVersion
         });
         returned = candidate;
         const append = (rciTransport: RciTransportSnapshot): void => {
           try {
-            void options.writer.write(createRecord(rciTransport)).catch(reportWriteFailure);
+            void options.writer.write({ ...recordBase, rci_transport: rciTransport }).catch(reportWriteFailure);
           } catch {
             reportWriteFailure();
           }

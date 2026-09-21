@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   RciTransportCollector,
   currentRciTransportCollector,
-  runWithRciTransportCollector
+  runWithRciTransportCollector,
+  type TerminalReason
 } from '../../src/telemetry/rci-transport.js';
 
 function remote(retainEdgeIps = true, endpoint = 'https://edge.keenetic.pro/rci/'): RciTransportCollector {
@@ -18,10 +19,10 @@ describe('RCI transport telemetry collector', () => {
     runWithRciTransportCollector(collector, () => {
       const operation = currentRciTransportCollector()?.beginOperation();
       operation?.normalAttempt();
-      operation?.observedEdge('192.0.2.1');
-      operation?.observedEdge('192.0.2.1');
-      operation?.selectedNormalEdge('2001:db8:0:0:0:0:0:1');
-      for (let index = 2; index <= 17; index += 1) operation?.observedEdge(`192.0.2.${index}`);
+      operation?.observedEdge('8.8.8.1');
+      operation?.observedEdge('8.8.8.1');
+      operation?.selectedNormalEdge('2001:4860:0:0:0:0:0:8888');
+      for (let index = 2; index <= 17; index += 1) operation?.observedEdge(`8.8.8.${index}`);
       operation?.correlationComplete(true);
       operation?.terminal('normal_response');
     });
@@ -34,7 +35,7 @@ describe('RCI transport telemetry collector', () => {
       normal_attempts: 1,
       correlation_complete: true,
       edge_ips_truncated: true,
-      selected_normal_edge_ips: ['2001:db8::1'],
+      selected_normal_edge_ips: ['2001:4860::8888'],
       terminal_reasons: { normal_response: 1 }
     });
     expect((snapshot as Exclude<typeof snapshot, Promise<unknown>>).observed_edge_ips).toHaveLength(16);
@@ -44,10 +45,11 @@ describe('RCI transport telemetry collector', () => {
     const collector = remote(false);
     const operation = collector.beginOperation()!;
     operation.normalAttempt();
-    operation.observedEdge('192.0.2.1');
-    operation.selectedNormalEdge('192.0.2.1');
-    const event = operation.beginFallback(4, 3, [{ ip: '192.0.2.2', prior: 'healthy' }]);
-    event.attempted('192.0.2.2', 'failed');
+    operation.observedEdge('8.8.8.1');
+    operation.selectedNormalEdge('8.8.8.1');
+    const event = operation.beginFallback(4, 3, [{ ip: '8.8.8.2', prior: 'healthy' }]);
+    event.attempted(0);
+    event.outcome(0, 'failed');
     event.finish('exhausted');
     operation.terminal('fallback_exhausted');
     const snapshot = collector.seal() as Exclude<ReturnType<RciTransportCollector['seal']>, Promise<unknown>>;
@@ -65,11 +67,107 @@ describe('RCI transport telemetry collector', () => {
     expect(unrecognized).toMatchObject({ edge_ip_retention: 'suppressed_unrecognized_endpoint' });
   });
 
+  it('retains only canonical public-unicast IPs for exact recognized HTTPS RCI endpoints', () => {
+    for (const endpoint of [
+      'https://edge.keenetic.pro/rci/',
+      'https://edge.netcraze.club/rci/'
+    ]) {
+      const collector = remote(true, endpoint);
+      const operation = collector.beginOperation()!;
+      operation.normalAttempt();
+      for (const ip of [
+        '8.8.8.8', '2001:4860:4860::8888', '10.0.0.1', '127.0.0.1',
+        '169.254.1.1', '192.168.1.1', '224.0.0.1', '0.0.0.0', '::',
+        '::1', 'fe80::1', 'fc00::1', 'ff02::1', '2001:db8::1'
+      ]) operation.observedEdge(ip);
+      expect(collector.seal()).toMatchObject({
+        edge_ip_retention: 'enabled',
+        observed_edge_ips: ['8.8.8.8', '2001:4860:4860::8888']
+      });
+    }
+    for (const endpoint of [
+      'http://edge.keenetic.pro/rci/', 'https://edge.keenetic.pro/rci',
+      'https://edge.keenetic.pro/rci/?x=1', 'https://edge.keenetic.pro/rci/#x',
+      'https://user:pass@edge.keenetic.pro/rci/', 'https://keenetic.pro/rci/',
+      'https://edge.keenetic.pro.example.test/rci/'
+    ]) expect(remote(true, endpoint).seal()).toMatchObject({
+      edge_ip_retention: 'suppressed_unrecognized_endpoint'
+    });
+  });
+
+  it('keeps candidate identity private while matching failures and recovery with IP retention disabled', () => {
+    const collector = remote(false);
+    const operation = collector.beginOperation()!;
+    const event = operation.beginFallback(2, 2, [
+      { ip: '8.8.8.1', prior: 'failed' }, { ip: '8.8.8.2', prior: 'unknown' }
+    ]);
+    event.attempted(0);
+    event.outcome(0, 'failed');
+    event.attempted(1);
+    event.outcome(1, 'recovered');
+    event.finish('recovered');
+    const snapshot = collector.seal() as Exclude<ReturnType<RciTransportCollector['seal']>, Promise<unknown>>;
+    expect(snapshot).toMatchObject({
+      fallback_attempts: 2,
+      fallback_events: [{ candidates: [
+        { edge_ip: null, attempted: true, outcome: 'failed' },
+        { edge_ip: null, attempted: true, outcome: 'recovered' }
+      ] }]
+    });
+  });
+
+  it('accounts for every non-recovery fallback terminal matrix without fabricating attempts', () => {
+    const cases: Array<{ reason: TerminalReason }> = [
+      { reason: 'fallback_replay_unsafe' }, { reason: 'fallback_correlation_incomplete' },
+      { reason: 'cancelled' }, { reason: 'deadline_exceeded' }
+    ];
+    for (const { reason } of cases) {
+      const collector = remote();
+      const operation = collector.beginOperation()!;
+      operation.normalAttempt();
+      operation.terminal(reason);
+      expect(collector.seal()).toMatchObject({ terminal_reasons: { [reason]: 1 } });
+    }
+
+    const noCandidates = remote();
+    const noCandidateOperation = noCandidates.beginOperation()!;
+    noCandidateOperation.normalAttempt();
+    noCandidateOperation.fallbackConsidered();
+    noCandidateOperation.beginFallback(0, 0, []).finish('no_candidates');
+    noCandidateOperation.terminal('fallback_no_candidates');
+    expect(noCandidates.seal()).toMatchObject({
+      fallback_considered: 1, fallback_activations: 0, fallback_attempts: 0,
+      terminal_reasons: { fallback_no_candidates: 1 }
+    });
+
+    const exhausted = remote();
+    const exhaustionOperation = exhausted.beginOperation()!;
+    exhaustionOperation.normalAttempt();
+    const event = exhaustionOperation.beginFallback(2, 2, [
+      { ip: '8.8.8.1', prior: 'unknown' }, { ip: '8.8.8.2', prior: 'failed' }
+    ]);
+    event.attempted(0);
+    event.outcome(0, 'failed');
+    event.attempted(1);
+    event.outcome(1, 'failed');
+    event.finish('exhausted');
+    exhaustionOperation.terminal('fallback_exhausted');
+    expect(exhausted.seal()).toMatchObject({
+      fallback_activations: 1, fallback_attempts: 2, fallback_exhaustions: 1,
+      terminal_reasons: { fallback_exhausted: 1 }
+    });
+  });
+
   it('uses null measurements for LAN and holds a bounded shared-auth lease after the handler', async () => {
     const lan = new RciTransportCollector({
       connection: { mode: 'lan', endpoint: 'http://router.invalid/rci/' }
     });
     expect(lan.seal()).toMatchObject({ applicability: 'not_applicable', normal_attempts: null });
+    expect(new RciTransportCollector().seal()).toMatchObject({ applicability: 'unknown', normal_attempts: null });
+
+    const noDispatch = remote();
+    noDispatch.beginOperation()?.terminal('cancelled');
+    expect(noDispatch.seal()).toMatchObject({ correlation_complete: null });
 
     const collector = remote();
     const operation = collector.beginOperation()!;
@@ -86,9 +184,9 @@ describe('RCI transport telemetry collector', () => {
     expect(() => operation.observedEdge({ hostile: true } as unknown as string)).not.toThrow();
     for (let index = 0; index < 9; index += 1) {
       const event = operation.beginFallback(30, 30, [
-        { ip: '192.0.2.1', prior: 'healthy' },
-        { ip: '192.0.2.2', prior: 'unknown' },
-        { ip: '192.0.2.3', prior: 'failed' }
+        { ip: '8.8.8.1', prior: 'healthy' },
+        { ip: '8.8.8.2', prior: 'unknown' },
+        { ip: '8.8.8.3', prior: 'failed' }
       ]);
       event.finish('exhausted');
     }

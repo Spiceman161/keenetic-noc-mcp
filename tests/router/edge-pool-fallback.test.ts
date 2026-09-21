@@ -555,6 +555,41 @@ describe('RemoteSession pool fallback integration', () => {
     expect(pinned).not.toHaveBeenCalled();
   });
 
+  it('reports no-candidate and multi-candidate exhaustion evidence through RemoteSession', async () => {
+    const failingLookup = lookupFrom(() => Object.assign(new Error('synthetic DNS failure'), {
+      code: 'ENOTFOUND'
+    }));
+    const noCandidates = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const emptySession = new RemoteSession(baseOptions, { lookup: failingLookup });
+    await expect(runWithRciTransportCollector(noCandidates,
+      () => emptySession.request('GET', '/rci/show/version'))).rejects.toBeInstanceOf(TransportError);
+    expect(noCandidates.seal()).toMatchObject({
+      fallback_considered: 1, fallback_activations: 0, fallback_attempts: 0,
+      terminal_reasons: { fallback_no_candidates: 1 }
+    });
+
+    const pool = new EdgePool();
+    pool.observe('127.0.0.1');
+    pool.observe('127.0.0.2');
+    const exhausted = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const session = new RemoteSession({ ...baseOptions, timeoutMs: 500 }, {
+      edgePool: pool, lookup: failingLookup
+    });
+    await expect(runWithRciTransportCollector(exhausted,
+      () => session.request('GET', '/rci/show/version'))).rejects.toBeInstanceOf(TransportError);
+    expect(exhausted.seal()).toMatchObject({
+      fallback_considered: 1, fallback_activations: 1, fallback_attempts: 2,
+      fallback_exhaustions: 1, terminal_reasons: { fallback_exhausted: 1 },
+      fallback_events: [{ outcome: 'exhausted', candidates: [
+        { attempted: true, outcome: 'failed' }, { attempted: true, outcome: 'failed' }
+      ] }]
+    });
+  });
+
   it('keeps a barrier-controlled concurrent normal/fallback pair causally separate', async () => {
     const server = await startTlsServer(validCertificate);
     const pool = new EdgePool();
@@ -974,15 +1009,22 @@ describe('RemoteSession fallback TLS, families, deadlines and cleanup', () => {
         vi.spyOn(agent, 'destroy');
       }
     });
+    const collector = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
     try {
-      const pending = session.request('GET', '/rci/show/version', undefined, {
-        signal: controller.signal
-      });
+      const pending = runWithRciTransportCollector(collector, () => session.request(
+        'GET', '/rci/show/version', undefined, { signal: controller.signal }
+      ));
       await started;
       controller.abort();
       await expect(pending).rejects.toBeInstanceOf(TransportError);
       expect(agents).toHaveLength(1);
       expect(agents[0]!.destroy).toHaveBeenCalled();
+      expect(collector.seal()).toMatchObject({
+        fallback_attempts: 1, terminal_reasons: { cancelled: 1 },
+        fallback_events: [{ candidates: [{ attempted: true }, { attempted: false }] }]
+      });
     } finally {
       await server.close();
     }

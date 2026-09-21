@@ -73,12 +73,15 @@ Cloud edge IP retention is separately opt-in and deliberately strict:
 export KEENETIC_TELEMETRY_RCI_EDGE_IPS=true
 ```
 
-Even then, an IP is retained only for a remote endpoint whose hostname is a
-recognized subdomain of `.keenetic.pro` or `.netcraze.club`, and only after
-canonical IPv4/IPv6 validation. At most 16 first-seen values are retained in
-each edge list. Other endpoints, any other spelling, LAN, and unknown mode keep
-the counters but replace every edge-IP slot/list with `null`. These bounds keep
-the complete JSONL record within the writer's 16 KiB ceiling.
+Even then, an IP is retained only for a canonical `https` endpoint at exactly
+`/rci/`, with no userinfo, port, query, or fragment, whose hostname is a
+recognized subdomain of `.keenetic.pro` or `.netcraze.club`. The address must
+also be canonical public-unicast IPv4/IPv6; private, loopback, link-local,
+multicast, unspecified, and documentation ranges are suppressed. At most 16
+first-seen values are retained in each edge list. Other endpoints, any other
+spelling, LAN, and unknown mode keep the counters but replace every edge-IP
+slot/list with `null`. These bounds keep the complete JSONL record within the
+writer's 16 KiB ceiling.
 
 The MCP result `_meta` contains the same `call_id` under
 `io.github.spiceman161/telemetry`. An integration can use this identifier for a

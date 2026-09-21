@@ -9,6 +9,7 @@ import {
   type TelemetryWriterOptions
 } from '../../src/telemetry/writer.js';
 import type { TelemetryRecord } from '../../src/telemetry/record.js';
+import type { RciTransportSnapshot } from '../../src/telemetry/rci-transport.js';
 
 const roots: string[] = [];
 
@@ -35,6 +36,32 @@ function record(index: number): TelemetryRecord {
   };
 }
 
+function maximumTransport(): RciTransportSnapshot {
+  const terminal_reasons = {
+    normal_response: 99, fallback_recovered: 99, fallback_exhausted: 99,
+    fallback_no_candidates: 99, fallback_replay_unsafe: 99,
+    fallback_correlation_incomplete: 99, cancelled: 99, deadline_exceeded: 99,
+    transport_failure: 99
+  };
+  return {
+    applicability: 'remote', edge_ip_retention: 'enabled', remote_requests: 99,
+    shared_auth_waits: 99, normal_attempts: 99, fallback_considered: 99,
+    fallback_activations: 99, fallback_attempts: 99, fallback_recoveries: 99,
+    fallback_exhaustions: 99, correlation_complete: true, finalized_after_handler: true,
+    observed_edge_ips: Array.from({ length: 16 }, (_, index) => `8.8.8.${index + 1}`),
+    selected_normal_edge_ips: Array.from({ length: 16 }, (_, index) => `2001:4860::${index + 1}`),
+    edge_ips_truncated: true, terminal_reasons,
+    fallback_events: Array.from({ length: 8 }, () => ({
+      pool_size: 99, total_candidates: 99, outcome: 'exhausted' as const,
+      candidates: [
+        { edge_ip: '8.8.8.1', prior: 'healthy' as const, attempted: true, outcome: 'failed' as const },
+        { edge_ip: '2001:4860::1', prior: 'failed' as const, attempted: true, outcome: 'failed' as const }
+      ]
+    })),
+    fallback_events_total: 99, fallback_events_truncated: true
+  };
+}
+
 describe('JSONL telemetry writer', () => {
   it('serializes concurrent writes into complete JSON lines', async () => {
     const root = await mkdtemp(join(tmpdir(), 'keenetic-telemetry-'));
@@ -47,6 +74,23 @@ describe('JSONL telemetry writer', () => {
     expect(lines).toHaveLength(40);
     const parsed = lines.map(line => JSON.parse(line) as TelemetryRecord);
     expect(new Set(parsed.map(item => item.call_id)).size).toBe(40);
+  });
+
+  it('writes a maximum-shape transport record below the 16 KiB ceiling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'keenetic-telemetry-'));
+    roots.push(root);
+    const path = join(root, 'state', 'mcp-calls.jsonl');
+    const maximum = record(1);
+    maximum.args_summary = {
+      fields: Object.fromEntries(Array.from({ length: 32 }, (_, index) => [
+        `field_${index}`, { type: 'string' as const, length: 65_535 }
+      ])), total_fields: 32, truncated: true
+    };
+    maximum.rci_transport = maximumTransport();
+    await createTelemetryWriter(path).write(maximum);
+    const line = (await readFile(path, 'utf8')).trimEnd();
+    expect(Buffer.byteLength(`${line}\n`, 'utf8')).toBeLessThan(16_384);
+    expect(JSON.parse(line)).toMatchObject({ rci_transport: { fallback_events: { length: 8 } } });
   });
 
   it('creates owner-only state and file modes on POSIX', async () => {

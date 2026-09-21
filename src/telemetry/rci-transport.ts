@@ -72,7 +72,8 @@ export interface RciTransportOperation {
 }
 
 export interface RciFallbackEventHandle {
-  attempted(ip: string, outcome: 'recovered' | 'failed'): void;
+  attempted(candidateIndex: number): void;
+  outcome(candidateIndex: number, outcome: 'recovered' | 'failed'): void;
   finish(outcome: FallbackOutcome): void;
 }
 
@@ -90,12 +91,40 @@ const storage = new AsyncLocalStorage<RciTransportCollector>();
 function recognizedCloudEndpoint(endpoint: string | undefined): boolean {
   if (endpoint === undefined) return false;
   try {
-    const hostname = new URL(endpoint).hostname.toLowerCase();
+    const url = new URL(endpoint);
+    if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' ||
+      url.port !== '' || url.pathname !== '/rci/' || url.search !== '' || url.hash !== '' ||
+      url.toString() !== endpoint) return false;
+    const hostname = url.hostname.toLowerCase();
     return (hostname.endsWith('.keenetic.pro') && hostname.length > '.keenetic.pro'.length) ||
       (hostname.endsWith('.netcraze.club') && hostname.length > '.netcraze.club'.length);
   } catch {
     return false;
   }
+}
+
+function publicUnicastIp(value: string): string | null {
+  const ip = canonicalIp(value);
+  if (ip === null) return null;
+  if (ip.includes('.')) {
+    const [a, b, c] = ip.split('.').map(Number);
+    if (a === undefined || b === undefined || c === undefined) return null;
+    if (a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 0 && c === 0) ||
+      (a === 192 && b === 0 && c === 2) || (a === 192 && b === 88 && c === 99) ||
+      (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113)) return null;
+    return ip;
+  }
+  const [firstText, secondText] = ip.split(':');
+  const first = Number.parseInt(firstText ?? '', 16);
+  const second = Number.parseInt(secondText ?? '', 16);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+  if (ip === '::' || ip === '::1' || (first & 0xfe00) === 0xfc00 ||
+    (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00 ||
+    (first === 0x2001 && second === 0x0db8) || ip.startsWith('::ffff:')) return null;
+  return ip;
 }
 
 function zeroTerminals(): Record<TerminalReason, number> {
@@ -132,7 +161,6 @@ export class RciTransportCollector {
   private fallbackAttempts = 0;
   private fallbackRecoveries = 0;
   private fallbackExhaustions = 0;
-  private operationCount = 0;
   private correlationComplete = true;
   private readonly observed = new Set<string>();
   private readonly selected = new Set<string>();
@@ -165,7 +193,6 @@ export class RciTransportCollector {
   beginOperation(): RciTransportOperation | undefined {
     if (this.sealed || this.applicability !== 'remote') return undefined;
     this.remoteRequests += 1;
-    this.operationCount += 1;
     let terminalRecorded = false;
     const terminal = (reason: TerminalReason): void => {
       if (terminalRecorded) return;
@@ -201,7 +228,7 @@ export class RciTransportCollector {
   private addIp(target: Set<string>, value: string): void {
     if (!this.allowIps) return;
     try {
-      const ip = canonicalIp(value);
+      const ip = publicUnicastIp(value);
       if (ip === null || target.has(ip)) return;
       if (target.size >= MAX_EDGE_IPS) {
         this.edgeIpsTruncated = true;
@@ -232,12 +259,16 @@ export class RciTransportCollector {
     const stored = this.fallbackEvents.length < MAX_FALLBACK_EVENTS ? event : undefined;
     if (stored !== undefined) this.fallbackEvents.push(stored);
     return {
-      attempted: (ip, outcome) => {
+      attempted: candidateIndex => {
         this.fallbackAttempts += 1;
-        const canonical = this.safeIp(ip);
-        const candidate = stored?.candidates.find(item => item.edge_ip === canonical);
+        const candidate = stored?.candidates[candidateIndex];
         if (candidate !== undefined) {
           candidate.attempted = true;
+        }
+      },
+      outcome: (candidateIndex, outcome) => {
+        const candidate = stored?.candidates[candidateIndex];
+        if (candidate !== undefined) {
           candidate.outcome = outcome;
         }
       },
@@ -251,7 +282,7 @@ export class RciTransportCollector {
 
   private safeIp(value: string): string | null {
     if (!this.allowIps) return null;
-    try { return canonicalIp(value); } catch { return null; }
+    try { return publicUnicastIp(value); } catch { return null; }
   }
 
   private terminal(reason: TerminalReason): void {
@@ -297,7 +328,7 @@ export class RciTransportCollector {
       fallback_attempts: this.fallbackAttempts,
       fallback_recoveries: this.fallbackRecoveries,
       fallback_exhaustions: this.fallbackExhaustions,
-      correlation_complete: this.operationCount === 0 ? null : this.correlationComplete,
+      correlation_complete: this.normalAttempts === 0 ? null : this.correlationComplete,
       finalized_after_handler: finalizedAfterHandler,
       observed_edge_ips: this.allowIps ? [...this.observed] : null,
       selected_normal_edge_ips: this.allowIps ? [...this.selected] : null,

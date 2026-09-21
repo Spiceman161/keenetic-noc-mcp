@@ -43,10 +43,12 @@ describe('telemetry configuration', () => {
       KEENETIC_TELEMETRY_RCI_EDGE_IPS: 'true',
       KEENETIC_STATE_DIR: '/tmp/keenetic-state-test'
     })).toMatchObject({ enabled: true, retainRciEdgeIps: true });
-    expect(loadTelemetryConfig('linux', {
-      KEENETIC_TELEMETRY_ENABLED: 'true',
-      KEENETIC_TELEMETRY_RCI_EDGE_IPS: 'TRUE',
-      KEENETIC_STATE_DIR: '/tmp/keenetic-state-test'
-    })).toMatchObject({ enabled: true, retainRciEdgeIps: false });
+    for (const value of ['TRUE', 'false', '', ' ', '1']) {
+      expect(loadTelemetryConfig('linux', {
+        KEENETIC_TELEMETRY_ENABLED: 'true',
+        KEENETIC_TELEMETRY_RCI_EDGE_IPS: value,
+        KEENETIC_STATE_DIR: '/tmp/keenetic-state-test'
+      })).toMatchObject({ enabled: true, retainRciEdgeIps: false });
+    }
   });
 });

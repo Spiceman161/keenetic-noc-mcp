@@ -319,7 +319,12 @@ export class RemoteSession {
       const existing = this.handshake;
       if (existing) {
         collector?.sharedAuthWait();
-        await this.waitForHandshake(existing, deadline, method, url, controls.signal, operation);
+        try {
+          await this.waitForHandshake(existing, deadline, method, url, controls.signal, operation);
+        } catch (error) {
+          operation?.terminal('transport_failure');
+          throw error;
+        }
       } else {
         const controller = new AbortController();
         const sharedDeadline = this.now() + (this.opts.timeoutMs ?? 10_000);
@@ -347,9 +352,8 @@ export class RemoteSession {
           flight, deadline, method, url, controls.signal, operation
         );
         if (direct && discoveryIsOperational) {
-          const classified = this.classify(direct, method, url);
           operation?.terminal('normal_response');
-          return classified;
+          return this.classify(direct, method, url);
         }
       }
     }
@@ -358,14 +362,18 @@ export class RemoteSession {
       method, url, bodySnapshot, deadline, true, controls.signal, true, operation
     );
     if (response.status === 401) {
-      this.acceptChallenge(response, method, url);
+      try {
+        this.acceptChallenge(response, method, url);
+      } catch (error) {
+        operation?.terminal('normal_response');
+        throw error;
+      }
       response = await this.send(
         method, url, bodySnapshot, deadline, true, controls.signal, true, operation
       );
     }
-    const classified = this.classify(response, method, url);
     operation?.terminal('normal_response');
-    return classified;
+    return this.classify(response, method, url);
   }
 
   private observedLookup(hostname: string, options: LookupOptions, callback: LookupCallback): void {
@@ -410,7 +418,12 @@ export class RemoteSession {
       this.authorization = { kind: 'none' };
       return response;
     }
-    this.acceptChallenge(response, method, url);
+    try {
+      this.acceptChallenge(response, method, url);
+    } catch (error) {
+      operation?.terminal('normal_response');
+      throw error;
+    }
     return null;
   }
 
@@ -566,7 +579,7 @@ export class RemoteSession {
     }
     let lastError = original;
 
-    for (const ip of candidates) {
+    for (const [candidateIndex, ip] of candidates.entries()) {
       if (signal?.aborted) {
         fallbackEvent?.finish('cancelled');
         operation?.terminal('cancelled');
@@ -602,6 +615,7 @@ export class RemoteSession {
         }
         timeout = AbortSignal.timeout(Math.max(1, Math.ceil(remaining)));
         const attemptSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+        fallbackEvent?.attempted(candidateIndex);
         const response = await this.fetch(url, {
           method,
           headers,
@@ -610,7 +624,7 @@ export class RemoteSession {
           redirect: 'manual'
         }, candidateAgent);
         this.pool.recordSuccess(ip);
-        fallbackEvent?.attempted(ip, 'recovered');
+        fallbackEvent?.outcome(candidateIndex, 'recovered');
         fallbackEvent?.finish('recovered');
         operation?.terminal('fallback_recovered');
         this.trackCleanup(() => candidateAgent.close());
@@ -631,7 +645,7 @@ export class RemoteSession {
           throw this.transportError('request deadline exceeded', method, url);
         }
         this.pool.recordFailure(ip);
-        fallbackEvent?.attempted(ip, 'failed');
+        fallbackEvent?.outcome(candidateIndex, 'failed');
         lastError = this.transportError(
           `pool fallback failed: ${redactText(this.causeMessage(cause))}`,
           method,

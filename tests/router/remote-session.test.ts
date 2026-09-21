@@ -98,6 +98,70 @@ describe('remote Digest authentication', () => {
     });
   });
 
+  it('accounts for a rejected shared-auth join as transport failure without copying attempts', async () => {
+    let rejectFlight!: (error: Error) => void;
+    const flight = new Promise<Response>((_resolve, reject) => { rejectFlight = reject; });
+    const session = new RemoteSession({ ...opts, fetch: vi.fn().mockReturnValueOnce(flight), attempts: 1 });
+    const initiator = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const joiner = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const first = runWithRciTransportCollector(initiator,
+      () => session.request('GET', '/rci/show/version'));
+    const second = runWithRciTransportCollector(joiner,
+      () => session.request('GET', '/rci/show/system'));
+    rejectFlight(new Error('synthetic transport failure'));
+    await expect(first).rejects.toBeInstanceOf(TransportError);
+    await expect(second).rejects.toBeInstanceOf(TransportError);
+    expect(joiner.seal()).toMatchObject({
+      shared_auth_waits: 1, normal_attempts: 0, correlation_complete: null,
+      terminal_reasons: { transport_failure: 1 }
+    });
+  });
+
+  it('accounts for final HTTP responses before auth or capability classification throws', async () => {
+    for (const response of [
+      new Response('', { status: 401 }),
+      new Response('', { status: 403 })
+    ]) {
+      const session = new RemoteSession({ ...opts, fetch: vi.fn().mockResolvedValue(response), attempts: 1 });
+      const collector = new RciTransportCollector({
+        connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+      });
+      await expect(runWithRciTransportCollector(collector,
+        () => session.request('GET', '/rci/show/version'))).rejects.toBeInstanceOf(AuthError);
+      expect(collector.seal()).toMatchObject({ terminal_reasons: { normal_response: 1 } });
+    }
+  });
+
+  it('reports replay-unsafe and incomplete-correlation terminal evidence without changing retry policy', async () => {
+    const rejected = () => Promise.reject(new Error('synthetic transport failure'));
+    const replayUnsafe = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const unsafeSession = new RemoteSession({ ...opts, fetch: vi.fn(rejected), attempts: 5 });
+    await expect(runWithRciTransportCollector(replayUnsafe,
+      () => unsafeSession.request('POST', '/rci/', { system: { configuration: { save: {} } } })))
+      .rejects.toBeInstanceOf(TransportError);
+    expect(replayUnsafe.seal()).toMatchObject({
+      normal_attempts: 1, fallback_considered: 1,
+      terminal_reasons: { fallback_replay_unsafe: 1 }
+    });
+
+    const incomplete = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const incompleteSession = new RemoteSession({ ...opts, fetch: vi.fn(rejected), attempts: 1 });
+    await expect(runWithRciTransportCollector(incomplete,
+      () => incompleteSession.request('GET', '/rci/show/version'))).rejects.toBeInstanceOf(TransportError);
+    expect(incomplete.seal()).toMatchObject({
+      normal_attempts: 1, fallback_considered: 1,
+      terminal_reasons: { fallback_correlation_incomplete: 1 }
+    });
+  });
+
   it('keeps a shared initial handshake alive when one caller cancels', async () => {
     let releaseChallenge!: (response: Response) => void;
     const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
