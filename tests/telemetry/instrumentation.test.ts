@@ -7,13 +7,19 @@ import {
 } from '../../src/router/errors.js';
 import { fail, guard, ok, type ToolResult } from '../../src/tools/registry.js';
 import { instrumentToolRegistration } from '../../src/telemetry/instrumentation.js';
+import { currentRciTransportCollector } from '../../src/telemetry/rci-transport.js';
 import type { TelemetryRecord } from '../../src/telemetry/record.js';
 import { normalizeErrorCode } from '../../src/telemetry/record.js';
 import type { TelemetryWriter } from '../../src/telemetry/writer.js';
 
 type Callback = (args: unknown, context: ServerContext) => Promise<ToolResult>;
 
-function setup(options?: { rejectWrite?: boolean; times?: number[] }) {
+function setup(options?: {
+  rejectWrite?: boolean;
+  times?: number[];
+  connection?: { mode: 'lan' | 'remote'; endpoint: string };
+  retainRciEdgeIps?: boolean;
+}) {
   let callback: Callback | undefined;
   const server = {
     registerTool: vi.fn((_name: string, _config: unknown, handler: Callback) => {
@@ -35,7 +41,11 @@ function setup(options?: { rejectWrite?: boolean; times?: number[] }) {
     routerProfile: 'tupik',
     serverVersion: '0.0.0-dev',
     now: () => new Date(timeIndex === 0 ? '2026-09-12T00:00:00.000Z' : '2026-09-12T00:00:00.438Z'),
-    monotonicNow: () => monotonic[timeIndex++] ?? monotonic.at(-1) ?? 0
+    monotonicNow: () => monotonic[timeIndex++] ?? monotonic.at(-1) ?? 0,
+    ...(options?.connection === undefined ? {} : { connection: options.connection }),
+    ...(options?.retainRciEdgeIps === undefined
+      ? {}
+      : { retainRciEdgeIps: options.retainRciEdgeIps })
   });
   const request = { mcpReq: { id: 17 } } as unknown as ServerContext;
   return { registrar, records, writer, request, callback: () => callback! };
@@ -141,6 +151,51 @@ describe('tool-call instrumentation', () => {
       new Promise<string>(resolve => setTimeout(() => resolve('timed-out'), 100))
     ]);
     expect(outcome).toBe('done');
+  });
+
+  it('writes bounded remote evidence without changing the existing call metadata', async () => {
+    const fixture = setup({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' },
+      retainRciEdgeIps: true
+    });
+    register(fixture, async () => {
+      const operation = currentRciTransportCollector()?.beginOperation();
+      operation?.normalAttempt();
+      operation?.observedEdge('192.0.2.1');
+      operation?.terminal('normal_response');
+      return ok({ done: true });
+    });
+    const result = await fixture.callback()({}, fixture.request);
+    expect(result['_meta']).toHaveProperty('io.github.spiceman161/telemetry');
+    expect(fixture.records.at(-1)?.rci_transport).toMatchObject({
+      remote_requests: 1,
+      normal_attempts: 1,
+      observed_edge_ips: ['192.0.2.1']
+    });
+  });
+
+  it('defers only a shared-auth-owned record until its lease settles', async () => {
+    let callback: Callback | undefined;
+    const records: TelemetryRecord[] = [];
+    const server = { registerTool: vi.fn((_name, _config, handler) => { callback = handler; }) } as
+      unknown as McpServer;
+    const registrar = instrumentToolRegistration(server, {
+      writer: { write: async record => { records.push(record); } },
+      routerProfile: 'tupik',
+      serverVersion: '0.0.0-dev',
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    let release!: () => void;
+    register({ registrar }, async () => {
+      const operation = currentRciTransportCollector()?.beginOperation()!;
+      release = operation.acquireLease();
+      return ok({ done: true });
+    });
+    await callback!({}, { mcpReq: { id: 1 } } as unknown as ServerContext);
+    expect(records).toHaveLength(0);
+    release();
+    await vi.waitFor(() => expect(records).toHaveLength(1));
+    expect(records[0]?.rci_transport?.finalized_after_handler).toBe(true);
   });
 
   it('does not let record-construction failures replace a successful result', async () => {

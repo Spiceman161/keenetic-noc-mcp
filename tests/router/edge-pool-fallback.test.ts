@@ -10,6 +10,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EdgePool } from '../../src/router/edge-pool.js';
 import { RemoteSession } from '../../src/router/remote-session.js';
 import { TransportError } from '../../src/router/errors.js';
+import {
+  RciTransportCollector,
+  runWithRciTransportCollector
+} from '../../src/telemetry/rci-transport.js';
 
 type TestAddress = { address: string; family: number };
 type TestLookup = (
@@ -487,7 +491,12 @@ describe('RemoteSession pool fallback integration', () => {
       server.closeConnections();
       await new Promise(resolve => setTimeout(resolve, 20));
       phase = 'rotated';
-      const response = await session.request('GET', '/rci/show/system');
+      const collector = new RciTransportCollector({
+        connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' },
+        retainEdgeIps: true
+      });
+      const response = await runWithRciTransportCollector(collector,
+        () => session.request('GET', '/rci/show/system'));
       await response.text();
       expect(pinned).toEqual(['127.0.0.1']);
       expect(lookupCount.value).toBe(3);
@@ -496,6 +505,15 @@ describe('RemoteSession pool fallback integration', () => {
       expect(pool.getEntry('127.0.0.1')?.lastSuccessAt).toBeDefined();
       expect(server.hosts.at(-1)).toBe(`${logicalHostname}:${server.port}`);
       expect(server.serverNames.at(-1)).toBe(logicalHostname);
+      expect(collector.seal()).toMatchObject({
+        normal_attempts: 2,
+        fallback_considered: 1,
+        fallback_activations: 1,
+        fallback_attempts: 1,
+        fallback_recoveries: 1,
+        terminal_reasons: { fallback_recovered: 1 },
+        fallback_events: [{ outcome: 'recovered', candidates: [{ attempted: true, outcome: 'recovered' }] }]
+      });
     } finally {
       await server.close();
     }
@@ -537,7 +555,7 @@ describe('RemoteSession pool fallback integration', () => {
     expect(pinned).not.toHaveBeenCalled();
   });
 
-  it('correlates concurrent queued requests sharing one connector error', async () => {
+  it('keeps a barrier-controlled concurrent normal/fallback pair causally separate', async () => {
     const server = await startTlsServer(validCertificate);
     const pool = new EdgePool();
     pool.observe('127.0.0.1');
@@ -551,7 +569,8 @@ describe('RemoteSession pool fallback integration', () => {
       }
       callbacks.push(callback);
       if (callbacks.length === 2) {
-        for (const queued of callbacks) queued(sharedError, '', 0);
+        callbacks[0]!(sharedError, '', 0);
+        callbacks[1]!(null, [{ address: '127.0.0.1', family: 4 }]);
       }
     };
     const pinned: string[] = [];
@@ -570,11 +589,31 @@ describe('RemoteSession pool fallback integration', () => {
       server.closeConnections();
       await new Promise(resolve => setTimeout(resolve, 20));
       failLookups = true;
-      const first = session.request('GET', '/rci/show/version');
-      const second = session.request('GET', '/rci/show/system');
+      const fallbackCollector = new RciTransportCollector({
+        connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+      });
+      const normalCollector = new RciTransportCollector({
+        connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+      });
+      const first = runWithRciTransportCollector(fallbackCollector,
+        () => session.request('GET', '/rci/show/version'));
+      const second = runWithRciTransportCollector(normalCollector,
+        () => session.request('GET', '/rci/show/system'));
       const responses = await Promise.all([first, second]);
       await Promise.all(responses.map(response => response.text()));
-      expect(pinned).toEqual(['127.0.0.1', '127.0.0.1']);
+      expect(pinned).toEqual(['127.0.0.1']);
+      expect(fallbackCollector.seal()).toMatchObject({
+        normal_attempts: 1,
+        fallback_activations: 1,
+        fallback_attempts: 1,
+        terminal_reasons: { fallback_recovered: 1 }
+      });
+      expect(normalCollector.seal()).toMatchObject({
+        normal_attempts: 1,
+        fallback_activations: 0,
+        fallback_attempts: 0,
+        terminal_reasons: { normal_response: 1 }
+      });
     } finally {
       await server.close();
     }

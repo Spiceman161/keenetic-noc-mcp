@@ -21,6 +21,14 @@ result and any warning uses stderr because stdout carries MCP protocol data.
 The SDK validates schemas before invoking registered callbacks, so pre-handler
 schema rejection is outside this public instrumentation seam.
 
+For a remote handler, the instrumentation creates one `AsyncLocalStorage`
+transport collector before the handler and `RemoteSession.request()` acquires
+one explicit operation from it. The operation follows the existing request,
+connector, socket and error correlations through normal and pinned attempts;
+late diagnostics, mutable session snapshots, and post-handler pool reads do
+not participate. A shared authentication flight is leased to its initiating
+operation, while joining calls record only their wait before their own request.
+
 The tool layer depends on an RCI client interface, not on either authentication
 mechanism. LAN mode keeps `/auth` challenge-response and cookie sessions. Remote
 mode sends requests to a normalized `https://.../rci/` URL and responds to

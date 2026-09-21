@@ -14,6 +14,17 @@ export interface EdgePoolOptions {
   staleThresholdMs?: number;
 }
 
+export interface EdgePoolCandidate {
+  readonly ip: string;
+  readonly prior: 'healthy' | 'unknown' | 'failed';
+}
+
+export interface EdgePoolCandidates {
+  readonly poolSize: number;
+  readonly totalCandidates: number;
+  readonly candidates: readonly EdgePoolCandidate[];
+}
+
 const DEFAULT_MAX_ENTRIES = 10;
 const DEFAULT_STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
 
@@ -74,6 +85,12 @@ export class EdgePool {
   }
 
   candidates(excluded: ReadonlySet<string> | readonly string[] = [], limit = 2): string[] {
+    return this.candidateDetails(excluded, limit).candidates.map(candidate => candidate.ip);
+  }
+
+  /** Read-only bounded projection for transport evidence; it cannot mutate pool ranking. */
+  candidateDetails(excluded: ReadonlySet<string> | readonly string[] = [],
+    limit = 2): EdgePoolCandidates {
     const excludedCanonical = new Set<string>();
     for (const value of excluded) {
       const ip = canonicalIp(value);
@@ -104,9 +121,16 @@ export class EdgePool {
     failed.sort((left, right) =>
       left.lastFailureAt! - right.lastFailureAt! || left.ip.localeCompare(right.ip));
 
-    return [...healthy, ...unknown, ...failed]
-      .slice(0, Math.max(0, Math.min(2, limit)))
-      .map(entry => entry.ip);
+    const ranked = [
+      ...healthy.map(entry => ({ ip: entry.ip, prior: 'healthy' as const })),
+      ...unknown.map(entry => ({ ip: entry.ip, prior: 'unknown' as const })),
+      ...failed.map(entry => ({ ip: entry.ip, prior: 'failed' as const }))
+    ];
+    return {
+      poolSize: this.entries.size,
+      totalCandidates: ranked.length,
+      candidates: ranked.slice(0, Math.max(0, Math.min(2, limit)))
+    };
   }
 
   size(): number {

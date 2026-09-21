@@ -48,6 +48,38 @@ cannot stall tool delivery. Concurrent records are queued in completion order;
 the pending queue is capped and drops new records during a prolonged storage
 stall. A process terminated immediately after a call may lose its final queued record.
 
+Newly written schema-v1 records also include the optional additive
+`rci_transport` object. Historical schema-v1 lines without it remain valid and
+are not rewritten. It records only bounded causal counters for the current MCP
+call: normal dispatcher attempts, shared-auth waits, fallback consideration and
+activation, pinned attempts/recovery/exhaustion, a fixed controlled terminal
+reason counter, and at most eight fallback events with two candidates each.
+`correlation_complete` is false when the existing request/socket/error evidence
+cannot be associated with that exact normal attempt; fallback stays subject to
+the existing fail-closed transport gate. LAN records use `not_applicable` and
+null measurements; an absent connection mode uses `unknown`. A remote handler
+which makes no `RemoteSession` request has zero counters rather than a
+fabricated success.
+
+The normal case is appended after the handler. A cold shared-auth flight may
+outlive its initiating handler; its record is deliberately appended after that
+flight settles with `finalized_after_handler: true`, so journal order can differ
+from handler completion order while timestamp, finished time, and duration keep
+their original meaning.
+
+Cloud edge IP retention is separately opt-in and deliberately strict:
+
+```sh
+export KEENETIC_TELEMETRY_RCI_EDGE_IPS=true
+```
+
+Even then, an IP is retained only for a remote endpoint whose hostname is a
+recognized subdomain of `.keenetic.pro` or `.netcraze.club`, and only after
+canonical IPv4/IPv6 validation. At most 16 first-seen values are retained in
+each edge list. Other endpoints, any other spelling, LAN, and unknown mode keep
+the counters but replace every edge-IP slot/list with `null`. These bounds keep
+the complete JSONL record within the writer's 16 KiB ceiling.
+
 The MCP result `_meta` contains the same `call_id` under
 `io.github.spiceman161/telemetry`. An integration can use this identifier for a
 separate future semantic-quality record without mixing subjective evaluation
@@ -69,6 +101,12 @@ The journal does not contain:
 - tool result bodies or exception/error messages;
 - LLM prompts, responses, provider identity, session memory, or token usage;
 - inferred retries, diagnostic quality, or fabricated client metadata.
+
+`rci_transport` follows the same boundary. It never contains endpoint
+hostnames or URLs, credentials, authorization/cookie/request headers, TLS
+material, RCI methods/paths/bodies, response/router/configuration/log text, or
+error text. Fallback candidate evidence has a nullable IP slot specifically so
+that aggregate effectiveness counts remain useful when retention is disabled.
 
 SDK input-schema failures and unknown tool names are rejected before the public
 registered callback runs and are not recorded in OBS-1. Runtime validation in a

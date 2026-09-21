@@ -40,6 +40,7 @@ import { createTelemetryWriter, type TelemetryWriter } from './telemetry/writer.
 export interface ServerTelemetry {
   writer: TelemetryWriter;
   onWriteError?: () => void;
+  retainRciEdgeIps?: boolean;
 }
 
 export function createServer(ctx: ToolContext, telemetry?: ServerTelemetry): McpServer {
@@ -49,6 +50,10 @@ export function createServer(ctx: ToolContext, telemetry?: ServerTelemetry): Mcp
     writer: telemetry.writer,
     routerProfile: ctx.routerId ?? 'unknown',
     serverVersion: version,
+    ...(ctx.connection === undefined ? {} : { connection: ctx.connection }),
+    ...(telemetry.retainRciEdgeIps === undefined
+      ? {}
+      : { retainRciEdgeIps: telemetry.retainRciEdgeIps }),
     ...(telemetry.onWriteError === undefined ? {} : { onWriteError: telemetry.onWriteError })
   });
   registerSystemTools(tools, ctx);
@@ -209,6 +214,7 @@ async function main(): Promise<void> {
     if (telemetryConfig.enabled) {
       telemetry = {
         writer: createTelemetryWriter(telemetryConfig.path),
+        retainRciEdgeIps: telemetryConfig.retainRciEdgeIps,
         onWriteError: warnTelemetry
       };
     }

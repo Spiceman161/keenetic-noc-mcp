@@ -13,6 +13,11 @@ import {
   type TelemetryRecord,
   type ToolAttributes
 } from './record.js';
+import {
+  RciTransportCollector,
+  runWithRciTransportCollector,
+  type RciTransportSnapshot
+} from './rci-transport.js';
 import type { TelemetryWriter } from './writer.js';
 
 export type ToolRegistrar = Pick<McpServer, 'registerTool'>;
@@ -24,6 +29,8 @@ export interface InstrumentationOptions {
   now?: () => Date;
   monotonicNow?: () => number;
   onWriteError?: () => void;
+  connection?: { mode: 'lan' | 'remote'; endpoint: string };
+  retainRciEdgeIps?: boolean;
 }
 
 type RegistrationCallback = (
@@ -99,8 +106,12 @@ export function instrumentToolRegistration(
       let thrown: unknown;
       let didThrow = false;
 
+      const transport = new RciTransportCollector({
+        ...(options.connection === undefined ? {} : { connection: options.connection }),
+        retainEdgeIps: options.retainRciEdgeIps === true
+      });
       try {
-        result = await callback(args, context);
+        result = await runWithRciTransportCollector(transport, () => callback(args, context));
       } catch (error) {
         thrown = error;
         didThrow = true;
@@ -126,7 +137,10 @@ export function instrumentToolRegistration(
           : telemetry?.errorCode ?? (status === 'error' ? 'internal' : null);
         const candidate = result === undefined ? undefined : attachCallId(result, callId);
         const requestId = safeRequestId(context.mcpReq.id);
-        const record: TelemetryRecord = {
+        // Preserve the historical fail-open boundary: an unserializable result
+        // must leave the original handler object untouched and skip telemetry.
+        const resultSizeBytes = candidate === undefined ? 0 : resultBytes(candidate);
+        const createRecord = (rciTransport: RciTransportSnapshot): TelemetryRecord => ({
           schema_version: 1,
           timestamp: started.toISOString(),
           finished_at: finished.toISOString(),
@@ -139,16 +153,22 @@ export function instrumentToolRegistration(
           status,
           error_code: errorCode,
           args_summary: summarizeArguments(args, registeredArgumentFields(config)),
-          result_size_bytes: candidate === undefined ? 0 : resultBytes(candidate),
+          result_size_bytes: resultSizeBytes,
           output_truncated: telemetry?.outputTruncated ?? false,
-          server_version: serverVersion
-        };
+          server_version: serverVersion,
+          rci_transport: rciTransport
+        });
         returned = candidate;
-        try {
-          void options.writer.write(record).catch(reportWriteFailure);
-        } catch {
-          reportWriteFailure();
-        }
+        const append = (rciTransport: RciTransportSnapshot): void => {
+          try {
+            void options.writer.write(createRecord(rciTransport)).catch(reportWriteFailure);
+          } catch {
+            reportWriteFailure();
+          }
+        };
+        const sealed = transport.seal();
+        if (sealed instanceof Promise) void sealed.then(append, reportWriteFailure);
+        else append(sealed);
       } catch {
         reportWriteFailure();
       }

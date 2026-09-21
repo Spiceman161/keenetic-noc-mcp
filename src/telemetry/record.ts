@@ -11,6 +11,7 @@ import {
   ValidationError,
   VerificationError
 } from '../router/errors.js';
+import type { RciTransportSnapshot } from './rci-transport.js';
 
 export type TelemetryStatus = 'success' | 'error';
 
@@ -49,6 +50,8 @@ export interface TelemetryRecord {
   result_size_bytes: number;
   output_truncated: boolean;
   server_version: string;
+  /** Additive OBS-1 transport evidence; schema-v1 lines without it remain valid. */
+  rci_transport?: RciTransportSnapshot;
 }
 
 const MAX_ARGUMENT_FIELDS = 32;

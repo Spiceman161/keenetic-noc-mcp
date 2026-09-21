@@ -3,6 +3,10 @@ import { digestAuthorization, parseChallenges, RemoteSession } from '../../src/r
 import { AuthError, RciError, RemoteCapabilityError, TransportError } from '../../src/router/errors.js';
 import { EdgePool } from '../../src/router/edge-pool.js';
 import { Rci } from '../../src/router/rci.js';
+import {
+  RciTransportCollector,
+  runWithRciTransportCollector
+} from '../../src/telemetry/rci-transport.js';
 
 const opts = { endpoint: 'https://rci.example.test/rci/', login: 'agent', password: 'not-a-real-password', routerId: 'lab' };
 
@@ -58,6 +62,40 @@ describe('remote Digest authentication', () => {
     expect(fetch.mock.calls.slice(1).every(call => call[1].headers.authorization.startsWith('Digest '))).toBe(true);
     expect(fetch.mock.calls[1]![1].headers.authorization).toContain('uri="/rci/show/version"');
     expect(fetch.mock.calls[2]![1].headers.authorization).toContain('uri="/rci/show/system"');
+  });
+
+  it('keeps shared cold-auth evidence with the initiating call and does not cross-attribute', async () => {
+    let releaseChallenge!: (response: Response) => void;
+    const challenge = new Promise<Response>(resolve => { releaseChallenge = resolve; });
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => challenge)
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+    const session = new RemoteSession({ ...opts, fetch });
+    const firstCollector = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const secondCollector = new RciTransportCollector({
+      connection: { mode: 'remote', endpoint: 'https://edge.keenetic.pro/rci/' }
+    });
+    const first = runWithRciTransportCollector(firstCollector,
+      () => session.request('GET', '/rci/show/version'));
+    const second = runWithRciTransportCollector(secondCollector,
+      () => session.request('GET', '/rci/show/system'));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    releaseChallenge(new Response('', { status: 401, headers: {
+      'www-authenticate': 'Digest realm="proxy", nonce="abc", qop="auth", algorithm=MD5'
+    } }));
+    await Promise.all([first, second]);
+    expect(firstCollector.seal()).toMatchObject({
+      remote_requests: 1,
+      shared_auth_waits: 0,
+      normal_attempts: 2
+    });
+    expect(secondCollector.seal()).toMatchObject({
+      remote_requests: 1,
+      shared_auth_waits: 1,
+      normal_attempts: 1
+    });
   });
 
   it('keeps a shared initial handshake alive when one caller cancels', async () => {
