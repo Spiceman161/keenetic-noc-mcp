@@ -181,7 +181,7 @@ describe('get_wireguard_status', () => {
     expect(text).not.toMatch(/fresh|stale|health|failure/i);
   });
 
-  it('projects proven client diagnostics and maps handshake age without aliases or inference', async () => {
+  it('projects proven client diagnostics and maps the bounded handshake-age contract without aliases or inference', async () => {
     const { handler } = harness({
       Wireguard0: {
         type: 'Wireguard', id: 'SYNTHETIC_ID_FALLBACK', 'interface-name': 'wg-client',
@@ -190,17 +190,23 @@ describe('get_wireguard_status', () => {
           { description: 'primary', 'remote-endpoint-address': 'vpn.example.test', 'remote-port': 51820,
             enabled: true, online: false, 'last-handshake': 0, rxbytes: 1, txbytes: 2 },
           { description: '', 'remote-endpoint-address': 'host', 'remote-port': 0,
-            enabled: 'true', online: null, 'last-handshake': 2_147_483_647 },
+            enabled: 'true', online: null, 'last-handshake': 2_147_483_646 },
           { description: 'x'.repeat(257), 'remote-endpoint-address': 'x'.repeat(257), 'remote-port': 51820,
-            enabled: false, online: true, 'last-handshake': 2_147_483_648 }
+            enabled: false, online: true, 'last-handshake': 2_147_483_647 },
+          { 'last-handshake': 2_147_483_648 },
+          {},
+          { 'last-handshake': null },
+          { 'last-handshake': -1 },
+          { 'last-handshake': 1.5 },
+          { 'last-handshake': '1' }
         ] }
       },
       Wireguard1: { type: 'Wireguard', id: 'SYNTHETIC_ID_ONLY', 'interface-name': 1, description: [], address: 'x'.repeat(257), wireguard: { peer: [] } }
     });
     const out = payload(await handler());
     expect(out).toMatchObject({
-      peersWithObservedHandshakeAge: 1, peersWithoutReportedHandshakeAge: 1,
-      peersWithUnknownHandshakeAge: 1, peersOnline: 1, peersOffline: 1
+      peersWithObservedHandshakeAge: 2, peersWithoutReportedHandshakeAge: 1,
+      peersWithUnknownHandshakeAge: 6, peersOnline: 1, peersOffline: 1
     });
     expect(out.interfaces[0]).toMatchObject({ name: 'wg-client', description: 'client tunnel', address: '10.0.0.2/32' });
     expect(out.interfaces[1]).toMatchObject({ name: null, description: null, address: null });
@@ -209,9 +215,15 @@ describe('get_wireguard_status', () => {
       { description: 'primary', endpoint: { host: 'vpn.example.test', port: 51820 }, enabled: true, online: false,
         handshakeAgeEvidence: 'observed', handshakeAgeSeconds: 0 },
       { description: '', endpoint: null, enabled: null, online: null,
-        handshakeAgeEvidence: 'absent', handshakeAgeSeconds: null },
+        handshakeAgeEvidence: 'observed', handshakeAgeSeconds: 2_147_483_646 },
       { description: null, endpoint: null, enabled: false, online: true,
-        handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null }
+        handshakeAgeEvidence: 'absent', handshakeAgeSeconds: null },
+      { handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null },
+      { handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null },
+      { handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null },
+      { handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null },
+      { handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null },
+      { handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null }
     ]);
     expect(JSON.stringify(out)).not.toContain('SYNTHETIC_ID_FALLBACK');
   });

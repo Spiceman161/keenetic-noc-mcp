@@ -251,6 +251,16 @@ Interface names come only from `interface-name`, never a fallback ID. Endpoint
 host and port are reported only when both proven scalar fields are valid; the
 host is not parsed or resolved.
 
+The additive public fields are exactly:
+
+| Location | Fields and types | Semantics |
+| --- | --- | --- |
+| Interface | `name`, `description`, `address`: `string \| null` | Exact bounded scalar observations (`name` only from `interface-name`); missing, invalid, or oversize values are `null`. |
+| Peer | `description`: `string \| null`; `enabled`, `online`: `boolean \| null` | Description is a bounded scalar; enabled/online accept exact booleans only. Missing, invalid, or oversize scalar values are `null`. |
+| Peer endpoint | `endpoint`: `{ host: string; port: number } \| null` | The declared endpoint is present only when both bounded host and integer port `1..65535` are valid; otherwise it is `null`. |
+| Peer handshake age | `handshakeAgeEvidence`: `'observed' \| 'absent' \| 'unknown'`; `handshakeAgeSeconds`: `number \| null` | `0..2147483646` is authoritative seconds evidence; `2147483647` is `absent`/`null`; missing, invalid, fractional, string, or out-of-range values are `unknown`/`null`. |
+| Interface and top level | `peersWithObservedHandshakeAge`, `peersWithoutReportedHandshakeAge`, `peersWithUnknownHandshakeAge`, `peersOnline`, `peersOffline`: `number \| null` | Counts classify retained valid peers. Under partial evidence, every non-null count is a lower bound; unavailable peer evidence yields `null`, while a valid empty collection yields `0`. |
+
 The evidence status is `complete` for a usable source without structural
 defects, `partial` when valid evidence is retained alongside malformed interface
 rows/types or malformed or unavailable WireGuard peer evidence, and

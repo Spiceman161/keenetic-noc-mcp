@@ -288,6 +288,9 @@ describe('assembled server over MCP', () => {
     const tool = tools.find(item => item.name === 'get_wireguard_status');
     expect(tool?.inputSchema).toMatchObject({ type: 'object', properties: {} });
     expect(tool?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+    expect(tool?.description).toContain('authoritative handshake-age seconds');
+    expect(tool?.description).toContain('declared endpoint');
+    expect(tool?.description).toContain('nullable enabled/online observations');
 
     const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
     const content = result.content as Array<{ type: string; text: string }>;

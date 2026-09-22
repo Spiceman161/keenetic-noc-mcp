@@ -441,7 +441,7 @@ export function registerVpnTools(server: ToolRegistrar, ctx: ToolContext): void 
   }));
   server.registerTool('get_wireguard_status', {
     title: 'Get WireGuard runtime status evidence',
-    description: 'Bounded current WireGuard interface, peer, handshake-presence, and counter evidence only; not a health or Internet/reachability verdict.',
+    description: 'Bounded current WireGuard interface, peer, authoritative handshake-age seconds, declared endpoint, nullable enabled/online observations, handshake-presence, and counter evidence only; not a health or Internet/reachability verdict.',
     inputSchema: {},
     annotations: READ_ONLY
   }, guard(ctx, async () => {
