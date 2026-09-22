@@ -38,15 +38,22 @@ const topLevelKeys = [
   'schemaVersion', 'evidenceStatus', 'evidenceReason', 'peersObserved',
   'peersWithHandshakeEvidence', 'peersWithoutHandshakeEvidence',
   'peersWithUnknownHandshakeEvidence', 'peersWithInvalidHandshakeEvidence',
+  'peersWithObservedHandshakeAge', 'peersWithoutReportedHandshakeAge', 'peersWithUnknownHandshakeAge',
+  'peersOnline', 'peersOffline',
   'interfaces', 'shown', 'total', 'truncated'
 ].sort();
 const interfaceKeys = [
-  'id', 'state', 'link', 'defaultGateway', 'peerEvidenceStatus', 'peersObserved',
+  'id', 'name', 'description', 'address', 'state', 'link', 'defaultGateway', 'peerEvidenceStatus', 'peersObserved',
   'peersWithHandshakeEvidence', 'peersWithoutHandshakeEvidence',
-  'peersWithUnknownHandshakeEvidence', 'peersWithInvalidHandshakeEvidence', 'peers',
+  'peersWithUnknownHandshakeEvidence', 'peersWithInvalidHandshakeEvidence',
+  'peersWithObservedHandshakeAge', 'peersWithoutReportedHandshakeAge', 'peersWithUnknownHandshakeAge',
+  'peersOnline', 'peersOffline', 'peers',
   'peersShown', 'peersTotal', 'peersTruncated'
 ].sort();
-const peerKeys = ['peerIndex', 'handshake', 'rxBytes', 'txBytes'].sort();
+const peerKeys = [
+  'peerIndex', 'description', 'endpoint', 'enabled', 'online', 'handshake',
+  'handshakeAgeEvidence', 'handshakeAgeSeconds', 'rxBytes', 'txBytes'
+].sort();
 const forbiddenSentinels = [
   'SYNTHETIC_PRIVATE_KEY', 'SYNTHETIC_PSK', 'SYNTHETIC_PUBLIC_KEY', 'SYNTHETIC_PEER_ID',
   'SYNTHETIC_COLLECTION_KEY', 'SYNTHETIC_ENDPOINT', 'SYNTHETIC_ALLOWED_RANGE',
@@ -106,6 +113,11 @@ function unavailableEnvelope(reason: 'unexpected-response' | 'response-too-large
     peersWithoutHandshakeEvidence: null,
     peersWithUnknownHandshakeEvidence: null,
     peersWithInvalidHandshakeEvidence: null,
+    peersWithObservedHandshakeAge: null,
+    peersWithoutReportedHandshakeAge: null,
+    peersWithUnknownHandshakeAge: null,
+    peersOnline: null,
+    peersOffline: null,
     interfaces: [],
     shown: 0,
     total: null,
@@ -151,20 +163,57 @@ describe('get_wireguard_status', () => {
       schemaVersion: 1, evidenceStatus: 'complete', evidenceReason: null,
       peersObserved: 4, peersWithHandshakeEvidence: 1, peersWithoutHandshakeEvidence: 1,
       peersWithUnknownHandshakeEvidence: 1, peersWithInvalidHandshakeEvidence: 1,
+      peersWithObservedHandshakeAge: 2, peersWithoutReportedHandshakeAge: 0, peersWithUnknownHandshakeAge: 2,
+      peersOnline: 0, peersOffline: 0,
       shown: 1, total: 1, truncated: false
     });
     expect(Object.keys(out.interfaces[0]).sort()).toEqual(interfaceKeys);
     expect(Object.keys(out.interfaces[0].peers[0]).sort()).toEqual(peerKeys);
     expect(out.interfaces[0]).toMatchObject({ id: 'Wireguard0', state: 'up', link: 'down', defaultGateway: true });
-    expect(out.interfaces[0].peers).toEqual([
-      { peerIndex: 1, handshake: 'present', rxBytes: 0, txBytes: 8 },
-      { peerIndex: 2, handshake: 'absent', rxBytes: 1, txBytes: 2 },
-      { peerIndex: 3, handshake: 'unknown', rxBytes: 3, txBytes: 4 },
-      { peerIndex: 4, handshake: 'invalid', rxBytes: null, txBytes: null }
+    expect(out.interfaces[0].peers).toMatchObject([
+      { peerIndex: 1, handshake: 'present', handshakeAgeEvidence: 'observed', handshakeAgeSeconds: 99, rxBytes: 0, txBytes: 8 },
+      { peerIndex: 2, handshake: 'absent', handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null, rxBytes: 1, txBytes: 2 },
+      { peerIndex: 3, handshake: 'unknown', handshakeAgeEvidence: 'observed', handshakeAgeSeconds: 0, rxBytes: 3, txBytes: 4 },
+      { peerIndex: 4, handshake: 'invalid', handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null, rxBytes: null, txBytes: null }
     ]);
     const text = JSON.stringify(out);
     for (const sentinel of sentinels) expect(text).not.toContain(sentinel);
-    expect(text).not.toMatch(/age|fresh|stale|health|failure/i);
+    expect(text).not.toMatch(/fresh|stale|health|failure/i);
+  });
+
+  it('projects proven client diagnostics and maps handshake age without aliases or inference', async () => {
+    const { handler } = harness({
+      Wireguard0: {
+        type: 'Wireguard', id: 'SYNTHETIC_ID_FALLBACK', 'interface-name': 'wg-client',
+        description: 'client tunnel', address: '10.0.0.2/32',
+        wireguard: { peer: [
+          { description: 'primary', 'remote-endpoint-address': 'vpn.example.test', 'remote-port': 51820,
+            enabled: true, online: false, 'last-handshake': 0, rxbytes: 1, txbytes: 2 },
+          { description: '', 'remote-endpoint-address': 'host', 'remote-port': 0,
+            enabled: 'true', online: null, 'last-handshake': 2_147_483_647 },
+          { description: 'x'.repeat(257), 'remote-endpoint-address': 'x'.repeat(257), 'remote-port': 51820,
+            enabled: false, online: true, 'last-handshake': 2_147_483_648 }
+        ] }
+      },
+      Wireguard1: { type: 'Wireguard', id: 'SYNTHETIC_ID_ONLY', 'interface-name': 1, description: [], address: 'x'.repeat(257), wireguard: { peer: [] } }
+    });
+    const out = payload(await handler());
+    expect(out).toMatchObject({
+      peersWithObservedHandshakeAge: 1, peersWithoutReportedHandshakeAge: 1,
+      peersWithUnknownHandshakeAge: 1, peersOnline: 1, peersOffline: 1
+    });
+    expect(out.interfaces[0]).toMatchObject({ name: 'wg-client', description: 'client tunnel', address: '10.0.0.2/32' });
+    expect(out.interfaces[1]).toMatchObject({ name: null, description: null, address: null });
+    expect(out.interfaces[1].name).not.toBe('SYNTHETIC_ID_ONLY');
+    expect(out.interfaces[0].peers).toMatchObject([
+      { description: 'primary', endpoint: { host: 'vpn.example.test', port: 51820 }, enabled: true, online: false,
+        handshakeAgeEvidence: 'observed', handshakeAgeSeconds: 0 },
+      { description: '', endpoint: null, enabled: null, online: null,
+        handshakeAgeEvidence: 'absent', handshakeAgeSeconds: null },
+      { description: null, endpoint: null, enabled: false, online: true,
+        handshakeAgeEvidence: 'unknown', handshakeAgeSeconds: null }
+    ]);
+    expect(JSON.stringify(out)).not.toContain('SYNTHETIC_ID_FALLBACK');
   });
 
   it.each([
@@ -202,7 +251,7 @@ describe('get_wireguard_status', () => {
     const out = payload(await handler());
     expect(out).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', total: 1 });
     expect(out.interfaces[0]).toMatchObject({ state: 'unknown', link: 'unknown', defaultGateway: null });
-    expect(out.interfaces[0].peers).toEqual([{ peerIndex: 1, handshake: 'absent', rxBytes: 2, txBytes: 3 }]);
+    expect(out.interfaces[0].peers).toMatchObject([{ peerIndex: 1, handshake: 'absent', rxBytes: 2, txBytes: 3 }]);
   });
 
   it('distinguishes complete empty peer evidence from unavailable and preserves a usable fallback as partial', async () => {
@@ -236,7 +285,7 @@ describe('get_wireguard_status', () => {
     });
     const out = payload(await handler());
     expect(out).toMatchObject({ evidenceStatus: 'partial', peersObserved: 1 });
-    expect(out.interfaces[0].peers).toEqual([{ peerIndex: 1, handshake: 'present', rxBytes: Number.MAX_SAFE_INTEGER, txBytes: null }]);
+    expect(out.interfaces[0].peers).toMatchObject([{ peerIndex: 1, handshake: 'present', rxBytes: Number.MAX_SAFE_INTEGER, txBytes: null }]);
     expect(JSON.stringify(out)).not.toContain('SYNTHETIC_COLLECTION_KEY');
   });
 
@@ -435,8 +484,8 @@ describe('get_wireguard_status', () => {
     const peer: Record<string, unknown> = { rxbytes: 0, txbytes: 0 };
     if (value !== undefined) peer['last-handshake'] = value;
     const out = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [peer] } } }).handler());
-    expect(out.interfaces[0].peers[0]).toEqual({ peerIndex: 1, handshake: expected, rxBytes: 0, txBytes: 0 });
-    expect(JSON.stringify(out)).not.toMatch(/age|fresh|stale|health|failure|rate|throughput|delta|reset|wrap/i);
+    expect(out.interfaces[0].peers[0]).toMatchObject({ peerIndex: 1, handshake: expected, rxBytes: 0, txBytes: 0 });
+    expect(JSON.stringify(out)).not.toMatch(/fresh|stale|health|failure|rate|throughput|delta|reset|wrap/i);
   });
 
   it.each([
@@ -451,7 +500,7 @@ describe('get_wireguard_status', () => {
       peer.txbytes = value;
     }
     const out = payload(await harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [peer] } } }).handler());
-    expect(out.interfaces[0].peers[0]).toEqual({ peerIndex: 1, handshake: 'present', rxBytes: expected, txBytes: expected });
+    expect(out.interfaces[0].peers[0]).toMatchObject({ peerIndex: 1, handshake: 'present', rxBytes: expected, txBytes: expected });
     expect(JSON.stringify(out)).not.toMatch(/rate|throughput|delta|reset|wrap/i);
   });
 

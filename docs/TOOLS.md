@@ -235,11 +235,21 @@ contracts remain separate raw interface views.
 `get_wireguard_status` is a separate, zero-argument, read-only view of current
 WireGuard runtime evidence from one bounded `show/interface` read. It exposes
 only exact `Wireguard` interface state/link observations, nullable default-route
-observation, response-local peer ordinals, peer counts, handshake-field
-presence (`present`, `absent`, `unknown`, or `invalid`), and current per-peer
-RX/TX byte counters when they are finite nonnegative safe integers. Zero is a
-valid counter. Counter lifetime is unknown and the tool never calculates a
-rate, delta, reset, or interface total.
+observation, bounded interface name/description/address, response-local peer
+ordinals, peer description, a complete declared endpoint host and port, exact
+nullable `enabled`/`online` values, peer counts, handshake-field presence
+(`present`, `absent`, `unknown`, or `invalid`), and current per-peer RX/TX byte
+counters when they are finite nonnegative safe integers. Zero is a valid
+counter. Counter lifetime is unknown and the tool never calculates a rate,
+delta, reset, or interface total.
+
+`last-handshake` also has an independent age mapping: exact integers from 0
+through 2147483646 are observed seconds, 2147483647 means no reported age, and
+missing, malformed, or out-of-range values are unknown. This is not a
+freshness, health, reachability, Internet, route, or traffic-flow verdict.
+Interface names come only from `interface-name`, never a fallback ID. Endpoint
+host and port are reported only when both proven scalar fields are valid; the
+host is not parsed or resolved.
 
 The evidence status is `complete` for a usable source without structural
 defects, `partial` when valid evidence is retained alongside malformed interface
@@ -250,10 +260,13 @@ Authentication and transport errors remain typed call errors rather than
 tunnel-status claims. Peer indexes are assigned only within one response; they
 are neither stable identifiers nor peer names.
 
-Handshake time format is unproven. Presence never implies age, freshness,
-staleness, health, Internet access, routing, DNS, endpoint reachability,
-encryption, or bidirectional traffic. The tool never exposes keys, peer IDs,
-endpoints, allowed IPs, raw peer objects, hashes, or fingerprints.
+Handshake presence and age never imply freshness, staleness, health, Internet
+access, routing, DNS, endpoint reachability, encryption, or bidirectional
+traffic. The tool never exposes keys, peer IDs, raw peer objects, hashes, or
+fingerprints. Allowed IPs and persistent keepalive are not exposed: the
+authorized bounded characterization was capped before it proved either a
+runtime source key/shape; keepalive meaning and seconds unit were likewise not
+proven. No configuration fallback is used.
 
 ## Log filters
 

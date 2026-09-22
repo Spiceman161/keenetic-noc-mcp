@@ -16,10 +16,17 @@ const PEER_DETAIL_LIMIT = 100;
 type EvidenceStatus = 'complete' | 'partial' | 'unavailable';
 type EvidenceReason = 'partial-data' | 'unexpected-response' | 'response-too-large' | 'rci-error' | null;
 type HandshakeEvidence = 'present' | 'absent' | 'unknown' | 'invalid';
+type HandshakeAgeEvidence = 'observed' | 'absent' | 'unknown';
 
 interface WireguardPeer {
   peerIndex: number;
+  description: string | null;
+  endpoint: { host: string; port: number } | null;
+  enabled: boolean | null;
+  online: boolean | null;
   handshake: HandshakeEvidence;
+  handshakeAgeEvidence: HandshakeAgeEvidence;
+  handshakeAgeSeconds: number | null;
   rxBytes: number | null;
   txBytes: number | null;
 }
@@ -30,10 +37,18 @@ interface PeerCounts {
   peersWithoutHandshakeEvidence: number;
   peersWithUnknownHandshakeEvidence: number;
   peersWithInvalidHandshakeEvidence: number;
+  peersWithObservedHandshakeAge: number;
+  peersWithoutReportedHandshakeAge: number;
+  peersWithUnknownHandshakeAge: number;
+  peersOnline: number;
+  peersOffline: number;
 }
 
 interface WireguardInterface {
   id: string;
+  name: string | null;
+  description: string | null;
+  address: string | null;
   state: 'up' | 'down' | 'unknown';
   link: 'up' | 'down' | 'unknown';
   defaultGateway: boolean | null;
@@ -43,6 +58,11 @@ interface WireguardInterface {
   peersWithoutHandshakeEvidence: number | null;
   peersWithUnknownHandshakeEvidence: number | null;
   peersWithInvalidHandshakeEvidence: number | null;
+  peersWithObservedHandshakeAge: number | null;
+  peersWithoutReportedHandshakeAge: number | null;
+  peersWithUnknownHandshakeAge: number | null;
+  peersOnline: number | null;
+  peersOffline: number | null;
   peers: WireguardPeer[];
   peersShown: number;
   peersTotal: number | null;
@@ -58,6 +78,11 @@ interface WireguardStatus {
   peersWithoutHandshakeEvidence: number | null;
   peersWithUnknownHandshakeEvidence: number | null;
   peersWithInvalidHandshakeEvidence: number | null;
+  peersWithObservedHandshakeAge: number | null;
+  peersWithoutReportedHandshakeAge: number | null;
+  peersWithUnknownHandshakeAge: number | null;
+  peersOnline: number | null;
+  peersOffline: number | null;
   interfaces: WireguardInterface[];
   shown: number;
   total: number | null;
@@ -74,7 +99,12 @@ function emptyPeerCounts(): PeerCounts {
     peersWithHandshakeEvidence: 0,
     peersWithoutHandshakeEvidence: 0,
     peersWithUnknownHandshakeEvidence: 0,
-    peersWithInvalidHandshakeEvidence: 0
+    peersWithInvalidHandshakeEvidence: 0,
+    peersWithObservedHandshakeAge: 0,
+    peersWithoutReportedHandshakeAge: 0,
+    peersWithUnknownHandshakeAge: 0,
+    peersOnline: 0,
+    peersOffline: 0
   };
 }
 
@@ -84,6 +114,11 @@ function addPeerCounts(total: PeerCounts, value: PeerCounts): void {
   total.peersWithoutHandshakeEvidence += value.peersWithoutHandshakeEvidence;
   total.peersWithUnknownHandshakeEvidence += value.peersWithUnknownHandshakeEvidence;
   total.peersWithInvalidHandshakeEvidence += value.peersWithInvalidHandshakeEvidence;
+  total.peersWithObservedHandshakeAge += value.peersWithObservedHandshakeAge;
+  total.peersWithoutReportedHandshakeAge += value.peersWithoutReportedHandshakeAge;
+  total.peersWithUnknownHandshakeAge += value.peersWithUnknownHandshakeAge;
+  total.peersOnline += value.peersOnline;
+  total.peersOffline += value.peersOffline;
 }
 
 function state(value: unknown): 'up' | 'down' | 'unknown' {
@@ -96,16 +131,44 @@ function safeCounter(value: unknown): number | null {
     : null;
 }
 
+function safeString(value: unknown, maxLength: number): string | null {
+  return typeof value === 'string' && value.length <= maxLength ? value : null;
+}
+
+function nullableBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
 function handshake(value: unknown): HandshakeEvidence {
   if (value === undefined || value === null) return 'absent';
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'invalid';
   return value === 0 ? 'unknown' : 'present';
 }
 
+function handshakeAge(value: unknown): { evidence: HandshakeAgeEvidence; seconds: number | null } {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647) {
+    return { evidence: 'unknown', seconds: null };
+  }
+  if (value === 2_147_483_647) return { evidence: 'absent', seconds: null };
+  return { evidence: 'observed', seconds: value };
+}
+
 function projectPeer(value: Record<string, unknown>, peerIndex: number): WireguardPeer {
+  const lastHandshake = value['last-handshake'];
+  const age = handshakeAge(lastHandshake);
+  const host = safeString(value['remote-endpoint-address'], 256);
+  const port = value['remote-port'];
   return {
     peerIndex,
-    handshake: handshake(value['last-handshake']),
+    description: safeString(value['description'], 256),
+    endpoint: host !== null && typeof port === 'number' && Number.isSafeInteger(port) && port >= 1 && port <= 65_535
+      ? { host, port }
+      : null,
+    enabled: nullableBoolean(value['enabled']),
+    online: nullableBoolean(value['online']),
+    handshake: handshake(lastHandshake),
+    handshakeAgeEvidence: age.evidence,
+    handshakeAgeSeconds: age.seconds,
     rxBytes: safeCounter(value['rxbytes']),
     txBytes: safeCounter(value['txbytes'])
   };
@@ -121,6 +184,13 @@ function peerCounts(peers: readonly WireguardPeer[]): PeerCounts {
       case 'unknown': counts.peersWithUnknownHandshakeEvidence += 1; break;
       case 'invalid': counts.peersWithInvalidHandshakeEvidence += 1; break;
     }
+    switch (peer.handshakeAgeEvidence) {
+      case 'observed': counts.peersWithObservedHandshakeAge += 1; break;
+      case 'absent': counts.peersWithoutReportedHandshakeAge += 1; break;
+      case 'unknown': counts.peersWithUnknownHandshakeAge += 1; break;
+    }
+    if (peer.online === true) counts.peersOnline += 1;
+    if (peer.online === false) counts.peersOffline += 1;
   }
   return counts;
 }
@@ -184,6 +254,9 @@ function projectWireguardInterface(id: string, iface: Record<string, unknown>): 
   if (selected.status === 'unavailable') {
     return {
       id,
+      name: safeString(iface['interface-name'], 128),
+      description: safeString(iface['description'], 256),
+      address: safeString(iface['address'], 256),
       state: state(iface['state']),
       link: state(iface['link']),
       defaultGateway: typeof iface['defaultgw'] === 'boolean' ? iface['defaultgw'] : null,
@@ -193,6 +266,11 @@ function projectWireguardInterface(id: string, iface: Record<string, unknown>): 
       peersWithoutHandshakeEvidence: null,
       peersWithUnknownHandshakeEvidence: null,
       peersWithInvalidHandshakeEvidence: null,
+      peersWithObservedHandshakeAge: null,
+      peersWithoutReportedHandshakeAge: null,
+      peersWithUnknownHandshakeAge: null,
+      peersOnline: null,
+      peersOffline: null,
       peers: [],
       peersShown: 0,
       peersTotal: null,
@@ -203,6 +281,9 @@ function projectWireguardInterface(id: string, iface: Record<string, unknown>): 
   const peers = selected.peers.slice(0, PEER_DETAIL_LIMIT);
   return {
     id,
+    name: safeString(iface['interface-name'], 128),
+    description: safeString(iface['description'], 256),
+    address: safeString(iface['address'], 256),
     state: state(iface['state']),
     link: state(iface['link']),
     defaultGateway: typeof iface['defaultgw'] === 'boolean' ? iface['defaultgw'] : null,
@@ -225,6 +306,11 @@ function unavailable(reason: Exclude<EvidenceReason, null | 'partial-data'>): Wi
     peersWithoutHandshakeEvidence: null,
     peersWithUnknownHandshakeEvidence: null,
     peersWithInvalidHandshakeEvidence: null,
+    peersWithObservedHandshakeAge: null,
+    peersWithoutReportedHandshakeAge: null,
+    peersWithUnknownHandshakeAge: null,
+    peersOnline: null,
+    peersOffline: null,
     interfaces: [],
     shown: 0,
     total: null,
@@ -265,7 +351,12 @@ function sourceStatus(raw: unknown): WireguardStatus {
       peersWithHandshakeEvidence: iface.peersWithHandshakeEvidence!,
       peersWithoutHandshakeEvidence: iface.peersWithoutHandshakeEvidence!,
       peersWithUnknownHandshakeEvidence: iface.peersWithUnknownHandshakeEvidence!,
-      peersWithInvalidHandshakeEvidence: iface.peersWithInvalidHandshakeEvidence!
+      peersWithInvalidHandshakeEvidence: iface.peersWithInvalidHandshakeEvidence!,
+      peersWithObservedHandshakeAge: iface.peersWithObservedHandshakeAge!,
+      peersWithoutReportedHandshakeAge: iface.peersWithoutReportedHandshakeAge!,
+      peersWithUnknownHandshakeAge: iface.peersWithUnknownHandshakeAge!,
+      peersOnline: iface.peersOnline!,
+      peersOffline: iface.peersOffline!
     });
   }
   const noWireguard = interfaces.length === 0;
@@ -278,6 +369,11 @@ function sourceStatus(raw: unknown): WireguardStatus {
     peersWithoutHandshakeEvidence: hasUsablePeers || noWireguard ? counts.peersWithoutHandshakeEvidence : null,
     peersWithUnknownHandshakeEvidence: hasUsablePeers || noWireguard ? counts.peersWithUnknownHandshakeEvidence : null,
     peersWithInvalidHandshakeEvidence: hasUsablePeers || noWireguard ? counts.peersWithInvalidHandshakeEvidence : null,
+    peersWithObservedHandshakeAge: hasUsablePeers || noWireguard ? counts.peersWithObservedHandshakeAge : null,
+    peersWithoutReportedHandshakeAge: hasUsablePeers || noWireguard ? counts.peersWithoutReportedHandshakeAge : null,
+    peersWithUnknownHandshakeAge: hasUsablePeers || noWireguard ? counts.peersWithUnknownHandshakeAge : null,
+    peersOnline: hasUsablePeers || noWireguard ? counts.peersOnline : null,
+    peersOffline: hasUsablePeers || noWireguard ? counts.peersOffline : null,
     interfaces: interfaces.slice(0, INTERFACE_DETAIL_LIMIT),
     shown: Math.min(interfaces.length, INTERFACE_DETAIL_LIMIT),
     total: interfaces.length,

@@ -321,6 +321,11 @@ interfaces live:
 
 WireGuard state is under `show/interface/Wireguard3`.
 
+A bounded WireGuard-client characterization of `show/interface` was capped
+before peer runtime fields could be evaluated. It proved neither an Allowed IPs
+source key/shape nor a persistent-keepalive source key, meaning, or unit; do
+not infer either field from configuration or aliases.
+
 `show log` is the exception for command dispatch: the equivalent read-only
 `POST /rci/` body `{"show":{"log":{}}}` succeeds even though
 `GET /rci/show/log` does not. On 5.1.3 it returns a numeric-keyed map under
