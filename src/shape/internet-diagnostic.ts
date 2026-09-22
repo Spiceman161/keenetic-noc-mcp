@@ -286,7 +286,7 @@ function projectPingCheckFields(
 
   const checked = value['checked'];
   const current = (checked === true || typeof checked === 'string' && checked !== '') &&
-    value['reliable'] !== false;
+    value['enabled'] === true && value['reliable'] === true;
   if (!current) return state('unknown', 'unknown', 'unknown');
 
   const internet = value['internet'];

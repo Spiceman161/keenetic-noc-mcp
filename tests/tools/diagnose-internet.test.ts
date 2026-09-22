@@ -138,6 +138,15 @@ function payload(result: ToolResult): any {
   return JSON.parse(result.content.map(part => part.text).join(''));
 }
 
+const PING_CHECK_KEYS = [
+  'configured', 'verdict', 'verdictReason', 'gatewayExcluded', 'gatewayFailures', 'transitionReason'
+];
+
+function pingCheck(output: any): any {
+  expect(Object.keys(output.evidence.internet.data.pingCheck)).toEqual(PING_CHECK_KEYS);
+  return output.evidence.internet.data.pingCheck;
+}
+
 describe('diagnose_internet', () => {
   it('returns a stable healthy evidence report and uses only bounded reads', async () => {
     const { handler, config, get, getText, post } = setup();
@@ -155,7 +164,7 @@ describe('diagnose_internet', () => {
       'vpn-default-route', 'recent-logs', 'configuration-state'
     ]);
     expect(out.evidence.internet.data.checkedAt).toBe('Fri Aug 7 03:54:06 2026');
-    expect(out.evidence.internet.data.pingCheck).toEqual({
+    expect(pingCheck(out)).toEqual({
       configured: true,
       verdict: 'pass',
       verdictReason: 'check-passed',
@@ -788,6 +797,9 @@ describe('diagnose_internet', () => {
     const out = JSON.parse(text);
     expect(out.truncated).toBe(false);
     expect(out.evidence.logs.data).toMatchObject({ untrusted: true, scanned: 80, matched: 80, shown: 0, total: 0, items: [] });
+    expect(pingCheck(out)).toEqual(expect.objectContaining({
+      configured: true, verdict: 'pass', verdictReason: 'check-passed'
+    }));
     expect(text).not.toContain('secret-');
   });
 
@@ -802,28 +814,65 @@ describe('diagnose_internet', () => {
     expect(text).not.toContain('endpoint-sentinel');
   });
 
-  it('keeps disabled, unknown, and conflicting Ping Check semantics separate from diagnostic findings', async () => {
+  it('gives explicit disabled Ping Check state precedence over stale contradictory fields', async () => {
     const disabled = payload(await setup({ values: { 'show/internet/status': {
-      checked: false, enabled: false, reliable: true, internet: false,
-      'gateway-accessible': false, 'dns-accessible': false
+      checked: true, enabled: false, reliable: true, internet: true,
+      'gateway-accessible': false, 'dns-accessible': false, 'captive-accessible': false
     } } }).handler({}));
-    expect(disabled.evidence.internet.data.pingCheck).toMatchObject({
+    expect(pingCheck(disabled)).toMatchObject({
       configured: false,
       verdict: 'no-active-check',
       verdictReason: 'no-active-check',
       transitionReason: 'not-applicable'
     });
     expect(disabled.findings.some((finding: any) => finding.severity === 'critical')).toBe(false);
+  });
 
-    for (const status of [
-      { checked: false, enabled: true, reliable: true, internet: false },
-      { checked: true, enabled: true, reliable: false, internet: true },
-      { checked: true, enabled: true, reliable: true, internet: true, 'gateway-accessible': false },
-      { checked: true, enabled: {}, reliable: [], internet: 'up' }
-    ]) {
-      const out = payload(await setup({ values: { 'show/internet/status': status } }).handler({}));
-      expect(out.evidence.internet.data.pingCheck.verdict).toBe('unknown');
-    }
+  it.each([
+    { 'gateway-accessible': false },
+    { 'dns-accessible': false },
+    { 'captive-accessible': false },
+    { 'gateway-accessible': false, 'dns-accessible': false },
+    { 'gateway-accessible': false, 'captive-accessible': false },
+    { 'dns-accessible': false, 'captive-accessible': false },
+    { 'gateway-accessible': false, 'dns-accessible': false, 'captive-accessible': false }
+  ])('keeps every positive-aggregate subcheck contradiction unknown: %o', async subchecks => {
+    const out = payload(await setup({ values: { 'show/internet/status': {
+      checked: true, enabled: true, reliable: true, internet: true, ...subchecks
+    } } }).handler({}));
+    expect(pingCheck(out)).toMatchObject({
+      verdict: 'unknown', verdictReason: 'conflicting-status', transitionReason: 'unknown'
+    });
+  });
+
+  it.each([
+    ['checked false', { checked: false, enabled: true, reliable: true, internet: true }, true],
+    ['checked empty', { checked: '', enabled: true, reliable: true, internet: true }, true],
+    ['checked malformed', { checked: {}, enabled: true, reliable: true, internet: true }, true],
+    ['reliable false', { checked: true, enabled: true, reliable: false, internet: true }, true],
+    ['reliable missing', { checked: true, enabled: true, internet: true }, true],
+    ['reliable malformed', { checked: true, enabled: true, reliable: [], internet: true }, true],
+    ['enabled missing', { checked: true, reliable: true, internet: true }, null],
+    ['enabled malformed', { checked: true, enabled: {}, reliable: true, internet: true }, null]
+  ])('keeps non-current or malformed Ping Check gates unknown: %s', async (_label, status, configured) => {
+    const out = payload(await setup({ values: { 'show/internet/status': status } }).handler({}));
+    expect(pingCheck(out)).toMatchObject({
+      configured, verdict: 'unknown', verdictReason: 'unknown', transitionReason: 'unknown'
+    });
+  });
+
+  it.each([null, 'true', [], {}, 1])('never emits pass or fail for malformed enabled=%o', async enabled => {
+    const out = payload(await setup({ values: { 'show/internet/status': {
+      checked: true, enabled, reliable: true, internet: true
+    } } }).handler({}));
+    expect(pingCheck(out)).toMatchObject({ configured: null, verdict: 'unknown', verdictReason: 'unknown' });
+  });
+
+  it.each([null, 'true', [], {}, 1])('never emits pass or fail for malformed reliable=%o', async reliable => {
+    const out = payload(await setup({ values: { 'show/internet/status': {
+      checked: true, enabled: true, reliable, internet: true
+    } } }).handler({}));
+    expect(pingCheck(out)).toMatchObject({ configured: true, verdict: 'unknown', verdictReason: 'unknown' });
   });
 
   it('keeps an RCI-level internet source failure unavailable without a synthetic Ping Check value', async () => {
@@ -834,6 +883,33 @@ describe('diagnose_internet', () => {
     } }).handler({}));
     expect(out.evidence.internet).toEqual({ status: 'unavailable', reason: 'rci-error', data: null });
     expect(JSON.stringify(out)).not.toContain('private response sentinel');
+  });
+
+  it('keeps a response-too-large internet source unavailable without a synthetic Ping Check value', async () => {
+    const out = payload(await setup({ failures: {
+      'show/internet/status': new RciError('oversized source sentinel', {
+        path: 'show/internet/status', code: 'response-too-large', ident: 'rci'
+      })
+    } }).handler({}));
+    expect(out.evidence.internet).toEqual({
+      status: 'unavailable', reason: 'response-too-large', data: null
+    });
+    expect(JSON.stringify(out)).not.toContain('oversized source sentinel');
+  });
+
+  it('uses the existing hard output boundary without leaking Ping Check source siblings', async () => {
+    const secret = 'diagnostic-output-limit-secret';
+    const result = await setup({
+      maxResponseBytes: 300,
+      values: { 'show/internet/status': {
+        checked: true, enabled: true, reliable: true, internet: true, gateway: { secret }
+      } }
+    }).handler({});
+    const text = result.content.map(part => part.text).join('');
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(300);
+    expect(JSON.parse(text)).toMatchObject({ truncated: true });
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain('pingCheck');
   });
 
   it('does not derive Ping Check state or a transition reason from untrusted fields or logs', async () => {
@@ -856,7 +932,7 @@ describe('diagnose_internet', () => {
     }).handler({});
     const text = result.content.map(part => part.text).join('');
     const out = JSON.parse(text);
-    expect(out.evidence.internet.data.pingCheck).toEqual({
+    expect(pingCheck(out)).toEqual({
       configured: true,
       verdict: 'fail',
       verdictReason: 'dns-unreachable',

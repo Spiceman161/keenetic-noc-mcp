@@ -187,9 +187,24 @@ the same fixed-size `pingCheck` observation from their existing
 `show/internet/status` read. Its six fields are `configured`, `verdict`,
 `verdictReason`, `gatewayExcluded`, `gatewayFailures`, and `transitionReason`.
 `configured` is only the exact observed `enabled` boolean. `verdict` is `pass`
-or `fail` only for a current, non-conflicting explicit aggregate result;
-otherwise it is `unknown`, except exact `enabled: false` is
-`no-active-check`. `verdictReason` is a bounded current-verdict basis, not a
+or `fail` only when `enabled` and `reliable` are both exactly `true`, the check
+marker is current, and the explicit aggregate is non-conflicting; otherwise it
+is `unknown`, except exact `enabled: false` is `no-active-check`.
+`verdictReason` is a bounded current-verdict basis, not a historical transition
+cause. Its complete vocabulary is:
+
+- `check-passed`: the current explicit aggregate reports success.
+- `gateway-unreachable`: the current aggregate failed and the gateway is explicitly unreachable.
+- `dns-unreachable`: the current aggregate failed, the gateway is explicitly reachable, and DNS is explicitly unreachable.
+- `captive-unreachable`: the current aggregate failed and captive-portal reachability is explicitly false after the gateway/DNS priority checks.
+- `internet-check-failed`: the current aggregate failed without a higher-priority explicit subcheck basis.
+- `conflicting-status`: the current aggregate reports success while one or more explicit subchecks report failure.
+- `no-active-check`: the source explicitly reports `enabled: false`.
+- `unknown`: the source does not establish a current, usable verdict.
+
+For a failed current aggregate, the fixed basis priority is gateway, then DNS
+only with an exactly reachable gateway, then captive, then aggregate-only.
+This priority explains the current verdict only; it never identifies a
 historical transition cause. `gatewayExcluded` and `gatewayFailures` are only
 exact current gateway observations and do not establish a threshold, timing,
 active path, or successful failover.
