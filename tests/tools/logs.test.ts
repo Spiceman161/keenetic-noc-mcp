@@ -8,10 +8,11 @@ import { stubBackup } from '../helpers/backup.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
-function harness(options: { logs?: unknown; error?: Error } = {}) {
+function harness(options: { logs?: unknown; error?: Error; maxResponseBytes?: number; hosts?: unknown } = {}) {
   const get = vi.fn(async () => ({ host: [
     { mac: '02:00:00:00:00:01', ip: '192.0.2.5', name: 'iPhosha 13' }
   ] }));
+  if (options.hosts !== undefined) get.mockResolvedValue(options.hosts as never);
   const post = options.error
     ? vi.fn(async () => { throw options.error; })
     : vi.fn(async () => options.logs ?? { show: { log: { log: {
@@ -24,7 +25,7 @@ function harness(options: { logs?: unknown; error?: Error } = {}) {
   } as unknown as KeeneticClient;
   const ctx: ToolContext = {
     client,
-    maxResponseBytes: 25_000,
+    maxResponseBytes: options.maxResponseBytes ?? 25_000,
     readOnly: true,
     backup: stubBackup()
   };
@@ -46,6 +47,14 @@ function payload(result: ToolResult): any {
   return JSON.parse(result.content.map(part => part.text).join(''));
 }
 
+function sampleLogs(count: number, message: (index: number) => string): unknown {
+  return { show: { log: { log: Object.fromEntries(Array.from({ length: count }, (_, index) => [
+    String(index), { timestamp: `00:${String(index).padStart(3, '0')}`, ident: 'Network', message: {
+      message: message(index)
+    } }
+  ])) } } };
+}
+
 describe('log tools', () => {
   it('uses the read-only show command dispatcher and unwraps its response', async () => {
     const { handlers, post } = harness();
@@ -56,6 +65,103 @@ describe('log tools', () => {
       line: '00:02 Hotspot info Host 192.0.2.5 joined'
     }]);
     expect(post).toHaveBeenCalledWith({ show: { log: {} } }, 2_000_000);
+    expect(out.matched).toBe(1);
+    expect(out.truncated).toBeUndefined();
+  });
+
+  it.each(['get_logs', 'get_logs_by_device'])('preserves the newest selected paired entries under a 25 KB cap for %s', async tool => {
+    const logs = sampleLogs(51, index => `${index === 0 ? 'older-sentinel' : `event-${index}`} 192.0.2.5 password=test-value ${'a"\\é'.repeat(110)}`);
+    const setup = harness({ logs });
+    const args = tool === 'get_logs' ? { filter: 'event-', lines: 50 } : { device: 'iPhosha13', filter: 'event-', lines: 50 };
+    const result = await setup.handlers[tool]!(args);
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(25_000);
+    expect(out).toMatchObject({ total: 51, matched: 50, filters: { filter: 'event-' }, untrusted: true, truncated: true });
+    expect(out.lines.length).toBeGreaterThan(0);
+    expect(out.lines.length).toBeLessThan(50);
+    expect(out.entries.map((entry: { line: string }) => entry.line)).toEqual(out.lines);
+    expect(out.lines.at(-1)).toContain('event-50');
+    expect(out.lines[0]).toContain(`event-${51 - out.lines.length}`);
+    expect(result.content[0]!.text).not.toContain('older-sentinel');
+    expect(result.content[0]!.text).not.toContain('test-value');
+    expect(out.lines.at(-1)).toContain('password=[REDACTED]');
+    if (tool === 'get_logs_by_device') expect(out.aliases).toContain('192.0.2.5');
+  });
+
+  it('keeps the normal dual-array default tail and does not treat the lines limit as budget truncation', async () => {
+    const setup = harness({ logs: sampleLogs(3, index => `entry-${index}`) });
+    const out = payload(await setup.handlers['get_logs']!({ lines: 2 }));
+    expect(out).toMatchObject({ total: 3, matched: 2, untrusted: true, filters: {} });
+    expect(out.lines).toHaveLength(2);
+    expect(out.entries.map((entry: { line: string }) => entry.line)).toEqual(out.lines);
+    expect(out.truncated).toBeUndefined();
+  });
+
+  it('keeps a bounded unfiltered default tail rather than losing all evidence', async () => {
+    const setup = harness({ logs: sampleLogs(120, index => `event-${index} ${'payload-word '.repeat(40)}`) });
+    const result = await setup.handlers['get_logs']!({});
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(25_000);
+    expect(out).toMatchObject({ total: 120, matched: 100, filters: {}, truncated: true });
+    expect(out.lines.length).toBeGreaterThan(0);
+    expect(out.lines.at(-1)).toContain('event-119');
+    expect(out.entries.map((entry: { line: string }) => entry.line)).toEqual(out.lines);
+    expect(result.content[0]!.text).not.toContain('event-0 ');
+  });
+
+  it('keeps the last parsed-source entries under a cap even when timestamps run backwards', async () => {
+    const timestamps = ['2026-09-11T12:00:00Z', '2026-09-12T12:00:00Z', '2026-09-10T12:00:00Z'];
+    const logs = { show: { log: { log: Object.fromEntries(timestamps.map((timestamp, index) => [
+      String(index + 1), { timestamp, ident: 'Network', message: { message: `event-${index} ${'payload-word '.repeat(18)}` } }
+    ])) } } };
+    const setup = harness({ logs, maxResponseBytes: 1_850 });
+    const result = await setup.handlers['get_logs']!({ filter: 'event-' });
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(1_850);
+    expect(out).toMatchObject({ total: 3, matched: 3, filters: { filter: 'event-' }, truncated: true });
+    const expectedLines = [1, 2].map(index => `${timestamps[index]} Network event-${index} ${'payload-word '.repeat(18)}`);
+    expect(out.lines).toEqual(expectedLines);
+    expect(out.entries.map((entry: { timestamp: string; line: string }) => entry.timestamp)).toEqual(timestamps.slice(1));
+    expect(out.entries.map((entry: { timestamp: string; line: string }) => entry.line)).toEqual(expectedLines);
+    expect(result.content[0]!.text).not.toContain('event-0');
+  });
+
+  it('reports when the last oversized match blocks a short earlier match from the contiguous tail', async () => {
+    const setup = harness({ logs: sampleLogs(2, index => index === 0 ? 'event small' : `event ${'payload-word '.repeat(180)}`), maxResponseBytes: 512 });
+    const result = await setup.handlers['get_logs']!({ filter: 'event' });
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(512);
+    expect(out).toMatchObject({ total: 2, matched: 2, filters: { filter: 'event' }, lines: [], entries: [], truncated: true });
+    expect(out.note).toMatch(/last selected entry.*no contiguous tail/i);
+    expect(out.note).toMatch(/fewer lines cannot/i);
+    expect(result.content[0]!.text).not.toContain('event small');
+  });
+
+  it('distinguishes no matches from a single oversized selected entry under a tight ceiling', async () => {
+    const setup = harness({ logs: sampleLogs(1, () => `event ${'é"\\'.repeat(600)}`), maxResponseBytes: 512 });
+    const empty = payload(await setup.handlers['get_logs']!({ filter: 'absent' }));
+    expect(empty).toMatchObject({ total: 1, matched: 0, filters: { filter: 'absent' }, lines: [], entries: [] });
+    expect(empty.truncated).toBeUndefined();
+    const result = await setup.handlers['get_logs']!({ filter: 'event' });
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(512);
+    expect(out).toMatchObject({ total: 1, matched: 1, filters: { filter: 'event' }, lines: [], entries: [], truncated: true });
+    expect(out.note).toMatch(/last selected entry.*no contiguous tail/i);
+    expect(out.note).toMatch(/fewer lines cannot/i);
+  });
+
+  it('fails closed when exact selector or alias metadata cannot fit a 512-byte response', async () => {
+    const huge = 'zxy '.repeat(200);
+    const selector = harness({ maxResponseBytes: 512 });
+    const selectorOut = payload(await selector.handlers['get_logs']!({ filter: huge }));
+    expect(selectorOut).toHaveProperty('originalBytes');
+    expect(selectorOut).not.toHaveProperty('filters');
+    const alias = harness({ maxResponseBytes: 512, hosts: { host: [
+      { name: 'Target', hostname: huge, ip: '192.0.2.5' }
+    ] } });
+    const aliasOut = payload(await alias.handlers['get_logs_by_device']!({ device: 'Target' }));
+    expect(aliasOut).toHaveProperty('originalBytes');
+    expect(aliasOut).not.toHaveProperty('aliases');
   });
 
   it('keeps the generic get_logs line contract separate from diagnose_internet omission', async () => {
@@ -84,6 +190,8 @@ describe('log tools', () => {
     const text = result.content.map(part => part.text).join('');
     expect(text).toMatch(/ambiguous/i);
     expect(text).not.toContain('02:00:00:00:00:01');
+    expect(text).not.toContain('192.0.2.5');
+    expect(text).not.toContain('kitchenphone');
   });
 
   it('rejects a blank device selector before reading the log dispatcher', async () => {

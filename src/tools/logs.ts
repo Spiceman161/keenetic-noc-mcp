@@ -3,7 +3,8 @@ import type { ToolRegistrar } from '../telemetry/instrumentation.js';
 import { NotSupportedError, RciError } from '../router/errors.js';
 import type { Rci } from '../router/rci.js';
 import { deviceAliases, hotspotHosts, resolveDeviceText } from '../router/device-state.js';
-import { guard, ok, READ_ONLY, type ToolContext } from './registry.js';
+import { redact } from '../security/redact.js';
+import { guard, ok, READ_ONLY, type ToolContext, type ToolResult } from './registry.js';
 
 export interface LogEntry {
   /** The router value, kept separate so temporal filters never inspect message text. */
@@ -204,6 +205,44 @@ async function selectLogs(ctx: ToolContext, args: LogFilters & { device?: string
   return aliases === undefined ? { all, selected } : { all, selected, aliases };
 }
 
+function boundedLogResult(ctx: ToolContext, payload: {
+  lines: string[];
+  entries: ReturnType<typeof publicEntry>[];
+  matched: number;
+  total: number;
+  filters: Record<string, string>;
+  untrusted: true;
+  device?: string | undefined;
+  aliases?: string[] | undefined;
+}): ToolResult {
+  const fits = (value: unknown): boolean =>
+    Buffer.byteLength(JSON.stringify(redact(value), null, 2), 'utf8') <= ctx.maxResponseBytes;
+  if (fits(payload)) return ok(payload, ctx.maxResponseBytes);
+  if (payload.matched === 0) return ok(payload, ctx.maxResponseBytes);
+
+  const trimmed = (count: number) => ({
+    ...payload,
+    lines: payload.lines.slice(payload.matched - count),
+    entries: payload.entries.slice(payload.matched - count),
+    truncated: true
+  });
+  const empty = trimmed(0);
+  if (!fits(empty)) return ok(empty, ctx.maxResponseBytes);
+
+  let lower = 0;
+  let upper = payload.matched - 1;
+  while (lower < upper) {
+    const middle = Math.ceil((lower + upper) / 2);
+    if (fits(trimmed(middle))) lower = middle;
+    else upper = middle - 1;
+  }
+  if (lower === 0) {
+    const withNote = { ...empty, note: 'The last selected entry does not fit as a paired record; no contiguous tail fits. Narrow filters or time range to exclude it; fewer lines cannot shrink a single oversized entry.' };
+    if (fits(withNote)) return ok(withNote, ctx.maxResponseBytes);
+  }
+  return ok(trimmed(lower), ctx.maxResponseBytes);
+}
+
 export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void {
   server.registerTool(
     'get_logs',
@@ -215,7 +254,7 @@ export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void 
     },
     guard(ctx, async args => {
       const { all, selected, aliases } = await selectLogs(ctx, args);
-      return ok({
+      return boundedLogResult(ctx, {
         lines: selected.map(entry => entry.line),
         entries: selected.map(publicEntry),
         total: all.length,
@@ -223,7 +262,7 @@ export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void 
         filters: responseFilters(args),
         ...(args.device === undefined ? {} : { device: args.device, aliases }),
         untrusted: true
-      }, ctx.maxResponseBytes);
+      });
     })
   );
 
@@ -237,7 +276,7 @@ export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void 
     },
     guard(ctx, async args => {
       const { all, selected, aliases } = await selectLogs(ctx, args);
-      return ok({
+      return boundedLogResult(ctx, {
         device: args.device,
         aliases: aliases ?? [],
         lines: selected.map(entry => entry.line),
@@ -246,7 +285,7 @@ export function registerLogTools(server: ToolRegistrar, ctx: ToolContext): void 
         matched: selected.length,
         filters: responseFilters(args),
         untrusted: true
-      }, ctx.maxResponseBytes);
+      });
     })
   );
 }

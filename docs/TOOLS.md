@@ -299,6 +299,18 @@ Both log tools retain the compact `lines` array and also return `entries` with
 the scalar fields `timestamp`, `ident`, `level`, `label`, and `line`. Missing
 metadata is `null`. Interface filtering checks structured `ident` and `label`
 before falling back to the rendered line for older firmware responses.
+`total` counts parsed source entries; `matched` counts selected entries after
+filters and the requested `lines` tail limit, before response-byte shaping.
+When the selected response exceeds the configured byte ceiling, both arrays
+retain the same contiguous tail in parsed source order; `truncated: true`
+indicates that earlier selected entries in that order were withheld. This
+does not guarantee chronological order by timestamp. If the last selected
+entry cannot fit as a paired record, the arrays are empty even if an earlier
+individual entry might fit; `matched` remains nonzero, with fixed guidance
+when it fits. Narrow filters or time range to exclude that entry; reducing
+`lines` alone cannot make a single oversized entry fit. At extremely small
+ceilings, filters and device alias metadata alone may exceed the limit; the
+global generic overflow response then applies.
 
 `get_connection_status` reports measured configuration access in
 `configCapabilities`. `runningCli`, `startup`, and `backup` carry independent
