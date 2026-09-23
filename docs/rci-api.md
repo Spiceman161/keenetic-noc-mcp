@@ -321,10 +321,16 @@ interfaces live:
 
 WireGuard state is under `show/interface/Wireguard3`.
 
-A bounded WireGuard-client characterization of `show/interface` was capped
-before peer runtime fields could be evaluated. It proved neither an Allowed IPs
-source key/shape nor a persistent-keepalive source key, meaning, or unit; do
-not infer either field from configuration or aliases.
+A bounded structured `GET /rci/interface` read provides configured WireGuard
+peer policy at `interface/<WireGuard interface>/wireguard/peer[]`. Each peer
+uses `key` only for an ephemeral exact match to runtime `public-key`; it is not
+returned or retained. The reader's direct interface map is canonical, and one
+singleton `{ "interface": <map> }` wrapper is accepted; other wrapper shapes
+are unexpected responses. Ordered `allow-ips[].address` and `.mask` are opaque
+configured strings, while `keepalive-interval.interval` is an exact seconds
+value when it is a nonnegative safe integer. This optional second read is
+bounded, read-only, and non-fatal: a failure leaves primary runtime evidence
+available as partial data.
 
 `show log` is the exception for command dispatch: the equivalent read-only
 `POST /rci/` body `{"show":{"log":{}}}` succeeds even though

@@ -60,23 +60,7 @@ copy peer data nor infer peer health, endpoint reachability, encryption,
 client/server role, or Internet traffic flow. This boundary does not alter the
 separate raw interface or configuration visibility contracts.
 
-`get_wireguard_status` is a fixed, WireGuard-only projection in the existing
-VPN tool seam. It makes exactly one 256 KB `show/interface` read and accepts
-only non-array record roots, interface rows, and peer rows; arrays are allowed
-only at the established peer-collection location. The nested peer collection is
-primary and existing compatibility aliases are fallback-only. It reduces the
-fully classified source deterministically: unusable source evidence is
-`unavailable`, any structural defect in a usable source is `partial`, and only
-defect-free usable evidence is `complete`.
-
-The projection is a strict allowlist. It returns only interface state/link,
-nullable default-gateway observation, response-local peer ordinals,
-handshake-field presence, and safe current per-peer counters. It never returns
-peer keys, identifiers, endpoints, allowed ranges, raw peer objects, or stable
-peer fingerprints. Handshake representation and counter lifetime are unknown,
-so this tool provides no age, freshness, stale, health, reachability, rate, or
-traffic-flow conclusion. Detail is bounded after aggregates, status, and reason
-so the fixed envelope survives the response ceiling.
+`get_wireguard_status` is a fixed WireGuard-only allowlist projection in the existing VPN tool seam. It first makes one 256 KB `show/interface` read, accepts only non-array record roots, interface rows, and peer rows (with the nested peer collection primary and existing aliases fallback-only), and deterministically reports unavailable, partial, or complete runtime evidence. It returns interface state/link, nullable default-gateway observation, response-local peer ordinals, declared endpoint, nullable enabled/online observations, handshake presence, authoritative handshake-age seconds, and safe current RX/TX counters. When usable runtime peers exist, it makes one optional bounded structured `GET /rci/interface` read and uses only exact runtime interface IDs and ephemeral exact public-key equality to add configured `allowedIps` pairs and `persistentKeepaliveSeconds`; keys, private keys, PSKs, raw peer objects, identifiers, and fingerprints are never serialized, logged, or persisted. A malformed, unavailable, auth, transport, or other enrichment failure is locally converted to partial evidence with null enrichment fields while preserving the successful runtime snapshot; primary runtime auth and transport failures remain typed errors. Detail is bounded after aggregates, status, and reason so the fixed envelope survives the response ceiling, and no field implies freshness, health, reachability, rate, routing, or traffic-flow conclusions.
 
 `diagnose_internet` is the first composite read tool. It starts with a fresh
 bounded version read; authentication or transport failure stops the call, while

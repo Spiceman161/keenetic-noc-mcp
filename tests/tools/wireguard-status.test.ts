@@ -10,11 +10,13 @@ type StatusHandler = () => Promise<ToolResult>;
 
 function harness(value: unknown, maxResponseBytes = 25_000): {
   get: ReturnType<typeof vi.fn>;
+  getConfig: ReturnType<typeof vi.fn>;
   handler: StatusHandler;
   config: Record<string, unknown>;
 } {
   const get = vi.fn(async () => value);
-  const client = { rci: { get } } as unknown as KeeneticClient;
+  const getConfig = vi.fn(async () => ({ value: { Wireguard0: { wireguard: { peer: [] } } } }));
+  const client = { rci: { get, getConfig } } as unknown as KeeneticClient;
   const ctx: ToolContext = { client, maxResponseBytes, readOnly: true, backup: stubBackup() };
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   let handler: StatusHandler | undefined;
@@ -27,7 +29,7 @@ function harness(value: unknown, maxResponseBytes = 25_000): {
     return {} as never;
   }) as never);
   registerVpnTools(server, ctx);
-  return { get, handler: handler!, config: config! };
+  return { get, getConfig, handler: handler!, config: config! };
 }
 
 function payload(result: ToolResult): any {
@@ -52,7 +54,8 @@ const interfaceKeys = [
 ].sort();
 const peerKeys = [
   'peerIndex', 'description', 'endpoint', 'enabled', 'online', 'handshake',
-  'handshakeAgeEvidence', 'handshakeAgeSeconds', 'rxBytes', 'txBytes'
+  'handshakeAgeEvidence', 'handshakeAgeSeconds', 'rxBytes', 'txBytes',
+  'allowedIps', 'persistentKeepaliveSeconds'
 ].sort();
 const forbiddenSentinels = [
   'SYNTHETIC_PRIVATE_KEY', 'SYNTHETIC_PSK', 'SYNTHETIC_PUBLIC_KEY', 'SYNTHETIC_PEER_ID',
@@ -160,7 +163,7 @@ describe('get_wireguard_status', () => {
     expect(config).toMatchObject({ inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } });
     expect(Object.keys(out).sort()).toEqual(topLevelKeys);
     expect(out).toMatchObject({
-      schemaVersion: 1, evidenceStatus: 'complete', evidenceReason: null,
+      schemaVersion: 1, evidenceStatus: 'partial', evidenceReason: 'partial-data',
       peersObserved: 4, peersWithHandshakeEvidence: 1, peersWithoutHandshakeEvidence: 1,
       peersWithUnknownHandshakeEvidence: 1, peersWithInvalidHandshakeEvidence: 1,
       peersWithObservedHandshakeAge: 2, peersWithoutReportedHandshakeAge: 0, peersWithUnknownHandshakeAge: 2,
@@ -358,7 +361,7 @@ describe('get_wireguard_status', () => {
     ]));
     const out = payload(await harness(interfaces).handler());
     expect(out).toMatchObject({
-      evidenceStatus: 'complete', peersObserved: 10_201, peersWithHandshakeEvidence: 10_201,
+      evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 10_201, peersWithHandshakeEvidence: 10_201,
       total: 101, truncated: true
     });
     expect(out.shown).toBeGreaterThan(0);
@@ -376,12 +379,12 @@ describe('get_wireguard_status', () => {
     const out = JSON.parse(text);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(512);
     expect(Object.keys(out).sort()).toEqual(topLevelKeys);
-    expect(out).toMatchObject({ schemaVersion: 1, evidenceStatus: 'complete', evidenceReason: null, peersObserved: 10, truncated: true });
+    expect(out).toMatchObject({ schemaVersion: 1, evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 10, truncated: true });
   });
 
   it.each([
     ['complete + complete', completeInterface(), completeInterface(),
-      { evidenceStatus: 'complete', evidenceReason: null, peersObserved: 2, peersWithHandshakeEvidence: 2,
+      { evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 2, peersWithHandshakeEvidence: 2,
         peersWithoutHandshakeEvidence: 0, peersWithUnknownHandshakeEvidence: 0,
         peersWithInvalidHandshakeEvidence: 0, shown: 2, total: 2, truncated: false }],
     ['complete + partial', completeInterface(), { type: 'Wireguard', wireguard: { peer: [{ 'last-handshake': 1 }, null] } },
@@ -465,7 +468,7 @@ describe('get_wireguard_status', () => {
       Wireguard0: { type: 'Wireguard', peer: [{ 'last-handshake': 1 }] }
     }).handler());
     expect(envelope(absent)).toEqual(expect.objectContaining({
-      evidenceStatus: 'complete', evidenceReason: null, peersObserved: 1
+      evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1
     }));
     const presentRecord = payload(await harness({
       Wireguard0: { type: 'Wireguard', wireguard: {}, peer: [{ 'last-handshake': 1 }] }
@@ -541,6 +544,160 @@ describe('get_wireguard_status', () => {
       expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
     }
     const complete = payload(await harness(sentinelSource()).handler());
-    expect(complete).toMatchObject({ evidenceStatus: 'complete', peersObserved: 1 });
+    expect(complete).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 1 });
+  });
+
+  it('joins exact ephemeral keys and projects ordered configured ranges and keepalive seconds', async () => {
+    const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [
+      { 'public-key': 'SYNTHETIC_RUNTIME_KEY', 'last-handshake': 1 }
+    ] } } });
+    tested.getConfig.mockResolvedValueOnce({ value: { Wireguard0: { wireguard: { peer: [{
+      key: 'SYNTHETIC_RUNTIME_KEY',
+      'allow-ips': [{ address: 'SYNTHETIC_ADDRESS', mask: 'SYNTHETIC_MASK' }, { address: 'SYNTHETIC_ADDRESS', mask: 'SYNTHETIC_MASK' }],
+      'keepalive-interval': { interval: 0 }, 'private-key': 'SYNTHETIC_PRIVATE_KEY', 'preshared-key': 'SYNTHETIC_PSK'
+    }] } } } });
+    const out = payload(await tested.handler());
+    expect(out).toMatchObject({ evidenceStatus: 'complete', evidenceReason: null });
+    expect(out.interfaces[0].peers[0]).toMatchObject({
+      allowedIps: [{ address: 'SYNTHETIC_ADDRESS', mask: 'SYNTHETIC_MASK' }, { address: 'SYNTHETIC_ADDRESS', mask: 'SYNTHETIC_MASK' }],
+      persistentKeepaliveSeconds: 0
+    });
+    expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
+    expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
+    expect(JSON.stringify(out)).not.toContain('SYNTHETIC_RUNTIME_KEY');
+    expect(JSON.stringify(out)).not.toContain('SYNTHETIC_PRIVATE_KEY');
+    expect(JSON.stringify(out)).not.toContain('SYNTHETIC_PSK');
+  });
+
+  it('keeps runtime payload when optional config auth or transport fails', async () => {
+    for (const error of [new AuthError('config denied'), new TransportError('config offline')]) {
+      const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [
+        { 'public-key': 'SYNTHETIC_RUNTIME_KEY', 'last-handshake': 1, rxbytes: 2 }
+      ] } } });
+      tested.getConfig.mockRejectedValueOnce(error);
+      const result = await tested.handler();
+      expect(result.isError).toBeUndefined();
+      expect(payload(result)).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', interfaces: [{ peers: [{ rxBytes: 2, allowedIps: null, persistentKeepaliveSeconds: null }] }] });
+      expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
+    }
+  });
+
+  it('rejects malformed configured fields without discarding a valid sibling', async () => {
+    const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }] } } });
+    tested.getConfig.mockResolvedValueOnce({ value: { interface: { Wireguard0: { wireguard: { peer: [{
+      key: 'SYNTHETIC_RUNTIME_KEY', 'allow-ips': Array.from({ length: 33 }, () => ({ address: 'x', mask: 'y' })),
+      'keepalive-interval': { interval: 10 }
+    }] } } } } });
+    expect(payload(await tested.handler())).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', interfaces: [{ peers: [{ allowedIps: null, persistentKeepaliveSeconds: 10 }] }] });
+  });
+
+  it('accepts direct and singleton configuration wrappers, but classifies invalid wrappers fail-soft', async () => {
+    const runtime = { Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }] } } };
+    const peer = { key: 'SYNTHETIC_RUNTIME_KEY', 'allow-ips': [], 'keepalive-interval': { interval: 1 } };
+    for (const value of [
+      { Wireguard0: { wireguard: { peer: [peer] } } },
+      { interface: { Wireguard0: { wireguard: { peer: [peer] } } } }
+    ]) {
+      const tested = harness(runtime);
+      tested.getConfig.mockResolvedValueOnce({ value });
+      expect(payload(await tested.handler())).toMatchObject({ evidenceStatus: 'complete', interfaces: [{ peers: [{ allowedIps: [], persistentKeepaliveSeconds: 1 }] }] });
+    }
+    for (const value of [[], 'wrong', {}, { interface: [] }, { interface: {}, unrelated: {} }]) {
+      const tested = harness(runtime);
+      tested.getConfig.mockResolvedValueOnce({ value });
+      const result = await tested.handler();
+      expect(result.isError).toBeUndefined();
+      expect(payload(result)).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'unexpected-response', interfaces: [{ peers: [{ allowedIps: null, persistentKeepaliveSeconds: null }] }] });
+      expect(JSON.stringify(result)).not.toContain('SYNTHETIC_RUNTIME_KEY');
+    }
+  });
+
+  it('marks exact-key join ambiguity and missing runtime/config/interface evidence partial without exposing keys', async () => {
+    const runtime = { Wireguard0: { type: 'Wireguard', wireguard: { peer: [
+      { 'public-key': 'SYNTHETIC_RUNTIME_KEY' }, { 'last-handshake': 1 }
+    ] } } };
+    const cases = [
+      { Wireguard0: { wireguard: { peer: [{ key: 'SYNTHETIC_RUNTIME_KEY' }, { key: 'SYNTHETIC_RUNTIME_KEY' }] } } },
+      { Wireguard0: { wireguard: { peer: [{ key: 'SYNTHETIC_OTHER_KEY' }] } } },
+      { Wireguard0: { wireguard: { peer: [{ 'allow-ips': [] }] } } },
+      { Other: { wireguard: { peer: [] } } }
+    ];
+    for (const value of cases) {
+      const tested = harness(runtime);
+      tested.getConfig.mockResolvedValueOnce({ value });
+      const out = payload(await tested.handler());
+      expect(out).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', interfaces: [{ peers: [
+        { allowedIps: null, persistentKeepaliveSeconds: null }, { allowedIps: null, persistentKeepaliveSeconds: null }
+      ] }] });
+      expect(JSON.stringify(out)).not.toContain('SYNTHETIC_RUNTIME_KEY');
+      expect(JSON.stringify(out)).not.toContain('SYNTHETIC_OTHER_KEY');
+    }
+  });
+
+  it.each([
+    ['non-array list', { 'allow-ips': {} }, null],
+    ['non-record item', { 'allow-ips': ['wrong'] }, null],
+    ['non-string item part', { 'allow-ips': [{ address: 1, mask: 'm' }] }, null],
+    ['33 pairs', { 'allow-ips': Array.from({ length: 33 }, () => ({ address: 'a', mask: 'm' })) }, null],
+    ['129-character part', { 'allow-ips': [{ address: 'a'.repeat(129), mask: 'm' }] }, null],
+    ['32 pairs at 128-character bounds', { 'allow-ips': Array.from({ length: 32 }, () => ({ address: '.'.repeat(128), mask: ':'.repeat(128) })) }, 'valid']
+  ])('validates configured Allowed-IP %s', async (_label, fields, expected) => {
+    const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }] } } });
+    tested.getConfig.mockResolvedValueOnce({ value: { Wireguard0: { wireguard: { peer: [{ key: 'SYNTHETIC_RUNTIME_KEY', ...fields }] } } } });
+    const out = payload(await tested.handler());
+    expect(out.interfaces[0].peers[0].allowedIps).toEqual(expected === 'valid'
+      ? Array.from({ length: 32 }, () => ({ address: '.'.repeat(128), mask: ':'.repeat(128) }))
+      : null);
+    expect(out).toMatchObject(expected === 'valid'
+      ? { evidenceStatus: 'complete', evidenceReason: null }
+      : { evidenceStatus: 'partial', evidenceReason: 'partial-data' });
+  });
+
+  it.each([
+    ['container', []], ['negative', -1], ['fractional', 1.5],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1], ['string', '1']
+  ])('rejects malformed persistent keepalive %s while retaining valid Allowed IPs', async (_label, interval) => {
+    const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }] } } });
+    tested.getConfig.mockResolvedValueOnce({ value: { Wireguard0: { wireguard: { peer: [{
+      key: 'SYNTHETIC_RUNTIME_KEY', 'allow-ips': [{ address: 'a', mask: 'm' }], 'keepalive-interval': interval
+    }] } } } });
+    expect(payload(await tested.handler())).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', interfaces: [{ peers: [{
+      allowedIps: [{ address: 'a', mask: 'm' }], persistentKeepaliveSeconds: null
+    }] }] });
+  });
+
+  it('keeps runtime output for every optional configuration error with deterministic reason priority', async () => {
+    const runtime = { Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }, null] } } };
+    const cases: Array<[unknown, 'response-too-large' | 'rci-error' | 'unexpected-response' | 'partial-data']> = [
+      [new RciError('config too large', { path: 'interface', code: 'response-too-large', ident: 'rci' }), 'response-too-large'],
+      [new RciError('config rejected', { path: 'interface', code: '500', ident: 'rci' }), 'rci-error'],
+      [new RciError('config malformed', { path: 'interface', code: 'unexpected-response', ident: 'rci' }), 'unexpected-response'],
+      [new AuthError('config denied'), 'partial-data'], [new TransportError('config offline'), 'partial-data']
+    ];
+    for (const [error, reason] of cases) {
+      const tested = harness(runtime);
+      tested.getConfig.mockRejectedValueOnce(error);
+      const result = await tested.handler();
+      expect(result.isError).toBeUndefined();
+      expect(payload(result)).toMatchObject({ evidenceStatus: 'partial', evidenceReason: reason, peersObserved: 1 });
+      expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
+      expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
+      expect(JSON.stringify(result)).not.toContain('SYNTHETIC_RUNTIME_KEY');
+    }
+  });
+
+  it('preserves typed primary auth/transport failures and skips configuration for unavailable or unusable runtime peers', async () => {
+    for (const error of [new AuthError('runtime denied'), new TransportError('runtime offline')]) {
+      const tested = harness({});
+      tested.get.mockRejectedValueOnce(error);
+      const result = await tested.handler();
+      expect(result.isError).toBe(true);
+      expect(tested.getConfig).not.toHaveBeenCalled();
+    }
+    for (const value of [{ OpenVPN0: { type: 'OpenVPN' } }, { Wireguard0: { type: 'Wireguard', wireguard: { peer: [] } } }, {}]) {
+      const tested = harness(value);
+      await tested.handler();
+      expect(tested.getConfig).not.toHaveBeenCalled();
+    }
   });
 });

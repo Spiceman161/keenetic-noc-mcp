@@ -233,7 +233,9 @@ claims. The general `list_interfaces(detail: "full")` and `get_interface`
 contracts remain separate raw interface views.
 
 `get_wireguard_status` is a separate, zero-argument, read-only view of current
-WireGuard runtime evidence from one bounded `show/interface` read. It exposes
+WireGuard runtime evidence from one bounded `show/interface` read. When usable
+runtime peers exist, one optional bounded structured `GET /rci/interface` read
+adds configured policy for exact matching peers. It exposes
 only exact `Wireguard` interface state/link observations, nullable default-route
 observation, bounded interface name/description/address, response-local peer
 ordinals, peer description, a complete declared endpoint host and port, exact
@@ -259,6 +261,7 @@ The additive public fields are exactly:
 | Peer | `description`: `string \| null`; `enabled`, `online`: `boolean \| null` | Description is a bounded scalar; enabled/online accept exact booleans only. Missing, invalid, or oversize scalar values are `null`. |
 | Peer endpoint | `endpoint`: `{ host: string; port: number } \| null` | The declared endpoint is present only when both bounded host and integer port `1..65535` are valid; otherwise it is `null`. |
 | Peer handshake age | `handshakeAgeEvidence`: `'observed' \| 'absent' \| 'unknown'`; `handshakeAgeSeconds`: `number \| null` | `0..2147483646` is authoritative seconds evidence; `2147483647` is `absent`/`null`; missing, invalid, fractional, string, or out-of-range values are `unknown`/`null`. |
+| Peer configured policy | `allowedIps`: `Array<{ address: string; mask: string }> \| null`; `persistentKeepaliveSeconds`: `number \| null` | Values require an exact ephemeral key match in the same interface. Pairs preserve order and exact bounded source strings (at most 32 pairs; 128 characters per part); valid absent Allowed IPs are `[]`, while malformed, over-cap, missing, or ambiguous data is `null`. Keepalive is an exact nonnegative safe-integer seconds value; valid absence is `null`. These do not describe effective routes, reachability, or health. |
 | Interface and top level | `peersWithObservedHandshakeAge`, `peersWithoutReportedHandshakeAge`, `peersWithUnknownHandshakeAge`, `peersOnline`, `peersOffline`: `number \| null` | Counts classify retained valid peers. Under partial evidence, every non-null count is a lower bound; unavailable peer evidence yields `null`, while a valid empty collection yields `0`. |
 
 The evidence status is `complete` for a usable source without structural
@@ -266,17 +269,18 @@ defects, `partial` when valid evidence is retained alongside malformed interface
 rows/types or malformed or unavailable WireGuard peer evidence, and
 `unavailable` only when the source cannot be used. Missing or malformed peer
 collections yield null peer counts, while a valid empty collection yields zero.
-Authentication and transport errors remain typed call errors rather than
-tunnel-status claims. Peer indexes are assigned only within one response; they
+Authentication and transport errors from the primary runtime read remain typed
+call errors rather than tunnel-status claims. Any optional configuration-read,
+shape, join, authentication, or transport failure preserves runtime payload,
+sets affected enrichment fields to `null`, and returns partial evidence using
+the existing safe reason taxonomy. Peer indexes are assigned only within one response; they
 are neither stable identifiers nor peer names.
 
 Handshake presence and age never imply freshness, staleness, health, Internet
 access, routing, DNS, endpoint reachability, encryption, or bidirectional
-traffic. The tool never exposes keys, peer IDs, raw peer objects, hashes, or
-fingerprints. Allowed IPs and persistent keepalive are not exposed: the
-authorized bounded characterization was capped before it proved either a
-runtime source key/shape; keepalive meaning and seconds unit were likewise not
-proven. No configuration fallback is used.
+traffic. The tool never exposes keys, peer IDs, raw peer objects, hashes,
+fingerprints, private keys, or PSKs. The internal exact key join is never
+returned, logged, or stored; no configuration alias or CIDR conversion is used.
 
 ## Log filters
 

@@ -1,6 +1,7 @@
 import * as z from 'zod/v4';
 import type { ToolRegistrar } from '../telemetry/instrumentation.js';
-import { RciError, ValidationError } from '../router/errors.js';
+import { AuthError, RciError, TransportError, ValidationError } from '../router/errors.js';
+import { readStructuredRunningConfig } from '../router/config-reader.js';
 import { isVpnInterfaceType } from '../shape/project.js';
 import { compactOk, guard, ok, READ_ONLY, type ToolContext } from './registry.js';
 
@@ -12,6 +13,9 @@ const scalar = (value: unknown, fallback: string | null): string | number | bool
 const INTERFACE_INPUT_LIMIT = 256_000;
 const INTERFACE_DETAIL_LIMIT = 100;
 const PEER_DETAIL_LIMIT = 100;
+const JOIN_KEY_LIMIT = 256;
+const ALLOWED_IP_LIMIT = 32;
+const ALLOWED_IP_STRING_LIMIT = 128;
 
 type EvidenceStatus = 'complete' | 'partial' | 'unavailable';
 type EvidenceReason = 'partial-data' | 'unexpected-response' | 'response-too-large' | 'rci-error' | null;
@@ -29,6 +33,10 @@ interface WireguardPeer {
   handshakeAgeSeconds: number | null;
   rxBytes: number | null;
   txBytes: number | null;
+  allowedIps: Array<{ address: string; mask: string }> | null;
+  persistentKeepaliveSeconds: number | null;
+  /** Ephemeral exact-match material. It is removed before public serialization. */
+  runtimePublicKey?: string | null;
 }
 
 interface PeerCounts {
@@ -170,7 +178,10 @@ function projectPeer(value: Record<string, unknown>, peerIndex: number): Wiregua
     handshakeAgeEvidence: age.evidence,
     handshakeAgeSeconds: age.seconds,
     rxBytes: safeCounter(value['rxbytes']),
-    txBytes: safeCounter(value['txbytes'])
+    txBytes: safeCounter(value['txbytes']),
+    allowedIps: null,
+    persistentKeepaliveSeconds: null,
+    runtimePublicKey: safeString(value['public-key'], JOIN_KEY_LIMIT)
   };
 }
 
@@ -381,6 +392,126 @@ function sourceStatus(raw: unknown): WireguardStatus {
   };
 }
 
+function reduceReason(current: EvidenceReason, next: EvidenceReason): EvidenceReason {
+  const priority: Record<Exclude<EvidenceReason, null>, number> = {
+    'partial-data': 1,
+    'unexpected-response': 2,
+    'rci-error': 3,
+    'response-too-large': 4
+  };
+  if (next === null) return current;
+  if (current === null || priority[next] > priority[current]) return next;
+  return current;
+}
+
+function configInterfaces(value: unknown): Record<string, unknown> | null {
+  if (!strictRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return null;
+  if (Object.prototype.hasOwnProperty.call(value, 'interface')) {
+    return keys.length === 1 && strictRecord(value['interface']) ? value['interface'] : null;
+  }
+  return value;
+}
+
+function allowedIps(value: Record<string, unknown>): { value: Array<{ address: string; mask: string }> | null; partial: boolean } {
+  if (!Object.prototype.hasOwnProperty.call(value, 'allow-ips')) return { value: [], partial: false };
+  const pairs = value['allow-ips'];
+  if (!Array.isArray(pairs) || pairs.length > ALLOWED_IP_LIMIT) return { value: null, partial: true };
+  const projected: Array<{ address: string; mask: string }> = [];
+  for (const pair of pairs) {
+    if (!strictRecord(pair)) return { value: null, partial: true };
+    const address = safeString(pair['address'], ALLOWED_IP_STRING_LIMIT);
+    const mask = safeString(pair['mask'], ALLOWED_IP_STRING_LIMIT);
+    if (address === null || mask === null) return { value: null, partial: true };
+    projected.push({ address, mask });
+  }
+  return { value: projected, partial: false };
+}
+
+function persistentKeepalive(value: Record<string, unknown>): { value: number | null; partial: boolean } {
+  if (!Object.prototype.hasOwnProperty.call(value, 'keepalive-interval')) return { value: null, partial: false };
+  const keepalive = value['keepalive-interval'];
+  const interval = strictRecord(keepalive) ? keepalive['interval'] : undefined;
+  return typeof interval === 'number' && Number.isSafeInteger(interval) && interval >= 0
+    ? { value: interval, partial: false }
+    : { value: null, partial: true };
+}
+
+function configFailureReason(error: unknown): EvidenceReason {
+  if (error instanceof AuthError || error instanceof TransportError) return 'partial-data';
+  if (error instanceof RciError) {
+    if (error.code === 'response-too-large') return 'response-too-large';
+    if (error.code === 'unexpected-response') return 'unexpected-response';
+  }
+  return 'rci-error';
+}
+
+async function enrichWireguardStatus(status: WireguardStatus, ctx: ToolContext): Promise<WireguardStatus> {
+  if (status.evidenceStatus === 'unavailable' || !status.interfaces.some(iface => iface.peers.length > 0)) return status;
+  let reason = status.evidenceReason;
+  try {
+    const read = await readStructuredRunningConfig(ctx.client, 'interfaces');
+    const data = strictRecord(read.data) ? read.data : null;
+    const interfaces = configInterfaces(data?.['interface']);
+    if (interfaces === null) throw new RciError('the WireGuard configuration branch has an unexpected shape', {
+      path: 'interface', code: 'unexpected-response', ident: 'rci'
+    });
+    for (const runtimeInterface of status.interfaces) {
+      if (runtimeInterface.peers.length === 0) continue;
+      const configInterface = interfaces[runtimeInterface.id];
+      const wireguard = strictRecord(configInterface) ? configInterface['wireguard'] : undefined;
+      const configPeers = strictRecord(wireguard) ? wireguard['peer'] : undefined;
+      if (!Array.isArray(configPeers)) {
+        reason = reduceReason(reason, 'partial-data');
+        continue;
+      }
+      const index = new Map<string, Record<string, unknown> | null>();
+      let malformedConfigPeer = false;
+      for (const candidate of configPeers) {
+        if (!strictRecord(candidate)) {
+          malformedConfigPeer = true;
+          continue;
+        }
+        const key = safeString(candidate['key'], JOIN_KEY_LIMIT);
+        if (key === null) {
+          malformedConfigPeer = true;
+          continue;
+        }
+        index.set(key, index.has(key) ? null : candidate);
+      }
+      if (malformedConfigPeer) reason = reduceReason(reason, 'partial-data');
+      for (const peer of runtimeInterface.peers) {
+        const configPeer = peer.runtimePublicKey === null || peer.runtimePublicKey === undefined
+          ? undefined
+          : index.get(peer.runtimePublicKey);
+        if (configPeer === undefined || configPeer === null) {
+          reason = reduceReason(reason, 'partial-data');
+          continue;
+        }
+        const ranges = allowedIps(configPeer);
+        const keepalive = persistentKeepalive(configPeer);
+        peer.allowedIps = ranges.value;
+        peer.persistentKeepaliveSeconds = keepalive.value;
+        if (ranges.partial || keepalive.partial) reason = reduceReason(reason, 'partial-data');
+      }
+    }
+  } catch (error) {
+    reason = reduceReason(reason, configFailureReason(error));
+  }
+  return { ...status, evidenceStatus: reason === null ? 'complete' : 'partial', evidenceReason: reason };
+}
+
+function publicWireguardStatus(status: WireguardStatus): WireguardStatus {
+  return {
+    ...status,
+    interfaces: status.interfaces.map(iface => ({
+      ...iface,
+      peers: iface.peers.map(({ runtimePublicKey: _runtimePublicKey, ...peer }) => peer)
+    }))
+  };
+}
+
 function byteLength(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
@@ -441,15 +572,14 @@ export function registerVpnTools(server: ToolRegistrar, ctx: ToolContext): void 
   }));
   server.registerTool('get_wireguard_status', {
     title: 'Get WireGuard runtime status evidence',
-    description: 'Bounded current WireGuard interface, peer, authoritative handshake-age seconds, declared endpoint, nullable enabled/online observations, handshake-presence, and counter evidence only; not a health or Internet/reachability verdict.',
+    description: 'Bounded current WireGuard interface, peer, authoritative handshake-age seconds, declared endpoint, configured structured Allowed IP pairs, persistent keepalive seconds, nullable enabled/online observations, handshake-presence, and counter evidence only; not a health or Internet/reachability verdict.',
     inputSchema: {},
     annotations: READ_ONLY
   }, guard(ctx, async () => {
     try {
-      return compactOk(budgetWireguardStatus(
-        sourceStatus(await ctx.client.rci.get('show/interface', INTERFACE_INPUT_LIMIT)),
-        ctx.maxResponseBytes
-      ), ctx.maxResponseBytes);
+      const runtime = sourceStatus(await ctx.client.rci.get('show/interface', INTERFACE_INPUT_LIMIT));
+      return compactOk(budgetWireguardStatus(publicWireguardStatus(await enrichWireguardStatus(runtime, ctx)),
+        ctx.maxResponseBytes), ctx.maxResponseBytes);
     } catch (error) {
       if (!(error instanceof RciError)) throw error;
       return compactOk(unavailable(error.code === 'response-too-large' ? 'response-too-large' : 'rci-error'),

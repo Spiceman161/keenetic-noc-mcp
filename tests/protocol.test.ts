@@ -64,7 +64,7 @@ function context(
           if (options.interfaceError !== undefined) throw options.interfaceError;
           return interfaceResponse;
         })()
-        : {}), post: vi.fn(), getText: vi.fn() },
+        : {}), getConfig: vi.fn(async () => ({ value: {} })), post: vi.fn(), getText: vi.fn() },
     capabilities: vi.fn(async () => ({
       model: 'Keenetic Model (KN-0000)',
       hwId: 'KN-0000',
@@ -291,6 +291,8 @@ describe('assembled server over MCP', () => {
     expect(tool?.description).toContain('authoritative handshake-age seconds');
     expect(tool?.description).toContain('declared endpoint');
     expect(tool?.description).toContain('nullable enabled/online observations');
+    expect(tool?.description).toContain('configured structured Allowed IP pairs');
+    expect(tool?.description).toContain('persistent keepalive seconds');
 
     const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
     const content = result.content as Array<{ type: string; text: string }>;
@@ -517,8 +519,9 @@ describe('write mode', () => {
     expect(tool?.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
     const result = await client.callTool({ name: 'get_wireguard_status', arguments: {} });
     expect(JSON.stringify(result)).toContain('peersObserved');
-    const rci = ctx.client.rci as unknown as { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> };
+    const rci = ctx.client.rci as unknown as { get: ReturnType<typeof vi.fn>; getConfig: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> };
     expect(rci.get.mock.calls).toEqual([['show/interface', 256_000]]);
+    expect(rci.getConfig.mock.calls).toEqual([['interface', 256_000]]);
     expect(rci.post).not.toHaveBeenCalled();
     expect((ctx.backup.ensure as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
