@@ -109,6 +109,34 @@ describe('log tools', () => {
     expect(result.content[0]!.text).not.toContain('event-0 ');
   });
 
+  it('keeps the last parsed-source entries under a cap even when timestamps run backwards', async () => {
+    const timestamps = ['2026-09-12T12:00:00Z', '2026-09-11T12:00:00Z', '2026-09-10T12:00:00Z'];
+    const logs = { show: { log: { log: Object.fromEntries(timestamps.map((timestamp, index) => [
+      String(index + 1), { timestamp, ident: 'Network', message: { message: `event-${index} ${'payload-word '.repeat(18)}` } }
+    ])) } } };
+    const setup = harness({ logs, maxResponseBytes: 950 });
+    const result = await setup.handlers['get_logs']!({ filter: 'event-' });
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(950);
+    expect(out).toMatchObject({ total: 3, matched: 3, filters: { filter: 'event-' }, truncated: true });
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0].timestamp).toBe('2026-09-10T12:00:00Z');
+    expect(out.lines).toEqual([out.entries[0].line]);
+    expect(out.lines[0]).toContain('event-2');
+    expect(result.content[0]!.text).not.toContain('2026-09-12T12:00:00Z');
+  });
+
+  it('reports when the last oversized match blocks a short earlier match from the contiguous tail', async () => {
+    const setup = harness({ logs: sampleLogs(2, index => index === 0 ? 'event small' : `event ${'payload-word '.repeat(180)}`), maxResponseBytes: 512 });
+    const result = await setup.handlers['get_logs']!({ filter: 'event' });
+    const out = payload(result);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(512);
+    expect(out).toMatchObject({ total: 2, matched: 2, filters: { filter: 'event' }, lines: [], entries: [], truncated: true });
+    expect(out.note).toMatch(/last selected entry.*no contiguous tail/i);
+    expect(out.note).toMatch(/fewer lines cannot/i);
+    expect(result.content[0]!.text).not.toContain('event small');
+  });
+
   it('distinguishes no matches from a single oversized selected entry under a tight ceiling', async () => {
     const setup = harness({ logs: sampleLogs(1, () => `event ${'é"\\'.repeat(600)}`), maxResponseBytes: 512 });
     const empty = payload(await setup.handlers['get_logs']!({ filter: 'absent' }));
@@ -118,7 +146,8 @@ describe('log tools', () => {
     const out = payload(result);
     expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(512);
     expect(out).toMatchObject({ total: 1, matched: 1, filters: { filter: 'event' }, lines: [], entries: [], truncated: true });
-    expect(out.note).toMatch(/filter|lines/i);
+    expect(out.note).toMatch(/last selected entry.*no contiguous tail/i);
+    expect(out.note).toMatch(/fewer lines cannot/i);
   });
 
   it('fails closed when exact selector or alias metadata cannot fit a 512-byte response', async () => {

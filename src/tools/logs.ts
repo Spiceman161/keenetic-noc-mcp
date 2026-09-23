@@ -237,7 +237,7 @@ function boundedLogResult(ctx: ToolContext, payload: {
     else upper = middle - 1;
   }
   if (lower === 0) {
-    const withNote = { ...empty, note: 'Narrow with filter, since, until, interface, device or fewer lines.' };
+    const withNote = { ...empty, note: 'The last selected entry does not fit as a paired record; no contiguous tail fits. Narrow filters or time range to exclude it; fewer lines cannot shrink a single oversized entry.' };
     if (fits(withNote)) return ok(withNote, ctx.maxResponseBytes);
   }
   return ok(trimmed(lower), ctx.maxResponseBytes);
