@@ -110,20 +110,20 @@ describe('log tools', () => {
   });
 
   it('keeps the last parsed-source entries under a cap even when timestamps run backwards', async () => {
-    const timestamps = ['2026-09-12T12:00:00Z', '2026-09-11T12:00:00Z', '2026-09-10T12:00:00Z'];
+    const timestamps = ['2026-09-11T12:00:00Z', '2026-09-12T12:00:00Z', '2026-09-10T12:00:00Z'];
     const logs = { show: { log: { log: Object.fromEntries(timestamps.map((timestamp, index) => [
       String(index + 1), { timestamp, ident: 'Network', message: { message: `event-${index} ${'payload-word '.repeat(18)}` } }
     ])) } } };
-    const setup = harness({ logs, maxResponseBytes: 950 });
+    const setup = harness({ logs, maxResponseBytes: 1_850 });
     const result = await setup.handlers['get_logs']!({ filter: 'event-' });
     const out = payload(result);
-    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(950);
+    expect(Buffer.byteLength(result.content[0]!.text, 'utf8')).toBeLessThanOrEqual(1_850);
     expect(out).toMatchObject({ total: 3, matched: 3, filters: { filter: 'event-' }, truncated: true });
-    expect(out.entries).toHaveLength(1);
-    expect(out.entries[0].timestamp).toBe('2026-09-10T12:00:00Z');
-    expect(out.lines).toEqual([out.entries[0].line]);
-    expect(out.lines[0]).toContain('event-2');
-    expect(result.content[0]!.text).not.toContain('2026-09-12T12:00:00Z');
+    const expectedLines = [1, 2].map(index => `${timestamps[index]} Network event-${index} ${'payload-word '.repeat(18)}`);
+    expect(out.lines).toEqual(expectedLines);
+    expect(out.entries.map((entry: { timestamp: string; line: string }) => entry.timestamp)).toEqual(timestamps.slice(1));
+    expect(out.entries.map((entry: { timestamp: string; line: string }) => entry.line)).toEqual(expectedLines);
+    expect(result.content[0]!.text).not.toContain('event-0');
   });
 
   it('reports when the last oversized match blocks a short earlier match from the contiguous tail', async () => {
