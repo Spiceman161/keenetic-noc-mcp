@@ -564,6 +564,9 @@ describe('get_wireguard_status', () => {
     });
     expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
     expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
+    expect(tested.get.mock.invocationCallOrder).toHaveLength(1);
+    expect(tested.getConfig.mock.invocationCallOrder).toHaveLength(1);
+    expect(tested.get.mock.invocationCallOrder[0]).toBeLessThan(tested.getConfig.mock.invocationCallOrder[0]!);
     expect(JSON.stringify(out)).not.toContain('SYNTHETIC_RUNTIME_KEY');
     expect(JSON.stringify(out)).not.toContain('SYNTHETIC_PRIVATE_KEY');
     expect(JSON.stringify(out)).not.toContain('SYNTHETIC_PSK');
@@ -580,6 +583,21 @@ describe('get_wireguard_status', () => {
       expect(payload(result)).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', interfaces: [{ peers: [{ rxBytes: 2, allowedIps: null, persistentKeepaliveSeconds: null }] }] });
       expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
     }
+  });
+
+  it('returns valid configured absence as known empty Allowed IPs and unspecified keepalive', async () => {
+    const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [
+      { 'public-key': 'SYNTHETIC_RUNTIME_KEY' }
+    ] } } });
+    tested.getConfig.mockResolvedValueOnce({ value: { Wireguard0: { wireguard: { peer: [{
+      key: 'SYNTHETIC_RUNTIME_KEY'
+    }] } } } });
+    expect(payload(await tested.handler())).toMatchObject({
+      evidenceStatus: 'complete', evidenceReason: null, interfaces: [{ peers: [{
+        allowedIps: [], persistentKeepaliveSeconds: null
+      }] }]
+    });
+    expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
   });
 
   it('rejects malformed configured fields without discarding a valid sibling', async () => {
@@ -654,12 +672,12 @@ describe('get_wireguard_status', () => {
   });
 
   it.each([
-    ['container', []], ['negative', -1], ['fractional', 1.5],
-    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1], ['string', '1']
-  ])('rejects malformed persistent keepalive %s while retaining valid Allowed IPs', async (_label, interval) => {
+    ['container', []], ['negative interval', { interval: -1 }], ['fractional interval', { interval: 1.5 }],
+    ['unsafe integer interval', { interval: Number.MAX_SAFE_INTEGER + 1 }], ['string interval', { interval: '1' }]
+  ])('rejects malformed persistent keepalive %s while retaining valid Allowed IPs', async (_label, keepalive) => {
     const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }] } } });
     tested.getConfig.mockResolvedValueOnce({ value: { Wireguard0: { wireguard: { peer: [{
-      key: 'SYNTHETIC_RUNTIME_KEY', 'allow-ips': [{ address: 'a', mask: 'm' }], 'keepalive-interval': interval
+      key: 'SYNTHETIC_RUNTIME_KEY', 'allow-ips': [{ address: 'a', mask: 'm' }], 'keepalive-interval': keepalive
     }] } } } });
     expect(payload(await tested.handler())).toMatchObject({ evidenceStatus: 'partial', evidenceReason: 'partial-data', interfaces: [{ peers: [{
       allowedIps: [{ address: 'a', mask: 'm' }], persistentKeepaliveSeconds: null
@@ -684,6 +702,27 @@ describe('get_wireguard_status', () => {
       expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
       expect(JSON.stringify(result)).not.toContain('SYNTHETIC_RUNTIME_KEY');
     }
+  });
+
+  it('reads configuration for a usable peer beyond the interface detail cap', async () => {
+    const interfaces = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [
+      `Wireguard${index}`,
+      { type: 'Wireguard', wireguard: { peer: index === 100 ? [{ 'public-key': 'SYNTHETIC_RUNTIME_KEY' }] : [] } }
+    ]));
+    const tested = harness(interfaces);
+    tested.getConfig.mockRejectedValueOnce(new RciError('config too large', {
+      path: 'interface', code: 'response-too-large', ident: 'rci'
+    }));
+    const out = payload(await tested.handler());
+    expect(out).toMatchObject({
+      evidenceStatus: 'partial', evidenceReason: 'response-too-large', peersObserved: 1,
+      total: 101, truncated: true
+    });
+    expect(out.shown).toBeGreaterThan(0);
+    expect(out.shown).toBeLessThanOrEqual(100);
+    expect(out.interfaces).toHaveLength(out.shown);
+    expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
+    expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
   });
 
   it('preserves typed primary auth/transport failures and skips configuration for unavailable or unusable runtime peers', async () => {

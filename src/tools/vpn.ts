@@ -385,7 +385,9 @@ function sourceStatus(raw: unknown): WireguardStatus {
     peersWithUnknownHandshakeAge: hasUsablePeers || noWireguard ? counts.peersWithUnknownHandshakeAge : null,
     peersOnline: hasUsablePeers || noWireguard ? counts.peersOnline : null,
     peersOffline: hasUsablePeers || noWireguard ? counts.peersOffline : null,
-    interfaces: interfaces.slice(0, INTERFACE_DETAIL_LIMIT),
+    // Keep every runtime interface until enrichment so a usable peer beyond the
+    // public detail cap still requires the configured-policy source and join.
+    interfaces,
     shown: Math.min(interfaces.length, INTERFACE_DETAIL_LIMIT),
     total: interfaces.length,
     truncated: interfaces.length > INTERFACE_DETAIL_LIMIT
@@ -505,7 +507,7 @@ async function enrichWireguardStatus(status: WireguardStatus, ctx: ToolContext):
 function publicWireguardStatus(status: WireguardStatus): WireguardStatus {
   return {
     ...status,
-    interfaces: status.interfaces.map(iface => ({
+    interfaces: status.interfaces.slice(0, INTERFACE_DETAIL_LIMIT).map(iface => ({
       ...iface,
       peers: iface.peers.map(({ runtimePublicKey: _runtimePublicKey, ...peer }) => peer)
     }))
