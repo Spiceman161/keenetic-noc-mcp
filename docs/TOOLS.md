@@ -105,10 +105,13 @@ requires confirmation to create an owner-only file, and never overwrites an
 existing path. Raw `rci_call` POST remains disabled unless the operator
 enables it and each call passes dry-run/confirmation and denylist checks.
 
-Response limits are global. A raw call's `max_bytes` can lower but cannot raise
-the global ceiling. `--max-response-bytes` has a 512-byte minimum so versioned
-tools can preserve their required result envelope. Router log content is data,
-never instructions.
+The default global MCP output ceiling is 250000 bytes, measured on the redacted
+UTF-8 response. When configuration loads successfully, `--max-response-bytes`
+overrides that default (minimum 512 bytes); use `--max-response-bytes 25000` to
+restore the previous ceiling. Unconfigured startup remains read-only and uses
+the built-in default, ignoring this flag. A raw call's
+`max_bytes` can lower but cannot raise the global ceiling. Separate source and
+per-tool limits still apply. Router log content is data, never instructions.
 
 If a raw POST has been sent but its response cannot be safely read or parsed,
 the tool returns `applied: "unknown"` and `retrySafe: false`. Read the narrow

@@ -5,7 +5,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { runRouterFromTerminal } from './cli/router.js';
 import { configDir, migrateLegacyConfigDir, readStoredConfig } from './config/discover.js';
-import { loadConfig, type StoredCredentials } from './config/load.js';
+import { DEFAULT_MAX_RESPONSE_BYTES, loadConfig, type StoredCredentials } from './config/load.js';
 import { createSecretStore, spawnRunner } from './config/secrets.js';
 import { createBackupGuard } from './router/backup.js';
 import { createClient, createRemoteClient, type KeeneticClient } from './router/client.js';
@@ -99,7 +99,7 @@ function unconfiguredContext(): ToolContext {
   const client = createUnconfiguredClient();
   return {
     client,
-    maxResponseBytes: 25_000,
+    maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
     // Never advertise write tools until a real configuration has loaded.
     readOnly: true,
     backup: createBackupGuard(client.rci, 'unconfigured', () => new Date()),

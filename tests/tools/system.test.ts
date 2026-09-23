@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
+import { DEFAULT_MAX_RESPONSE_BYTES } from '../../src/config/load.js';
 import { parseCapabilities, type Capabilities } from '../../src/router/capabilities.js';
 import { registerSystemTools } from '../../src/tools/system.js';
 import { fail, getToolResultTelemetry, guard, ok, type ToolContext, type ToolResult } from '../../src/tools/registry.js';
@@ -74,6 +75,59 @@ describe('result helpers', () => {
     expect(JSON.parse(textOf(ok({ a: 1 })))).toEqual({ a: 1 });
   });
 
+  it('preserves redacted UTF-8 payloads between the old and new default ceilings', () => {
+    const payload = { token: 'synthetic-token', data: 'é'.repeat(20_000) };
+    const result = ok(payload, DEFAULT_MAX_RESPONSE_BYTES);
+    expect(Buffer.byteLength(textOf(result), 'utf8')).toBeGreaterThan(25_000);
+    expect(Buffer.byteLength(textOf(result), 'utf8')).toBeLessThan(DEFAULT_MAX_RESPONSE_BYTES);
+    expect(JSON.parse(textOf(result))).toEqual({ token: '[REDACTED]', data: payload.data });
+    expect(getToolResultTelemetry(result)?.outputTruncated).toBe(false);
+    expect(JSON.parse(textOf(ok(payload, 25_000)))).toMatchObject({ truncated: true });
+  });
+
+  it('sanitizes URL credentials in large free-text responses before publishing', () => {
+    const url = 'https://synthetic-user:synthetic-pass@router.example.test/health?session=synthetic-query-secret#synthetic-fragment';
+    const message = `${'read-only diagnostic text '.repeat(1_500)} ${url}`;
+    const payload = { message };
+    const originalBytes = Buffer.byteLength(JSON.stringify(payload, null, 2), 'utf8');
+    expect(originalBytes).toBeGreaterThan(25_000);
+    expect(originalBytes).toBeLessThan(DEFAULT_MAX_RESPONSE_BYTES);
+
+    const result = ok(payload, DEFAULT_MAX_RESPONSE_BYTES);
+    const published = textOf(result);
+    expect(Buffer.byteLength(published, 'utf8')).toBeGreaterThan(25_000);
+    expect(Buffer.byteLength(published, 'utf8')).toBeLessThan(DEFAULT_MAX_RESPONSE_BYTES);
+    expect(JSON.parse(published)).toEqual({
+      message: `${'read-only diagnostic text '.repeat(1_500)} https://router.example.test/health`
+    });
+    expect(published).not.toMatch(/synthetic-user|synthetic-pass|synthetic-query-secret|synthetic-fragment/);
+    expect(getToolResultTelemetry(result)?.outputTruncated).toBe(false);
+  });
+
+  it('preserves the exact default boundary and returns a redacted overflow envelope above it', () => {
+    const emptyBytes = Buffer.byteLength(JSON.stringify({ data: '' }, null, 2), 'utf8');
+    const remainingBytes = DEFAULT_MAX_RESPONSE_BYTES - emptyBytes;
+    const exact = ok({ data: 'é'.repeat(Math.floor(remainingBytes / 2)) + 'x'.repeat(remainingBytes % 2) },
+      DEFAULT_MAX_RESPONSE_BYTES);
+    expect(Buffer.byteLength(textOf(exact), 'utf8')).toBe(DEFAULT_MAX_RESPONSE_BYTES);
+    expect(getToolResultTelemetry(exact)?.outputTruncated).toBe(false);
+
+    const payload = { token: 'synthetic-token', data: 'é'.repeat(130_000) };
+    const result = ok(payload, DEFAULT_MAX_RESPONSE_BYTES);
+    const originalBytes = Buffer.byteLength(JSON.stringify({
+      token: '[REDACTED]', data: payload.data
+    }, null, 2), 'utf8');
+    expect(originalBytes).toBeGreaterThan(DEFAULT_MAX_RESPONSE_BYTES);
+    expect(Buffer.byteLength(textOf(result), 'utf8')).toBeLessThanOrEqual(DEFAULT_MAX_RESPONSE_BYTES);
+    expect(JSON.parse(textOf(result))).toEqual({
+      truncated: true,
+      originalBytes,
+      note: 'Response exceeded the configured byte ceiling. Narrow the query.'
+    });
+    expect(textOf(result)).not.toContain('synthetic-token');
+    expect(getToolResultTelemetry(result)?.outputTruncated).toBe(true);
+  });
+
   it('fail marks isError and includes the guidance', () => {
     const result = fail(new AuthError('bad credentials'));
     expect(result.isError).toBe(true);
@@ -84,6 +138,22 @@ describe('result helpers', () => {
     const result = fail('something odd');
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain('something odd');
+  });
+
+  it('uses the shared default for fail and context-free guard errors', async () => {
+    const error = new Error('é'.repeat(18_000));
+    const direct = fail(error);
+    const guarded = await guard(async () => { throw error; })({}, {} as never);
+    for (const result of [direct, guarded]) {
+      expect(result.isError).toBe(true);
+      expect(Buffer.byteLength(textOf(result), 'utf8')).toBeGreaterThan(25_000);
+      expect(Buffer.byteLength(textOf(result), 'utf8')).toBeLessThan(DEFAULT_MAX_RESPONSE_BYTES);
+      expect(getToolResultTelemetry(result)?.outputTruncated).toBe(false);
+    }
+    expect(textOf(guarded)).toBe(textOf(direct));
+    const tight = fail(error, 512);
+    expect(Buffer.byteLength(textOf(tight), 'utf8')).toBeLessThanOrEqual(512);
+    expect(getToolResultTelemetry(tight)?.outputTruncated).toBe(true);
   });
 
   it('bounds guarded errors to the configured response ceiling', async () => {

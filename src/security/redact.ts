@@ -19,6 +19,7 @@ export function redact<T>(value: T): T {
   const visit = (node: unknown): unknown => {
     if (typeof node === 'string') {
       return node
+        .replace(URL_TOKEN, sanitizeUrl)
         .replace(LABELLED_VALUE, (match, label: string) =>
           sensitiveKey(label) ? `${label}=[REDACTED]` : match)
         .replace(LONG_KEY, '[REDACTED_KEY]');

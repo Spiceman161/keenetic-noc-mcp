@@ -20,7 +20,7 @@ export interface StoredCredentials {
   password?: string;
 }
 
-export const DEFAULT_MAX_RESPONSE_BYTES = 25_000;
+export const DEFAULT_MAX_RESPONSE_BYTES = 250_000;
 export const MIN_MAX_RESPONSE_BYTES = 512;
 export const DEFAULT_LAN_TIMEOUT_MS = 10_000;
 export const DEFAULT_REMOTE_TIMEOUT_MS = 30_000;

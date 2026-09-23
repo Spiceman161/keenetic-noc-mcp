@@ -284,7 +284,7 @@ describe('loadConfig', () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.login).toBe('admin');
     expect(cfg.readOnly).toBe(false);
-    expect(cfg.maxResponseBytes).toBe(25_000);
+    expect(cfg.maxResponseBytes).toBe(250_000);
   });
 
   it('honours --read-only and --max-response-bytes', async () => {

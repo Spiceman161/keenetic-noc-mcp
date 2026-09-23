@@ -10,6 +10,7 @@ describe('loadConfig precedence', () => {
       host: '198.51.100.1',
       login: 'stored-user',
       password: 'stored-pass',
+      maxResponseBytes: 250_000,
       timeoutMs: 10_000
     });
   });
@@ -65,12 +66,17 @@ describe('loadConfig precedence', () => {
 
   it('still honours --read-only and --max-response-bytes', async () => {
     const cfg = await loadConfig(
-      ['--read-only', '--max-response-bytes', '8000'],
+      ['--read-only', '--max-response-bytes', '25000'],
       {} as NodeJS.ProcessEnv,
       STORED
     );
     expect(cfg.readOnly).toBe(true);
-    expect(cfg.maxResponseBytes).toBe(8000);
+    expect(cfg.maxResponseBytes).toBe(25_000);
+  });
+
+  it('accepts the minimum --max-response-bytes', async () => {
+    const cfg = await loadConfig(['--max-response-bytes', '512'], {} as NodeJS.ProcessEnv, STORED);
+    expect(cfg.maxResponseBytes).toBe(512);
   });
 
   it('rejects a nonsense --max-response-bytes', async () => {

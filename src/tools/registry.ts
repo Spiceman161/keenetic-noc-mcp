@@ -1,4 +1,5 @@
 import type { ServerContext } from '@modelcontextprotocol/server';
+import { DEFAULT_MAX_RESPONSE_BYTES } from '../config/load.js';
 import { KeeneticError } from '../router/errors.js';
 import type { BackupGuard } from '../router/backup.js';
 import type { KeeneticClient } from '../router/client.js';
@@ -89,7 +90,7 @@ export function compactOk(payload: unknown, maxBytes: number): ToolResult {
  * Every handler funnels failures through here. The text is read by a model, so
  * it must say what happened and what to do next - never a bare stack trace.
  */
-export function fail(error: unknown, maxBytes = 25_000): ToolResult {
+export function fail(error: unknown, maxBytes = DEFAULT_MAX_RESPONSE_BYTES): ToolResult {
   const fullText =
     error instanceof KeeneticError
       ? redactText(error.message)
@@ -116,7 +117,7 @@ export function guard<A>(
 ): ToolHandler<A> {
   const handler = typeof ctxOrHandler === 'function' ? ctxOrHandler : suppliedHandler!;
   const maxResponseBytes = typeof ctxOrHandler === 'function'
-    ? 25_000
+    ? DEFAULT_MAX_RESPONSE_BYTES
     : ctxOrHandler.maxResponseBytes;
   return async (args: A, context: ServerContext) => {
     try {
