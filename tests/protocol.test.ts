@@ -446,12 +446,26 @@ describe('assembled server over MCP', () => {
     expect(ping?.inputSchema.required).toContain('target');
     expect((ping?.inputSchema.properties as any)?.count).toMatchObject({ default: 3,
       minimum: 1, maximum: 5 });
+    expect(ping?.inputSchema.required).not.toContain('source_interface');
+    expect((ping?.inputSchema.properties as any)?.source_interface).toMatchObject({
+      type: 'string', minLength: 1, maxLength: 128
+    });
+    expect((ping?.inputSchema.properties as any)?.source_interface?.description)
+      .toMatch(/requests that the router use this interface/i);
+    expect((ping?.inputSchema.properties as any)?.source_interface?.description)
+      .toMatch(/actual egress is not independently verified/i);
+    expect(trace?.inputSchema.properties).not.toHaveProperty('source_interface');
     expect((trace?.inputSchema.properties as any)?.max_hops).toMatchObject({ default: 15,
       minimum: 1, maximum: 30 });
     for (const tool of [ping, trace]) {
       expect(tool?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false,
         idempotentHint: false, openWorldHint: true });
     }
+    const mismatch = await client.callTool({ name: 'ping', arguments: {
+      target: '2001:db8::1', family: 'ipv6', source_interface: 'Wireguard0'
+    } });
+    expect(mismatch.isError).toBe(true);
+    expect(JSON.stringify(mismatch.content)).toMatch(/IPv4/i);
   });
 });
 

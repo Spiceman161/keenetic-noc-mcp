@@ -35,6 +35,23 @@ describe('active diagnostic projection', () => {
     expect(report.truncated).toBe(true);
   });
 
+  it('keeps sourced output bounded and does not infer reachability from a completed job', () => {
+    const sourceInterface = 'W-'.repeat(63) + 'W0';
+    const limitsApplied = { family: 'ipv4', count: 2, timeoutMs: 4_000, sourceInterface };
+    const messages = Array.from({ length: 130 }, () => 'hop '.repeat(150));
+    const report = activeDiagnosticReport({ operation: 'ping', target: '192.0.2.1',
+      limitsApplied, messages, termination: 'completed' });
+    expect(report.status).toBe('completed');
+    const bounded = budgetActiveDiagnostic(report, 2_000);
+    expect(bounded.limitsApplied.sourceInterface).toBe(sourceInterface);
+    expect(bounded.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(bounded, null, 2))).toBeLessThanOrEqual(2_000);
+    expect(activeDiagnosticReport({ operation: 'ping', target: '192.0.2.1',
+      limitsApplied, messages: ['0 packets transmitted, 100% packet loss'],
+      termination: 'completed' })).toMatchObject({ status: 'unreachable',
+      limitsApplied: { sourceInterface } });
+  });
+
   it('classifies finite diagnostic outcomes and preserves timeout evidence', () => {
     expect(activeDiagnosticReport({ operation: 'ping', target: 'missing.example.test',
       limitsApplied: {}, messages: ['unknown host'], termination: 'completed' }).status).toBe('not-found');

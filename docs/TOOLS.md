@@ -62,12 +62,23 @@ remain explicit uncertainty.
 
 `ping` sends 1-5 ICMP requests from the router to one ASCII hostname or IP
 address. It supports explicit `ipv4` or `ipv6`, defaults to three requests and a
-five-second deadline, and has a hard 15-second deadline ceiling.
+five-second deadline, and has a hard 15-second deadline ceiling. For IPv4 only,
+optional `source_interface` requests an exact router interface ID from
+`list_interfaces` (including names such as `WifiMaster0/AccessPoint0`). It
+accepts a bounded ASCII ID without whitespace, control characters, encoded
+forms, dot-segments, or command syntax and
+rejects `family=ipv6` with a selector before contacting the router. With no
+selector, IPv4 and IPv6 ping retain their original request and report fields.
+The conditional `limitsApplied.sourceInterface` records the **requested** ID,
+not an independently verified egress interface. Native lines can provide
+reachability, loss, and RTT evidence for the requested target and time only;
+`completed` does not mean every packet arrived, and no ping outcome proves
+tunnel or Internet health. A router rejection is an error, not an unbound retry.
 
 `traceroute` performs one UDP trace from the router to one target. It defaults
 to 15 hops and a 15-second deadline, with hard ceilings of 30 hops and 30
-seconds. Protocol, port, source interface, packet size, fan-out, ranges, and
-continuous operation are not exposed.
+seconds. Protocol, port, traceroute source interface, packet size, fan-out,
+ranges, and continuous operation are not exposed.
 
 Both tools are configuration-read-only but actively send packets, so they are
 available under `--read-only` and carry `openWorldHint=true`. Only one active

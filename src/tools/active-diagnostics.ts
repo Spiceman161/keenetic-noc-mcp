@@ -30,18 +30,21 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
     inputSchema: {
       target: z.string().min(1).max(253).describe('One ASCII hostname, IPv4 address, or IPv6 address.'),
       family: z.enum(['ipv4', 'ipv6']).optional().default('ipv4'),
+      source_interface: z.string().min(1).max(128).optional()
+        .describe('Exact router interface ID from list_interfaces; IPv4 only. Requests that the router use this interface for bounded traffic; actual egress is not independently verified.'),
       count: z.number().int().min(1).max(5).optional().default(3),
       timeout_ms: z.number().int().min(1_000).max(15_000).optional().default(5_000)
     },
     annotations: ACTIVE
-  }, guard(ctx, async ({ target, family, count, timeout_ms }, request) => {
-    const command = pingCommand(target, family, count);
+  }, guard(ctx, async ({ target, family, source_interface, count, timeout_ms }, request) => {
+    const command = pingCommand(target, family, count, source_interface);
     return coordinator.run(async () => {
       const result = await ctx.client.rci.runContinued(command.path, command.body, INPUT_BYTES, {
         signal: request.mcpReq.signal, timeoutMs: timeout_ms
       });
       const report = activeDiagnosticReport({ operation: 'ping', target: command.body['host'] as string,
-        limitsApplied: { family, count, timeoutMs: result.effectiveTimeoutMs },
+        limitsApplied: { family, count, timeoutMs: result.effectiveTimeoutMs,
+          ...(source_interface === undefined ? {} : { sourceInterface: source_interface }) },
         messages: result.messages, termination: result.termination });
       return ok(budgetActiveDiagnostic(report, ctx.maxResponseBytes), ctx.maxResponseBytes);
     });

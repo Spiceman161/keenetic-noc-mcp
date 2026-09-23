@@ -34,6 +34,32 @@ describe('active diagnostic target validation', () => {
     });
   });
 
+  it('adds the exact native IPv4 interface selector without changing finite ping fields', () => {
+    expect(pingCommand('192.0.2.1', 'ipv4', 2, 'Wireguard0')).toEqual({
+      path: 'tools/ping', body: { host: '192.0.2.1', packetsize: 84, count: 2,
+        'source-interface': 'Wireguard0' }
+    });
+    expect(pingCommand('example.test', 'ipv4', 5, 'WifiMaster0/AccessPoint0').body)
+      .toHaveProperty('source-interface', 'WifiMaster0/AccessPoint0');
+    expect(pingCommand('example.test', 'ipv4', 1, 'Tunnel_1.2').body)
+      .toHaveProperty('source-interface', 'Tunnel_1.2');
+  });
+
+  it.each(['', 'a'.repeat(129), ' Wireguard0', 'Wireguard0 ', 'Wireguard\n0',
+    'Wireguard\u00000', 'Wireguard%30', 'Wireguard;reboot', 'Wireguard$0',
+    'Wireguard"0', 'Wireguard{0}', 'Wireguard\\0', '../Wireguard0',
+    'Wireguard0/../Other', 'Wireguard0//Other', 'Wireguard0/Other/More',
+    'Wireguard0/'])('rejects unsafe interface ID %s', sourceInterface => {
+    expect(() => pingCommand('example.test', 'ipv4', 2, sourceInterface)).toThrow();
+  });
+
+  it('rejects IPv6 with a source selector before constructing a ping6 command', () => {
+    expect(() => pingCommand('2001:db8::1', 'ipv6', 2, 'Wireguard0'))
+      .toThrow(/ipv4/i);
+    expect(() => pingCommand('example.test', 'ipv6', 2, 'Wireguard0'))
+      .toThrow(/ipv4/i);
+  });
+
   it('rejects family mismatches and out-of-range native limits', () => {
     expect(() => pingCommand('2001:db8::1', 'ipv4', 1)).toThrow();
     expect(() => pingCommand('192.0.2.1', 'ipv6', 1)).toThrow();

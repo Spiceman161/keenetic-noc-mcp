@@ -419,9 +419,21 @@ configuration commands and not `POST /rci/` command-dispatch trees:
 
 | Operation | Start request |
 |---|---|
-| IPv4 ping | `POST /rci/tools/ping` with `host`, `packetsize: 84`, and finite `count` |
-| IPv6 ping | `POST /rci/tools/ping6` with the same fields |
+| IPv4 ping | `POST /rci/tools/ping` with `host`, `packetsize: 84`, finite `count`, and optional `source-interface` interface ID |
+| IPv6 ping | `POST /rci/tools/ping6` with `host`, `packetsize: 84`, and finite `count`; sourced ping is unverified |
 | traceroute | `POST /rci/tools/traceroute` with `host`, `port: 33434`, `packetsize: 52`, finite `max-ttl`, and `type: udp` |
+
+Separate user-supplied bounded evidence from `tupik` demonstrated the exact
+`source-interface` key on IPv4 `tools/ping` only. A configured WireGuard ID
+produced a selected OS device alias in native output and 2/2 replies, 0% loss,
+and RTT min/avg/max. A configured-down WireGuard ID reported network unreachable
+with 0 transmitted and 100% loss; a nonexistent ID produced a structured
+`Network::Interface::Ip` rejection (code `6553609`). Output arrived in chunks
+and ended with an empty object. No counter deltas were supplied, and the model
+and firmware were not reported. These results do not establish model/firmware-wide
+compatibility, independently verified egress, sourced `ping6`, or source-bound
+cancellation; existing continued-job GET/DELETE behavior remains the lifecycle
+seam. Do not infer tunnel or Internet health from these target-specific results.
 
 The start and later `GET` polls return `{message: string[], continued: true}`;
 completion is an empty object. `DELETE` on the same path is the Web UI's native

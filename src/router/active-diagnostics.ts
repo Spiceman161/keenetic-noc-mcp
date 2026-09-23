@@ -31,7 +31,7 @@ export function validateDiagnosticTarget(raw: string, hostnameOnly = false): str
   return target;
 }
 
-export function pingCommand(target: string, family: PingFamily, count: number): {
+export function pingCommand(target: string, family: PingFamily, count: number, sourceInterface?: string): {
   path: 'tools/ping' | 'tools/ping6'; body: Record<string, unknown>;
 } {
   const safe = validateDiagnosticTarget(target);
@@ -44,9 +44,20 @@ export function pingCommand(target: string, family: PingFamily, count: number): 
   if (!Number.isInteger(count) || count < 1 || count > 5) {
     throw new ValidationError('Ping count must be an integer from 1 through 5.');
   }
+  if (sourceInterface !== undefined) {
+    if (family !== 'ipv4') {
+      throw new ValidationError('source_interface is supported only for IPv4 ping.');
+    }
+    if (typeof sourceInterface !== 'string' || sourceInterface.length > 128 ||
+        !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)?$/.test(sourceInterface) ||
+        sourceInterface.includes('..')) {
+      throw new ValidationError('source_interface must be an exact, safe interface ID from list_interfaces.');
+    }
+  }
   return {
     path: family === 'ipv6' ? 'tools/ping6' : 'tools/ping',
-    body: { host: safe, packetsize: 84, count }
+    body: { host: safe, packetsize: 84, count,
+      ...(sourceInterface === undefined ? {} : { 'source-interface': sourceInterface }) }
   };
 }
 
