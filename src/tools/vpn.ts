@@ -289,7 +289,6 @@ function projectWireguardInterface(id: string, iface: Record<string, unknown>): 
     };
   }
   const counts = peerCounts(selected.peers);
-  const peers = selected.peers.slice(0, PEER_DETAIL_LIMIT);
   return {
     id,
     name: safeString(iface['interface-name'], 128),
@@ -300,10 +299,12 @@ function projectWireguardInterface(id: string, iface: Record<string, unknown>): 
     defaultGateway: typeof iface['defaultgw'] === 'boolean' ? iface['defaultgw'] : null,
     peerEvidenceStatus: selected.status,
     ...counts,
-    peers,
-    peersShown: peers.length,
+    // Retain the bounded runtime set through enrichment; public peer detail is
+    // capped only after every usable peer has participated in the exact join.
+    peers: selected.peers,
+    peersShown: Math.min(selected.peers.length, PEER_DETAIL_LIMIT),
     peersTotal: selected.peers.length,
-    peersTruncated: peers.length < selected.peers.length
+    peersTruncated: selected.peers.length > PEER_DETAIL_LIMIT
   };
 }
 
@@ -509,7 +510,10 @@ function publicWireguardStatus(status: WireguardStatus): WireguardStatus {
     ...status,
     interfaces: status.interfaces.slice(0, INTERFACE_DETAIL_LIMIT).map(iface => ({
       ...iface,
-      peers: iface.peers.map(({ runtimePublicKey: _runtimePublicKey, ...peer }) => peer)
+      peers: iface.peers.slice(0, PEER_DETAIL_LIMIT)
+        .map(({ runtimePublicKey: _runtimePublicKey, ...peer }) => peer),
+      peersShown: Math.min(iface.peers.length, PEER_DETAIL_LIMIT),
+      peersTruncated: iface.peers.length > PEER_DETAIL_LIMIT
     }))
   };
 }

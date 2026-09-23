@@ -725,6 +725,29 @@ describe('get_wireguard_status', () => {
     expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
   });
 
+  it.each([
+    ['missing exact config match', (keys: string[]) => keys.slice(0, 100).map(key => ({ key }))],
+    ['malformed exact config match', (keys: string[]) => [
+      ...keys.slice(0, 100).map(key => ({ key })),
+      { key: keys[100]!, 'allow-ips': [{ address: 'SYNTHETIC_MALFORMED_RAW' }] }
+    ]]
+  ])('reduces hidden peer enrichment evidence after the peer detail cap: %s', async (_label, configPeers) => {
+    const keys = Array.from({ length: 101 }, (_, index) => `SYNTHETIC_RUNTIME_KEY_${index}`);
+    const tested = harness({ Wireguard0: { type: 'Wireguard', wireguard: { peer: keys.map(key => ({ 'public-key': key })) } } }, 100_000);
+    tested.getConfig.mockResolvedValueOnce({ value: { Wireguard0: { wireguard: { peer: configPeers(keys) } } } });
+
+    const out = payload(await tested.handler());
+    expect(out).toMatchObject({
+      evidenceStatus: 'partial', evidenceReason: 'partial-data', peersObserved: 101,
+      interfaces: [{ peersObserved: 101, peersTotal: 101, peersShown: 100, peersTruncated: true }]
+    });
+    expect(out.interfaces[0].peers).toHaveLength(100);
+    expect(tested.get.mock.calls).toEqual([['show/interface', 256_000]]);
+    expect(tested.getConfig.mock.calls).toEqual([['interface', 256_000]]);
+    expect(tested.get.mock.invocationCallOrder[0]).toBeLessThan(tested.getConfig.mock.invocationCallOrder[0]!);
+    expect(JSON.stringify(out)).not.toContain('SYNTHETIC_');
+  });
+
   it('preserves typed primary auth/transport failures and skips configuration for unavailable or unusable runtime peers', async () => {
     for (const error of [new AuthError('runtime denied'), new TransportError('runtime offline')]) {
       const tested = harness({});
