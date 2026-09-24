@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
 import type { KeeneticClient } from '../../src/router/client.js';
-import { ActiveDiagnosticUncertainError, RciError } from '../../src/router/errors.js';
+import { ActiveDiagnosticUncertainError, Iperf3UncertainError, RciError } from '../../src/router/errors.js';
+import { Rci, type ContinuedRciResult } from '../../src/router/rci.js';
+import { getToolResultTelemetry } from '../../src/tools/registry.js';
 import { registerActiveDiagnosticTools } from '../../src/tools/active-diagnostics.js';
 import type { ToolContext, ToolResult } from '../../src/tools/registry.js';
 import { stubBackup } from '../helpers/backup.js';
@@ -9,7 +11,7 @@ import { stubBackup } from '../helpers/backup.js';
 type Handler = (args: Record<string, unknown>, context: unknown) => Promise<ToolResult>;
 
 function setup() {
-  const runContinued = vi.fn(async () => ({
+  const runContinued = vi.fn(async (): Promise<ContinuedRciResult> => ({
     messages: ['1 packets transmitted, 1 packets received, 0% packet loss'], bytes: 64, polls: 1,
     termination: 'completed' as const, effectiveTimeoutMs: 4_000
   }));
@@ -165,6 +167,27 @@ describe('active diagnostic tools', () => {
     expect(fixture.audit.write).not.toHaveBeenCalled();
   });
 
+  it('returns only bounded native-role observations and explicit reverse confirmation', async () => {
+    const fixture = setup();
+    fixture.runContinued.mockResolvedValueOnce({
+      messages: [
+        'Reverse mode, remote host example.test is sending',
+        '[  5]   0.00-2.20   sec  2.50 MBytes  9.52 Mbits/sec   79            sender',
+        '[  5]   0.00-2.00   sec  1.25 MBytes  5.24 Mbits/sec                  receiver',
+        'iperf Done.'
+      ], bytes: 420, polls: 2, termination: 'completed', terminalShape: 'empty-object',
+      effectiveTimeoutMs: 4_000
+    });
+    const report = payload(await fixture.handlers['iperf3']!(iperfArgs, fixture.request));
+    expect(report).toMatchObject({ requestedDirection: 'reverse', actualDirection: 'reverse',
+      throughput: 'unknown', nativeTransfer: 'unknown', nativeInterval: 'unknown',
+      polls: 2, terminalShape: 'empty-object', nativeRoleObservations: [
+        { role: 'sender', transferAmount: 2.5, transferUnit: 'MBytes', bitrateMbps: 9.52 },
+        { role: 'receiver', transferAmount: 1.25, transferUnit: 'MBytes', bitrateMbps: 5.24 }
+      ] });
+    expect(JSON.stringify(report)).not.toMatch(/Retr|Reverse mode|Mbits\/sec|connected to/);
+  });
+
   it('rechecks cached absence once; confirmed absence never reserves or sends an active job', async () => {
     const fixture = setup();
     fixture.capabilities.mockResolvedValue({ components: new Set() });
@@ -197,6 +220,8 @@ describe('active diagnostic tools', () => {
     for (const version of [{ title: '5.1.5', model: 'Viva' },
       { title: '5.1.5', model: 'Viva', ndw: { components: ['base'] } },
       { title: '5.1.5', model: 'Viva', ndw: { components: 'base,,ip6' } },
+      { title: '5.1.5', model: 'Viva', ndw: { components: '' } },
+      { title: '5.1.5', model: 'Viva', ndw: { components: '   ' } },
       { title: '', model: 'Viva', ndw: { components: 'base' } }]) {
       fixture.get.mockResolvedValueOnce(version);
       const result = await fixture.handlers['iperf3']!(iperfArgs, fixture.request);
@@ -247,5 +272,42 @@ describe('active diagnostic tools', () => {
     expect((await uncertainFixture.handlers['ping']!({ target: 'example.test', family: 'ipv4',
       count: 1, timeout_ms: 5_000 }, uncertainFixture.request)).isError).toBe(true);
     expect(uncertainFixture.runContinued).toHaveBeenCalledOnce();
+  });
+
+  it('quarantines other active starts after acknowledged ambiguous iPerf3 outcome', async () => {
+    const fixture = setup();
+    fixture.runContinued.mockRejectedValueOnce(new Iperf3UncertainError(true, true, true));
+    const first = await fixture.handlers['iperf3']!(iperfArgs, fixture.request);
+    expect(first.isError).toBe(true);
+    expect(first.content[0]?.text).toContain('routerTermination: unknown');
+    expect(first.content[0]?.text).toContain('deleteEmptyObjectAcknowledged: true');
+    expect(getToolResultTelemetry(first)?.errorCode).toBe('active_diagnostic_uncertain');
+    for (const name of ['ping', 'traceroute', 'iperf3']) {
+      const args = name === 'ping' ? { target: 'example.test', count: 1, timeout_ms: 5_000 }
+        : name === 'traceroute' ? { target: 'example.test', max_hops: 3, timeout_ms: 5_000 }
+          : iperfArgs;
+      expect((await fixture.handlers[name]!(args, fixture.request)).isError).toBe(true);
+    }
+    expect(fixture.runContinued).toHaveBeenCalledOnce();
+  });
+
+  it.each(['POST', 'GET'])('keeps native %s status strings out of MCP errors and telemetry', async step => {
+    const fixture = setup();
+    const privateAddress = ['192', '168', '7', '1'].join('.');
+    const request = vi.fn();
+    if (step === 'GET') request.mockResolvedValueOnce(new Response(JSON.stringify({ continued: true })));
+    request.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'error',
+      code: `secret=${privateAddress}`, ident: 'opaque-private-token' })))
+      .mockResolvedValueOnce(new Response('{}'));
+    fixture.runContinued.mockImplementationOnce(async () => new Rci({ request }).runContinued(
+      'tools/iperf3', { host: 'example.test', bytes: 1_048_576 }, 64_000));
+    const result = await fixture.handlers['iperf3']!(iperfArgs, fixture.request);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('routerTermination: unknown');
+    expect(result.content[0]?.text).toContain('rejectionClass: native-error');
+    expect(result.content[0]?.text).not.toMatch(/192\.168|secret=|opaque-private-token/);
+    expect(getToolResultTelemetry(result)).toMatchObject({ errorCode: 'active_diagnostic_uncertain' });
+    expect(request.mock.calls.map(call => call[0])).toEqual(step === 'POST'
+      ? ['POST', 'DELETE'] : ['POST', 'GET', 'DELETE']);
   });
 });

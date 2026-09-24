@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { ActiveDiagnosticUncertainError, AuthError, RciError, TransportError } from './errors.js';
+import { ActiveDiagnosticUncertainError, AuthError, Iperf3UncertainError, RciError, TransportError } from './errors.js';
 
 export interface RciRequestControls {
   signal?: AbortSignal;
@@ -99,6 +99,7 @@ export interface ContinuedRciResult {
   polls: number;
   termination: 'completed' | 'timeout';
   effectiveTimeoutMs: number;
+  terminalShape?: 'empty-object' | 'message';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -212,6 +213,7 @@ export class Rci {
     maxBytes: number,
     controls: RciRequestControls = {}
   ): Promise<ContinuedRciResult> {
+    const iperf3 = path === 'tools/iperf3';
     const requestedTimeoutMs = controls.timeoutMs ?? 10_000;
     const timeoutMs = this.session.effectiveTimeoutMs?.(requestedTimeoutMs) ?? requestedTimeoutMs;
     const timeout = AbortSignal.timeout(timeoutMs);
@@ -239,7 +241,7 @@ export class Rci {
           signal,
           timeoutMs
         });
-        if (method === 'POST' && !res.ok) started = false;
+        if (method === 'POST' && !res.ok && !iperf3) started = false;
         const remaining = maxBytes - bytes;
         if (remaining <= 0) throw new RciError(`response exceeds ${maxBytes} byte safety limit`, {
           path, code: 'response-too-large', ident: 'rci'
@@ -262,18 +264,19 @@ export class Rci {
         });
         const directStatus = value['status'];
         if (directStatus === 'error') {
-          if (method === 'POST') started = false;
+          if (method === 'POST' && !iperf3) started = false;
           throw new RciError('the router rejected the active diagnostic', {
             path,
-            code: typeof value['code'] === 'string' ? value['code'] : 'router-error',
-            ident: typeof value['ident'] === 'string' ? value['ident'] : 'rci'
+            code: iperf3 ? 'router-error' : typeof value['code'] === 'string' ? value['code'] : 'router-error',
+            ident: iperf3 ? 'rci' : typeof value['ident'] === 'string' ? value['ident'] : 'rci'
           });
         }
         const statusError = collectStatuses(value).find(item => item.status === 'error');
         if (statusError) {
-          if (method === 'POST') started = false;
+          if (method === 'POST' && !iperf3) started = false;
           throw new RciError('the router rejected the active diagnostic', {
-            path, code: statusError.code ?? 'router-error', ident: statusError.ident ?? 'rci'
+            path, code: iperf3 ? 'router-error' : statusError.code ?? 'router-error',
+            ident: iperf3 ? 'rci' : statusError.ident ?? 'rci'
           });
         }
         const chunkMessages = value['message'];
@@ -299,7 +302,8 @@ export class Rci {
               path, code: 'unexpected-response', ident: 'rci'
             }
           );
-          return { messages, bytes, polls, termination: 'completed', effectiveTimeoutMs: timeoutMs };
+          return { messages, bytes, polls, termination: 'completed', effectiveTimeoutMs: timeoutMs,
+            ...(iperf3 ? { terminalShape: keys.length === 0 ? 'empty-object' as const : 'message' as const } : {}) };
         }
         polls += 1;
         await delay(500, undefined, { signal });
@@ -309,6 +313,18 @@ export class Rci {
       // Authentication rejection is deterministic: the active POST did not
       // reach an authenticated router command and needs no native cleanup.
       if (error instanceof AuthError && method === 'POST') started = false;
+      if (iperf3) {
+        if (!started) {
+          if (error instanceof AuthError) throw new AuthError('iPerf3 authentication was rejected before an active start.');
+          throw error;
+        }
+        const deleteEmptyObjectAcknowledged = await this.session.request('DELETE', endpoint, undefined, { timeoutMs: 3_000 })
+          .then(cancellationConfirmed).catch(() => false);
+        throw new Iperf3UncertainError(true, deleteEmptyObjectAcknowledged,
+          timeout.aborted && !controls.signal?.aborted,
+          error instanceof RciError && error.code === 'router-error' ? 'native-error'
+            : error instanceof RciError && /^\d{3}$/.test(error.code) ? 'http-error' : 'unclassified');
+      }
       if (started) {
         const cancelled = await this.session.request('DELETE', endpoint, undefined, { timeoutMs: 3_000 })
           .then(cancellationConfirmed).catch(() => false);

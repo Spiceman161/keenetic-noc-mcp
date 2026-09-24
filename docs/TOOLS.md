@@ -90,19 +90,35 @@ must be present before any active start; confirmed absence returns
 `status: "unavailable", reason: "component-not-installed"` without iPerf3
 traffic. The standard component can be installed manually through KeeneticOS
 component options; never install it through this tool. Completion indicates
-only the native job lifecycle; `throughput: "unknown"` remains true even if
-untrusted native sender/receiver markers are observed. `reverse` requests the
-candidate native marker, not a verified download. Native reverse, result units,
-and cancellation effects remain uncharacterized. Never benchmark a public
-server without authorization or use Stage A for tunnel-health claims.
+only the native job lifecycle; the singular `throughput: "unknown"` remains true
+because sender and receiver are distinct native roles, not interchangeable speed
+estimates. `nativeRoleObservations` contains at most one strictly parsed final
+summary per role (`sender`, `receiver`): `intervalStartSeconds`,
+`intervalEndSeconds`, `transferAmount`, `transferUnit` (`KBytes` or `MBytes`),
+and `bitrateMbps` (only for exact native `Mbits/sec`). Unknown/malformed/duplicate
+role rows are omitted; interval rows and native free text are never returned.
+`nativeTransfer` and `nativeInterval` remain `unknown` as singular fields.
+`actualDirection` is `reverse` only when the requested reverse mode is confirmed
+by the exact native reverse marker matching the requested host; otherwise it is
+`unknown`. This does not independently verify physical or WireGuard egress.
+`polls` counts continued chunks and `terminalShape` records whether the accepted
+terminal was an empty object or a message-shaped object; neither establishes
+transfer success.
+An ambiguous dispatched iPerf3 result triggers one DELETE; even a `{}` reply
+only acknowledges DELETE, leaving `routerTermination: unknown` and blocking all
+later active starts in this server instance. Router-side cancellation effects
+remain uncharacterized. Never benchmark a public server without authorization
+or use Stage A for tunnel-health claims.
 
 These tools are configuration-read-only but actively send packets, so they are
 available under `--read-only` and carry `openWorldHint=true`. Only one active
 diagnostic runs at a time and at most ten can start in a rolling minute. MCP
 cancellation triggers transport abort and the router-native DELETE cancel.
 Ping/traceroute router text is marked untrusted, stripped of control sequences,
-redacted, and bounded; iPerf3 exposes only fixed untrusted marker names, never
-raw connection lines or local IPs. A failed/unknown DELETE blocks further active
+redacted, and bounded; iPerf3 exposes only the strict role-summary fields and
+fixed markers described above, never raw connection lines or local IPs. An
+uncertain iPerf3 job blocks further active starts even after `{}` DELETE
+acknowledgement. A failed/unknown DELETE also blocks further active
 starts; a `{}` acknowledgement is not proof of the router-side effect. The
 reported `timeoutMs` is the smaller of `timeout_ms`
 and the operator's `KEENETIC_TIMEOUT_MS`. Ping/traceroute outcomes distinguish `completed`,

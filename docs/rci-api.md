@@ -413,6 +413,23 @@ strings were not retained.
 
 ## Active diagnostic jobs
 
+User-provided sanitized evidence on Viva (KN-1912), KeeneticOS 5.1.5,
+establishes native `POST/GET/DELETE /rci/tools/iperf3` for IPv4 TCP iPerf3
+client jobs with an explicit source interface. Time-bounded upload/reverse
+(`time: 2`) and byte-bounded upload (`bytes: 1048576`) were observed; the typed
+MCP operation deliberately exposes only a finite byte-bounded request. A native
+reverse line of the exact form `Reverse mode, remote host <HOST> is sending`
+establishes reverse mode on this tested runtime, not physical egress. Final
+summary rows end in `sender` or `receiver`, with separate `sec` intervals,
+`KBytes`/`MBytes` transfer units and `Mbits/sec` bitrates. In the observed upload,
+sender/receiver reported 5.24/2.60 Mbits/sec; reverse reported 9.52/5.24
+Mbits/sec, respectively. A byte-bounded upload reported 1.00 MBytes in each
+role. Message chunks continued through GET and ended with `{}`. The terminal
+empty object reports continued-job completion, not transfer success or remote
+server cleanup; an empty-object DELETE acknowledgement does not prove native
+termination. Unknown native formats remain unparsed. These observations are specific to the
+tested router/firmware and do not establish server capacity or VPN health.
+
 Active command evidence was measured through remote KeenDNS on Viva (KN-1912),
 KeeneticOS 5.1.3, on 2026-09-11. These are finite continued RCI jobs, not
 configuration commands and not `POST /rci/` command-dispatch trees:

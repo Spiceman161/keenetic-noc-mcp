@@ -151,22 +151,20 @@ describe('Rci.runContinued', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ terminal: 'unproven' })))
       .mockResolvedValueOnce(new Response('{}'));
     await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000))
-      .rejects.toMatchObject({ code: 'unexpected-response' });
+      .rejects.toMatchObject({ code: 'active_diagnostic_uncertain', routerTermination: 'unknown' });
     expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'DELETE']);
     expect(request.mock.calls[2]?.[1]).toBe('/rci/tools/iperf3');
   });
 
-  it.each(['{}', '{"continued":false}', 'bad'])('fails closed when DELETE is not {} (%s)', async ack => {
+  it.each(['{}', '{"continued":false}', 'bad'])('fails closed after any iPerf3 DELETE acknowledgement (%s)', async ack => {
     const request = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['start'], continued: true })))
       .mockRejectedValueOnce(new Error('connection lost'))
       .mockResolvedValueOnce(new Response(ack));
     const pending = new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000);
-    if (ack === '{}') {
-      await expect(pending).rejects.toThrow('connection lost');
-    } else {
-      await expect(pending).rejects.toMatchObject({ name: 'ActiveDiagnosticUncertainError' });
-    }
+    await expect(pending).rejects.toMatchObject({ name: 'Iperf3UncertainError',
+      routerTermination: 'unknown', deleteAttempted: true,
+      deleteEmptyObjectAcknowledged: ack === '{}' });
     expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'DELETE']);
   });
 
@@ -175,7 +173,8 @@ describe('Rci.runContinued', () => {
       .mockRejectedValueOnce(new Error('unknown POST outcome'))
       .mockResolvedValueOnce(new Response('{}'));
     await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000))
-      .rejects.toThrow('unknown POST outcome');
+      .rejects.toMatchObject({ name: 'Iperf3UncertainError',
+        routerTermination: 'unknown', deleteEmptyObjectAcknowledged: true });
     expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
   });
 
@@ -188,7 +187,8 @@ describe('Rci.runContinued', () => {
       const pending = new Rci({ request, effectiveTimeoutMs: () => 100 })
         .runContinued('tools/iperf3', iperfBody, 64_000, { timeoutMs: 5_000 });
       await vi.advanceTimersByTimeAsync(101);
-      await expect(pending).resolves.toMatchObject({ termination: 'timeout', effectiveTimeoutMs: 100 });
+      await expect(pending).rejects.toMatchObject({ name: 'Iperf3UncertainError',
+        deadlineExceeded: true, routerTermination: 'unknown', deleteEmptyObjectAcknowledged: true });
       expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
     } finally {
       vi.useRealTimers();
@@ -206,6 +206,48 @@ describe('Rci.runContinued', () => {
     await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody,
       64_000, { signal: controller.signal })).rejects.toThrow();
     expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
+  });
+
+  it.each([
+    { payload: { status: 'error', code: `private ${['192', '168', '1', '3'].join('.')}`, ident: 'credential=opaque' }, step: 'POST' },
+    { payload: { nested: { status: [{ status: 'error', code: `private ${['192', '168', '1', '3'].join('.')}`, ident: 'credential=opaque' }] } }, step: 'GET' }
+  ])('rejects native $step error without exposing native strings', async ({ payload, step }) => {
+    const request = vi.fn();
+    if (step === 'GET') request.mockResolvedValueOnce(new Response(JSON.stringify({ continued: true })));
+    request.mockResolvedValueOnce(new Response(JSON.stringify(payload)))
+      .mockResolvedValueOnce(new Response('{}'));
+    const error = await new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000)
+      .catch(caught => caught as Error);
+    expect(error).toMatchObject({ name: 'Iperf3UncertainError', routerTermination: 'unknown',
+      rejectionClass: 'native-error' });
+    expect(JSON.stringify(error)).not.toMatch(/192\.168|opaque|credential/);
+    expect((error as Error).message).not.toMatch(/192\.168|opaque|credential/);
+    expect(request.mock.calls.map(call => call[0])).toEqual(step === 'GET'
+      ? ['POST', 'GET', 'DELETE'] : ['POST', 'DELETE']);
+  });
+
+  it('treats HTTP 5xx as ambiguous and authenticating rejection as pre-start', async () => {
+    const httpRequest = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request: httpRequest }).runContinued('tools/iperf3', iperfBody, 64_000))
+      .rejects.toMatchObject({ name: 'Iperf3UncertainError', deleteEmptyObjectAcknowledged: true,
+        rejectionClass: 'http-error' });
+    expect(httpRequest.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
+    const authRequest = vi.fn().mockRejectedValueOnce(new AuthError('user=secret'));
+    const error = await new Rci({ request: authRequest }).runContinued('tools/iperf3', iperfBody, 64_000)
+      .catch(caught => caught as Error);
+    expect(error).toBeInstanceOf(AuthError);
+    expect((error as Error).message).not.toContain('secret');
+    expect(authRequest).toHaveBeenCalledOnce();
+  });
+
+  it('distinguishes a pre-dispatch deadline from uncertain native termination', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const request = vi.fn();
+    await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000,
+      { signal: controller.signal })).rejects.toMatchObject({ name: 'TransportError' });
+    expect(request).not.toHaveBeenCalled();
   });
   it('starts once, polls bounded chunks, and returns accumulated messages', async () => {
     const request = vi.fn()

@@ -83,8 +83,8 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
   server.registerTool('iperf3', {
     title: 'Bounded iPerf3 client characterization',
     description: 'Starts one finite byte-limited TCP iPerf3 client job to an explicitly authorized server. ' +
-      'This emits active network traffic; reverse direction and router-side cancellation are not yet ' +
-      'independently proven. Completion does not establish transfer success or throughput.',
+      'This emits active network traffic; reverse is reported only when explicitly marked in native output. ' +
+      'Router-side cancellation is not proven; completion does not establish a single throughput verdict.',
     inputSchema: {
       server_host: z.string().min(1).max(253).describe('One explicitly authorized ASCII hostname or IPv4 address.'),
       server_port: z.number().int().min(5201).max(5210),
@@ -106,8 +106,8 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
         ? (version as Record<string, unknown>)['ndw'] : undefined;
       const components = ndw !== null && typeof ndw === 'object' && !Array.isArray(ndw)
         ? (ndw as Record<string, unknown>)['components'] : undefined;
-      if (typeof components !== 'string' ||
-          (components.length > 0 && components.split(',').some(part => part.trim() === ''))) {
+      if (typeof components !== 'string' || components.trim() === '' ||
+          components.split(',').some(part => part.trim() === '')) {
         throw new RciError('show/version did not provide a valid components list', {
           path: 'show/version', code: 'unexpected-response', ident: 'rci'
         });
@@ -129,7 +129,9 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
         ...(source_interface === undefined ? {} : { requestedSourceInterface: source_interface }),
         byteLimitBytes: byte_limit_bytes,
         timeoutMs: result.effectiveTimeoutMs, termination: result.termination,
-        messages: result.messages }), ctx.maxResponseBytes), ctx.maxResponseBytes);
+        messages: result.messages, polls: result.polls,
+        ...(result.terminalShape === undefined ? {} : { terminalShape: result.terminalShape }) }),
+      ctx.maxResponseBytes), ctx.maxResponseBytes);
     });
   }));
 }

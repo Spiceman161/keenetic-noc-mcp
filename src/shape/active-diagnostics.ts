@@ -2,6 +2,35 @@ import { capText } from './budget.js';
 import { redact, redactText } from '../security/redact.js';
 import type { Iperf3Direction } from '../router/active-diagnostics.js';
 
+export interface Iperf3NativeRoleObservation {
+  role: 'sender' | 'receiver';
+  intervalStartSeconds: number;
+  intervalEndSeconds: number;
+  transferAmount: number;
+  transferUnit: 'KBytes' | 'MBytes';
+  bitrateMbps: number;
+}
+
+const IPERF3_FINAL_SUMMARY = /^\[  5\] +((?:0|[1-9][0-9]{0,5})\.[0-9]{2})-((?:0|[1-9][0-9]{0,5})\.[0-9]{2}) +sec +((?:0|[1-9][0-9]{0,5})(?:\.[0-9]{2})?) +(KBytes|MBytes) +((?:0|[1-9][0-9]{0,5})\.[0-9]{2}) +Mbits\/sec +(?:(\d{1,3}) +)?(sender|receiver)$/;
+
+function nativeRoleObservation(line: string): Iperf3NativeRoleObservation | null {
+  const match = IPERF3_FINAL_SUMMARY.exec(line);
+  if (match === null) return null;
+  const [, start, end, transfer, unit, bitrate, retransmits, role] = match;
+  if (start === undefined || end === undefined || transfer === undefined ||
+      bitrate === undefined || (role === 'sender') !== (retransmits !== undefined) ||
+      (unit !== 'KBytes' && unit !== 'MBytes') ||
+      (role !== 'sender' && role !== 'receiver') || Number(end) <= Number(start)) return null;
+  return {
+    role,
+    intervalStartSeconds: Number(start),
+    intervalEndSeconds: Number(end),
+    transferAmount: Number(transfer),
+    transferUnit: unit,
+    bitrateMbps: Number(bitrate)
+  };
+}
+
 export interface Iperf3Report {
   schemaVersion: 1;
   operation: 'iperf3';
@@ -14,7 +43,13 @@ export interface Iperf3Report {
   termination: 'not-started' | 'completed' | 'timeout';
   reason?: 'component-not-installed';
   throughput: 'unknown';
-  observedNativeMarkers: Array<'sender' | 'receiver' | 'iperf Done!'>;
+  actualDirection: 'unknown' | 'reverse';
+  nativeTransfer: 'unknown';
+  nativeInterval: 'unknown';
+  nativeRoleObservations: Iperf3NativeRoleObservation[];
+  polls: number | null;
+  terminalShape: 'empty-object' | 'message' | 'unknown';
+  observedNativeMarkers: Array<'sender' | 'receiver' | 'iperf Done!' | 'iperf Done.'>;
   untrustedRouterData: true;
 }
 
@@ -27,12 +62,30 @@ export function iperf3Report(input: {
   timeoutMs: number;
   termination?: 'completed' | 'timeout';
   messages?: readonly string[];
+  polls?: number;
+  terminalShape?: 'empty-object' | 'message';
 }): Iperf3Report {
   const messages = input.messages ?? [];
+  const observations = new Map<Iperf3NativeRoleObservation['role'], Iperf3NativeRoleObservation>();
+  const ambiguous = new Set<Iperf3NativeRoleObservation['role']>();
+  for (const line of messages) {
+    const role = line.endsWith(' sender') ? 'sender' : line.endsWith(' receiver') ? 'receiver' : null;
+    if (role === null) continue;
+    const observation = nativeRoleObservation(line);
+    if (observation === null || observations.has(role)) ambiguous.add(role);
+    if (!ambiguous.has(role) && observation !== null) observations.set(role, observation);
+    else observations.delete(role);
+  }
+  const nativeRoleObservations: Iperf3NativeRoleObservation[] = [];
+  for (const role of ['sender', 'receiver'] as const) {
+    const observation = observations.get(role);
+    if (observation !== undefined) nativeRoleObservations.push(observation);
+  }
   const observedNativeMarkers: Iperf3Report['observedNativeMarkers'] = [];
-  if (messages.some(line => /\bsender\s*$/i.test(line))) observedNativeMarkers.push('sender');
-  if (messages.some(line => /\breceiver\s*$/i.test(line))) observedNativeMarkers.push('receiver');
-  if (messages.some(line => /^\s*iperf Done!\s*$/i.test(line))) observedNativeMarkers.push('iperf Done!');
+  if (observations.has('sender')) observedNativeMarkers.push('sender');
+  if (observations.has('receiver')) observedNativeMarkers.push('receiver');
+  if (messages.includes('iperf Done!')) observedNativeMarkers.push('iperf Done!');
+  if (messages.includes('iperf Done.')) observedNativeMarkers.push('iperf Done.');
   return {
     schemaVersion: 1,
     operation: 'iperf3',
@@ -47,6 +100,14 @@ export function iperf3Report(input: {
     termination: input.termination ?? 'not-started',
     ...(input.termination === undefined ? { reason: 'component-not-installed' as const } : {}),
     throughput: 'unknown',
+    actualDirection: input.termination === 'completed' && input.requestedDirection === 'reverse' &&
+      messages.includes(`Reverse mode, remote host ${input.serverHost} is sending`)
+      ? 'reverse' : 'unknown',
+    nativeTransfer: 'unknown',
+    nativeInterval: 'unknown',
+    nativeRoleObservations,
+    polls: input.polls ?? null,
+    terminalShape: input.terminalShape ?? 'unknown',
     observedNativeMarkers,
     untrustedRouterData: true
   };
@@ -63,6 +124,11 @@ export function budgetIperf3Report(report: Iperf3Report, maxBytes: number): obje
     requestedDirection: report.requestedDirection,
     limitsApplied: report.limitsApplied,
     throughput: report.throughput,
+    actualDirection: report.actualDirection,
+    nativeTransfer: report.nativeTransfer,
+    nativeInterval: report.nativeInterval,
+    polls: report.polls,
+    terminalShape: report.terminalShape,
     untrustedRouterData: true,
     truncated: true
   };

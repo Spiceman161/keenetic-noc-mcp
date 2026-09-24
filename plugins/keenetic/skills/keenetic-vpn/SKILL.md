@@ -34,7 +34,8 @@ actual egress. If `component-not-installed` is reported, the user may manually
 install the standard iPerf3 component in Keenetic Web UI (`General System
 Settings -> KeeneticOS Update and Component Options -> Component options ->
 iPerf3`), then recheck capability; never auto-install or bypass the gate.
-Reverse transfer semantics, native output units, and the router-side effect
-of DELETE remain uncharacterized. Do not infer speed or tunnel/Internet health
+The tested runtime confirms reverse mode only from an exact native marker and
+exposes separate sender/receiver summary units; DELETE's router-side effect
+remains uncharacterized. Do not infer a single speed or tunnel/Internet health
 from a result, ping, or handshake. Do not activate or use this local candidate
 in production without separately authorized operational activation.

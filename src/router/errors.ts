@@ -124,3 +124,23 @@ export class ActiveDiagnosticUncertainError extends ResourceError {
     );
   }
 }
+
+export class Iperf3UncertainError extends ActiveDiagnosticUncertainError {
+  readonly routerTermination = 'unknown';
+  readonly rejectionClass: 'native-error' | 'http-error' | 'unclassified';
+  readonly deleteAttempted: boolean;
+  readonly deleteEmptyObjectAcknowledged: boolean;
+  readonly deadlineExceeded: boolean;
+
+  constructor(deleteAttempted: boolean, deleteEmptyObjectAcknowledged: boolean, deadlineExceeded: boolean,
+    rejectionClass: 'native-error' | 'http-error' | 'unclassified' = 'unclassified') {
+    super();
+    this.rejectionClass = rejectionClass;
+    this.deleteAttempted = deleteAttempted;
+    this.deleteEmptyObjectAcknowledged = deleteEmptyObjectAcknowledged;
+    this.deadlineExceeded = deadlineExceeded;
+    this.message = `iPerf3 rejectionClass: ${rejectionClass}; routerTermination: unknown; deleteAttempted: ${deleteAttempted}; ` +
+      `deleteEmptyObjectAcknowledged: ${deleteEmptyObjectAcknowledged}; ` +
+      `deadlineExceeded: ${deadlineExceeded}. Do not start another active diagnostic until router-side termination is established.`;
+  }
+}

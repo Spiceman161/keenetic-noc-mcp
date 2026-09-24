@@ -78,8 +78,13 @@ are separate from the shared one-at-a-time/ten-starts-per-minute diagnostic
 limits; neither bounds aggregate operator traffic. Syntax validation is not a
 server allowlist or SSRF boundary, and a requested source ID is not verified
 egress. An absent component blocks POST after a bounded capability recheck;
-unknown metadata or transport failures never count as proven absence. Reverse
-direction and cancellation effects are not live-proven. Native free-form output
-is discarded, exposing only fixed marker names; no throughput or successful
-download is inferred. Do not deploy or use this local Stage A candidate on a
+unknown metadata or transport failures never count as proven absence. Native
+reverse mode is recognized only from the exact native reverse marker; router-side
+cancellation effects are not live-proven. Native free-form output is discarded;
+only strictly parsed final sender/receiver amounts, interval seconds and exact
+`Mbits/sec` numeric rates, fixed markers and bounded poll/terminal-shape facts
+are exposed. A singular throughput verdict remains unknown. An ambiguous iPerf3
+POST or unfinished job triggers one DELETE; even an empty-object acknowledgement
+does not prove router-side termination, so further active starts are blocked.
+No successful download is inferred. Do not deploy or use this local Stage A candidate on a
 router without separate operational attestation and approval.

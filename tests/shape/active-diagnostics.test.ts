@@ -10,6 +10,78 @@ import {
 describe('iPerf3 Stage A projection', () => {
   const input = { serverHost: 'example.test', serverPort: 5201, requestedDirection: 'reverse' as const,
     byteLimitBytes: 1_048_576, timeoutMs: 4_000, requestedSourceInterface: 'Wireguard0' };
+  const uploadSender = '[  5]   0.00-2.00   sec  1.25 MBytes  5.24 Mbits/sec    1            sender';
+  const uploadReceiver = '[  5]   0.00-2.82   sec   896 KBytes  2.60 Mbits/sec                  receiver';
+  const reverseSender = '[  5]   0.00-2.20   sec  2.50 MBytes  9.52 Mbits/sec   79            sender';
+  const reverseReceiver = '[  5]   0.00-2.00   sec  1.25 MBytes  5.24 Mbits/sec                  receiver';
+  const bytesSender = '[  5]   0.00-2.00   sec  1.00 MBytes  4.19 Mbits/sec    1            sender';
+  const bytesReceiver = '[  5]   0.00-2.20   sec  1.00 MBytes  3.81 Mbits/sec                  receiver';
+
+  it('projects only observed final upload role rows, not interval rows', () => {
+    const report = iperf3Report({ ...input, requestedDirection: 'upload', termination: 'completed',
+      polls: 2, terminalShape: 'empty-object', messages: [
+        '[  5]   0.00-1.00   sec   512 KBytes  4.19 Mbits/sec    1    113 KBytes',
+        uploadSender, uploadReceiver, 'iperf Done.'
+      ] });
+    expect(report).toMatchObject({ status: 'completed', requestedDirection: 'upload',
+      actualDirection: 'unknown', throughput: 'unknown', polls: 2,
+      terminalShape: 'empty-object', nativeRoleObservations: [
+        { role: 'sender', intervalStartSeconds: 0, intervalEndSeconds: 2,
+          transferAmount: 1.25, transferUnit: 'MBytes', bitrateMbps: 5.24 },
+        { role: 'receiver', intervalStartSeconds: 0, intervalEndSeconds: 2.82,
+          transferAmount: 896, transferUnit: 'KBytes', bitrateMbps: 2.60 }
+      ] });
+    expect(JSON.stringify(report)).not.toContain('113 KBytes');
+    const bounded = budgetIperf3Report(report, 512);
+    expect(bounded).toMatchObject({ status: 'completed', throughput: 'unknown',
+      actualDirection: 'unknown', truncated: true });
+    expect(bounded).not.toHaveProperty('nativeRoleObservations');
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(512);
+  });
+
+  it('reports reverse only with the exact native marker and keeps roles separate', () => {
+    const messages = ['Reverse mode, remote host example.test is sending', reverseSender,
+      reverseReceiver, 'iperf Done.'];
+    const report = iperf3Report({ ...input, messages, termination: 'completed' });
+    expect(report.actualDirection).toBe('reverse');
+    expect(report.throughput).toBe('unknown');
+    expect(report.nativeRoleObservations).toEqual([
+      { role: 'sender', intervalStartSeconds: 0, intervalEndSeconds: 2.2,
+        transferAmount: 2.5, transferUnit: 'MBytes', bitrateMbps: 9.52 },
+      { role: 'receiver', intervalStartSeconds: 0, intervalEndSeconds: 2,
+        transferAmount: 1.25, transferUnit: 'MBytes', bitrateMbps: 5.24 }
+    ]);
+    expect(iperf3Report({ ...input, messages: messages.slice(1), termination: 'completed' })
+      .actualDirection).toBe('unknown');
+    expect(iperf3Report({ ...input, messages: ['Reverse mode, remote host other.test is sending',
+      reverseSender], termination: 'completed' }).actualDirection).toBe('unknown');
+    expect(iperf3Report({ ...input, requestedDirection: 'upload', messages,
+      termination: 'completed' }).actualDirection).toBe('unknown');
+  });
+
+  it('projects the observed byte-bounded summary without inferring a singular Mbps', () => {
+    const report = iperf3Report({ ...input, requestedDirection: 'upload', termination: 'completed',
+      messages: [bytesSender, bytesReceiver] });
+    expect(report.nativeRoleObservations).toMatchObject([
+      { role: 'sender', transferAmount: 1, transferUnit: 'MBytes', bitrateMbps: 4.19 },
+      { role: 'receiver', transferAmount: 1, transferUnit: 'MBytes', bitrateMbps: 3.81 }
+    ]);
+    expect(report.throughput).toBe('unknown');
+  });
+
+  it('drops unmatched lines, unobserved units, and ambiguous duplicate roles', () => {
+    const privateAddress = ['192', '168', '1', '3'].join('.');
+    const malformedSender = uploadSender.replace('Mbits/sec', 'Gbits/sec');
+    const wrongUnit = uploadReceiver.replace('KBytes', 'Bytes');
+    const report = iperf3Report({ ...input, termination: 'completed', messages: [
+      `[  5] local ${privateAddress} port 55555 connected to example.test port 5201`,
+      malformedSender, wrongUnit, `${uploadSender} secret=opaque`, uploadReceiver,
+      uploadReceiver.replace('896 KBytes', '768 KBytes')
+    ] });
+    expect(report.nativeRoleObservations).toEqual([]);
+    expect(report.actualDirection).toBe('unknown');
+    expect(JSON.stringify(report)).not.toMatch(/192\.168|opaque|Gbits|768 KBytes/);
+  });
 
   it('exposes no native free-form content, local IP, false speed or confirmed reverse claim', () => {
     const privateAddress = ['192', '168', '1', '2'].join('.');
@@ -18,8 +90,9 @@ describe('iPerf3 Stage A projection', () => {
       'one sender', 'one receiver', 'iperf Done!', '\u001b[31m hostile owner: admin'];
     const report = iperf3Report({ ...input, messages, termination: 'completed' });
     expect(report).toMatchObject({ status: 'completed', termination: 'completed',
-      requestedDirection: 'reverse', throughput: 'unknown',
-      observedNativeMarkers: ['sender', 'receiver', 'iperf Done!'] });
+      requestedDirection: 'reverse', throughput: 'unknown', actualDirection: 'unknown',
+      nativeTransfer: 'unknown', nativeInterval: 'unknown', polls: null, terminalShape: 'unknown',
+      observedNativeMarkers: ['iperf Done!'], nativeRoleObservations: [] });
     const output = JSON.stringify(report);
     for (const secret of [privateAddress, peerAddress, 'secret', 'admin', 'Mbps', 'download']) {
       expect(output).not.toContain(secret);
@@ -32,6 +105,21 @@ describe('iPerf3 Stage A projection', () => {
       reason: 'component-not-installed', termination: 'not-started', throughput: 'unknown' });
     expect(iperf3Report({ ...input, termination: 'timeout', messages: ['sender'] }))
       .toMatchObject({ status: 'timeout', termination: 'timeout', throughput: 'unknown' });
+  });
+
+  it('preserves only bounded poll and terminal facts from continued chunks', () => {
+    const report = iperf3Report({ ...input, termination: 'completed', polls: 2,
+      terminalShape: 'empty-object', messages: [
+        `sender 1.62 MBytes 0.00-2.00 sec 6.81 Mbits/sec ${['192', '168', '1', '3'].join('.')}`,
+        'receiver 1.25 MBytes 0.00-2.17 sec 4.84 Mbits/sec',
+        'iperf Done!'
+      ] });
+    expect(report).toMatchObject({ polls: 2, terminalShape: 'empty-object',
+      nativeTransfer: 'unknown', nativeInterval: 'unknown', actualDirection: 'unknown',
+      throughput: 'unknown' });
+    expect(JSON.stringify(report)).not.toMatch(/192\.168|MBytes|Mbits|6\.81|4\.84/);
+    expect(budgetIperf3Report(report, 400)).toMatchObject({ status: 'completed',
+      polls: 2, terminalShape: 'empty-object', nativeTransfer: 'unknown', truncated: true });
   });
 
   it('keeps the typed absence envelope under the smallest configured output cap', () => {
