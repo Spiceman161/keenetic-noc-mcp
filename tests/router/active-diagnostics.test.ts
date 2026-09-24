@@ -1,10 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import {
   ActiveDiagnosticCoordinator,
+  iperf3Command,
   pingCommand,
   tracerouteCommand,
   validateDiagnosticTarget
 } from '../../src/router/active-diagnostics.js';
+
+describe('iPerf3 Stage A command', () => {
+  it('builds the observed byte-limited upload request and only a candidate reverse marker', () => {
+    expect(iperf3Command('Example.TEST', 5201, 'upload', 1_048_576, 'Wireguard0')).toEqual({
+      path: 'tools/iperf3', body: { host: 'example.test', ipv4: true, tcp: true,
+        port: 5201, bytes: 1_048_576, 'source-interface': 'Wireguard0' }
+    });
+    expect(iperf3Command('192.0.2.1', 5210, 'reverse', 20_971_520)).toEqual({
+      path: 'tools/iperf3', body: { host: '192.0.2.1', ipv4: true, tcp: true,
+        port: 5210, bytes: 20_971_520, reverse: true }
+    });
+  });
+
+  it('rejects invalid targets, selectors and limits without fallback', () => {
+    for (const host of ['2001:db8::1', '999.999.999.999', 'user@example.test',
+      'https://example.test', 'example.test:5201']) {
+      expect(() => iperf3Command(host, 5201, 'upload', 1_048_576)).toThrow();
+    }
+    for (const port of [0, 5200, 5211, 5201.5]) {
+      expect(() => iperf3Command('example.test', port, 'upload', 1_048_576)).toThrow();
+    }
+    for (const limit of [0, 1_048_575, 20_971_521, 1_048_576.5]) {
+      expect(() => iperf3Command('example.test', 5201, 'upload', limit)).toThrow();
+    }
+    expect(() => iperf3Command('example.test', 5201, 'reverse', 1_048_576, 'Wireguard0;bad'))
+      .toThrow(/source_interface/);
+    expect(() => iperf3Command('example.test', 5201, 'download' as 'reverse', 1_048_576))
+      .toThrow(/direction/);
+  });
+});
 
 describe('active diagnostic target validation', () => {
   it.each([['example.test', 'example.test'], ['Example.TEST', 'example.test'], ['gateway', 'gateway'],

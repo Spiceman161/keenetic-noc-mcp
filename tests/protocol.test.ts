@@ -16,6 +16,7 @@ const READ_TOOLS = [
   'diagnose_device',
   'diagnose_wifi',
   'get_wifi_client_health',
+  'iperf3',
   'ping',
   'traceroute',
   'get_config_state',
@@ -443,6 +444,7 @@ describe('assembled server over MCP', () => {
     const { tools } = await client.listTools();
     const ping = tools.find(item => item.name === 'ping');
     const trace = tools.find(item => item.name === 'traceroute');
+    const iperf3 = tools.find(item => item.name === 'iperf3');
     expect(ping?.inputSchema.required).toContain('target');
     expect((ping?.inputSchema.properties as any)?.count).toMatchObject({ default: 3,
       minimum: 1, maximum: 5 });
@@ -457,7 +459,17 @@ describe('assembled server over MCP', () => {
     expect(trace?.inputSchema.properties).not.toHaveProperty('source_interface');
     expect((trace?.inputSchema.properties as any)?.max_hops).toMatchObject({ default: 15,
       minimum: 1, maximum: 30 });
-    for (const tool of [ping, trace]) {
+    expect(iperf3?.inputSchema.required).toEqual(expect.arrayContaining([
+      'server_host', 'server_port', 'direction', 'byte_limit_bytes', 'timeout_ms'
+    ]));
+    expect(iperf3?.inputSchema.required).not.toContain('source_interface');
+    expect(iperf3?.inputSchema.properties).toMatchObject({
+      server_port: { minimum: 5201, maximum: 5210 },
+      byte_limit_bytes: { minimum: 1_048_576, maximum: 20_971_520 },
+      timeout_ms: { minimum: 1_000, maximum: 30_000 }
+    });
+    expect(iperf3?.inputSchema.properties).not.toHaveProperty('body');
+    for (const tool of [ping, trace, iperf3]) {
       expect(tool?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false,
         idempotentHint: false, openWorldHint: true });
     }
@@ -466,6 +478,16 @@ describe('assembled server over MCP', () => {
     } });
     expect(mismatch.isError).toBe(true);
     expect(JSON.stringify(mismatch.content)).toMatch(/IPv4/i);
+    const missingLimit = await client.callTool({ name: 'iperf3', arguments: {
+      server_host: 'example.test', server_port: 5201, direction: 'upload', timeout_ms: 5_000
+    } });
+    expect(missingLimit.isError).toBe(true);
+    const absent = await client.callTool({ name: 'iperf3', arguments: {
+      server_host: 'example.test', server_port: 5201, direction: 'upload',
+      byte_limit_bytes: 1_048_576, timeout_ms: 5_000
+    } });
+    expect(absent.isError).toBe(true);
+    expect(JSON.stringify(absent.content)).not.toContain('component-not-installed');
   });
 });
 
@@ -482,6 +504,16 @@ describe('read-only mode', () => {
     for (const tool of tools) {
       expect(tool.annotations?.readOnlyHint, `${tool.name} must be read-only`).toBe(true);
     }
+  });
+
+  it('keeps raw POST refused even when typed iperf3 is advertised', async () => {
+    const client = await connectedClient(true);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('iperf3');
+    const result = await client.callTool({ name: 'rci_call', arguments: {
+      method: 'POST', body: { show: { version: {} } }
+    } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/read-only/i);
   });
 });
 

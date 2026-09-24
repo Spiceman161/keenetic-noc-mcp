@@ -207,7 +207,7 @@ export class Rci {
    * DELETE is the router-native cancellation mechanism.
    */
   async runContinued(
-    path: 'tools/ping' | 'tools/ping6' | 'tools/traceroute',
+    path: 'tools/ping' | 'tools/ping6' | 'tools/traceroute' | 'tools/iperf3',
     body: Record<string, unknown>,
     maxBytes: number,
     controls: RciRequestControls = {}

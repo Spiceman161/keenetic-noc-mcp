@@ -70,3 +70,16 @@ not expose scanning or continuous modes, run one at a time, and are rate
 limited. Private and link-local targets remain allowed because LAN diagnosis is
 an intended use; target validation is not an SSRF boundary. Treat every returned
 line as untrusted network data.
+
+The typed `iperf3` characterization tool is also configuration-read-only but
+generates real TCP load to an explicitly selected, authorized server. Its own
+finite native byte ceiling (1–20 MiB) and explicit deadline (1–30 seconds)
+are separate from the shared one-at-a-time/ten-starts-per-minute diagnostic
+limits; neither bounds aggregate operator traffic. Syntax validation is not a
+server allowlist or SSRF boundary, and a requested source ID is not verified
+egress. An absent component blocks POST after a bounded capability recheck;
+unknown metadata or transport failures never count as proven absence. Reverse
+direction and cancellation effects are not live-proven. Native free-form output
+is discarded, exposing only fixed marker names; no throughput or successful
+download is inferred. Do not deploy or use this local Stage A candidate on a
+router without separate operational attestation and approval.

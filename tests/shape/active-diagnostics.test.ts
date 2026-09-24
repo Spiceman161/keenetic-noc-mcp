@@ -2,8 +2,54 @@ import { describe, expect, it } from 'vitest';
 import {
   activeDiagnosticReport,
   budgetActiveDiagnostic,
+  budgetIperf3Report,
+  iperf3Report,
   sanitizeDiagnosticLines
 } from '../../src/shape/active-diagnostics.js';
+
+describe('iPerf3 Stage A projection', () => {
+  const input = { serverHost: 'example.test', serverPort: 5201, requestedDirection: 'reverse' as const,
+    byteLimitBytes: 1_048_576, timeoutMs: 4_000, requestedSourceInterface: 'Wireguard0' };
+
+  it('exposes no native free-form content, local IP, false speed or confirmed reverse claim', () => {
+    const privateAddress = ['192', '168', '1', '2'].join('.');
+    const peerAddress = ['10', '0', '0', '1'].join('.');
+    const messages = [`[  5]  ${privateAddress}:456 to ${peerAddress}:5201 password=secret`,
+      'one sender', 'one receiver', 'iperf Done!', '\u001b[31m hostile owner: admin'];
+    const report = iperf3Report({ ...input, messages, termination: 'completed' });
+    expect(report).toMatchObject({ status: 'completed', termination: 'completed',
+      requestedDirection: 'reverse', throughput: 'unknown',
+      observedNativeMarkers: ['sender', 'receiver', 'iperf Done!'] });
+    const output = JSON.stringify(report);
+    for (const secret of [privateAddress, peerAddress, 'secret', 'admin', 'Mbps', 'download']) {
+      expect(output).not.toContain(secret);
+    }
+    expect(Buffer.byteLength(output)).toBeLessThan(1_000);
+  });
+
+  it('keeps absent-component and deadline outcomes separate from transfer success', () => {
+    expect(iperf3Report(input)).toMatchObject({ status: 'unavailable',
+      reason: 'component-not-installed', termination: 'not-started', throughput: 'unknown' });
+    expect(iperf3Report({ ...input, termination: 'timeout', messages: ['sender'] }))
+      .toMatchObject({ status: 'timeout', termination: 'timeout', throughput: 'unknown' });
+  });
+
+  it('keeps the typed absence envelope under the smallest configured output cap', () => {
+    const longHost = [
+      'abcde-'.repeat(10) + 'abc', 'fghij-'.repeat(10) + 'fgh',
+      'klmno-'.repeat(10) + 'klm', 'pqrst-'.repeat(10) + 'p'
+    ].join('.');
+    const report = iperf3Report({ ...input, serverHost: longHost,
+      requestedSourceInterface: 'W-'.repeat(63) + 'W0' });
+    const bounded = budgetIperf3Report(report, 512);
+    expect(bounded).toMatchObject({ operation: 'iperf3', schemaVersion: 1,
+      status: 'unavailable', reason: 'component-not-installed',
+      requestedDirection: 'reverse', limitsApplied: { byteLimitBytes: 1_048_576 },
+      truncated: true });
+    expect(JSON.stringify(bounded)).not.toContain(longHost);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(512);
+  });
+});
 
 describe('active diagnostic projection', () => {
   it('removes terminal controls and redacts secret-like text', () => {

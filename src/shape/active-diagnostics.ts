@@ -1,5 +1,72 @@
 import { capText } from './budget.js';
 import { redact, redactText } from '../security/redact.js';
+import type { Iperf3Direction } from '../router/active-diagnostics.js';
+
+export interface Iperf3Report {
+  schemaVersion: 1;
+  operation: 'iperf3';
+  serverHost: string;
+  serverPort: number;
+  requestedDirection: Iperf3Direction;
+  requestedSourceInterface?: string;
+  limitsApplied: { byteLimitBytes: number; timeoutMs: number };
+  status: 'unavailable' | 'completed' | 'timeout';
+  termination: 'not-started' | 'completed' | 'timeout';
+  reason?: 'component-not-installed';
+  throughput: 'unknown';
+  observedNativeMarkers: Array<'sender' | 'receiver' | 'iperf Done!'>;
+  untrustedRouterData: true;
+}
+
+export function iperf3Report(input: {
+  serverHost: string;
+  serverPort: number;
+  requestedDirection: Iperf3Direction;
+  requestedSourceInterface?: string;
+  byteLimitBytes: number;
+  timeoutMs: number;
+  termination?: 'completed' | 'timeout';
+  messages?: readonly string[];
+}): Iperf3Report {
+  const messages = input.messages ?? [];
+  const observedNativeMarkers: Iperf3Report['observedNativeMarkers'] = [];
+  if (messages.some(line => /\bsender\s*$/i.test(line))) observedNativeMarkers.push('sender');
+  if (messages.some(line => /\breceiver\s*$/i.test(line))) observedNativeMarkers.push('receiver');
+  if (messages.some(line => /^\s*iperf Done!\s*$/i.test(line))) observedNativeMarkers.push('iperf Done!');
+  return {
+    schemaVersion: 1,
+    operation: 'iperf3',
+    serverHost: input.serverHost,
+    serverPort: input.serverPort,
+    requestedDirection: input.requestedDirection,
+    ...(input.requestedSourceInterface === undefined ? {} : {
+      requestedSourceInterface: input.requestedSourceInterface
+    }),
+    limitsApplied: { byteLimitBytes: input.byteLimitBytes, timeoutMs: input.timeoutMs },
+    status: input.termination ?? 'unavailable',
+    termination: input.termination ?? 'not-started',
+    ...(input.termination === undefined ? { reason: 'component-not-installed' as const } : {}),
+    throughput: 'unknown',
+    observedNativeMarkers,
+    untrustedRouterData: true
+  };
+}
+
+export function budgetIperf3Report(report: Iperf3Report, maxBytes: number): object {
+  if (Buffer.byteLength(JSON.stringify(redact(report)), 'utf8') <= maxBytes) return report;
+  return {
+    schemaVersion: report.schemaVersion,
+    operation: report.operation,
+    status: report.status,
+    termination: report.termination,
+    ...(report.reason === undefined ? {} : { reason: report.reason }),
+    requestedDirection: report.requestedDirection,
+    limitsApplied: report.limitsApplied,
+    throughput: report.throughput,
+    untrustedRouterData: true,
+    truncated: true
+  };
+}
 
 export interface ActiveDiagnosticReport {
   schemaVersion: 1;

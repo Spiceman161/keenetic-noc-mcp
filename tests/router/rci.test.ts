@@ -126,6 +126,87 @@ describe('Rci.post', () => {
 });
 
 describe('Rci.runContinued', () => {
+  const iperfBody = { host: 'example.test', port: 5201, ipv4: true, tcp: true,
+    bytes: 1_048_576, 'source-interface': 'Wireguard0' };
+
+  it('uses only the exact iPerf3 path and observed message/empty terminal shapes', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['synthetic sender'], continued: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['synthetic receiver'], continued: true })))
+      .mockResolvedValueOnce(new Response('{}'));
+    const result = await new Rci({ request }).runContinued('tools/iperf3', iperfBody,
+      64_000, { timeoutMs: 5_000 });
+    expect(result).toMatchObject({ termination: 'completed', polls: 2,
+      messages: ['synthetic sender', 'synthetic receiver'] });
+    expect(request.mock.calls.map(call => call.slice(0, 2))).toEqual([
+      ['POST', '/rci/tools/iperf3'], ['GET', '/rci/tools/iperf3'],
+      ['GET', '/rci/tools/iperf3']
+    ]);
+    expect(request.mock.calls[0]?.[2]).toEqual(iperfBody);
+  });
+
+  it('cancels the exact path on malformed terminal and never replays POST', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['start'], continued: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ terminal: 'unproven' })))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000))
+      .rejects.toMatchObject({ code: 'unexpected-response' });
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'DELETE']);
+    expect(request.mock.calls[2]?.[1]).toBe('/rci/tools/iperf3');
+  });
+
+  it.each(['{}', '{"continued":false}', 'bad'])('fails closed when DELETE is not {} (%s)', async ack => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['start'], continued: true })))
+      .mockRejectedValueOnce(new Error('connection lost'))
+      .mockResolvedValueOnce(new Response(ack));
+    const pending = new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000);
+    if (ack === '{}') {
+      await expect(pending).rejects.toThrow('connection lost');
+    } else {
+      await expect(pending).rejects.toMatchObject({ name: 'ActiveDiagnosticUncertainError' });
+    }
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'GET', 'DELETE']);
+  });
+
+  it('does not retry an ambiguous iPerf3 POST and attempts native DELETE', async () => {
+    const request = vi.fn()
+      .mockRejectedValueOnce(new Error('unknown POST outcome'))
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody, 64_000))
+      .rejects.toThrow('unknown POST outcome');
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
+  });
+
+  it('times out a continued iPerf3 job and sends native DELETE without a repeat start', async () => {
+    vi.useFakeTimers();
+    try {
+      const request = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['start'], continued: true })))
+        .mockResolvedValueOnce(new Response('{}'));
+      const pending = new Rci({ request, effectiveTimeoutMs: () => 100 })
+        .runContinued('tools/iperf3', iperfBody, 64_000, { timeoutMs: 5_000 });
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(pending).resolves.toMatchObject({ termination: 'timeout', effectiveTimeoutMs: 100 });
+      expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts and cleans up after MCP cancellation without retry', async () => {
+    const controller = new AbortController();
+    const request = vi.fn()
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        return new Response(JSON.stringify({ message: ['start'], continued: true }));
+      })
+      .mockResolvedValueOnce(new Response('{}'));
+    await expect(new Rci({ request }).runContinued('tools/iperf3', iperfBody,
+      64_000, { signal: controller.signal })).rejects.toThrow();
+    expect(request.mock.calls.map(call => call[0])).toEqual(['POST', 'DELETE']);
+  });
   it('starts once, polls bounded chunks, and returns accumulated messages', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ message: ['started'], continued: true })))

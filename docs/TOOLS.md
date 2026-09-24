@@ -80,16 +80,37 @@ to 15 hops and a 15-second deadline, with hard ceilings of 30 hops and 30
 seconds. Protocol, port, traceroute source interface, packet size, fan-out,
 ranges, and continuous operation are not exposed.
 
-Both tools are configuration-read-only but actively send packets, so they are
+`iperf3` is a provisional typed Stage A characterization operation, not a
+throughput verdict. It requires an explicitly authorized ASCII hostname or IPv4
+server, port 5201–5210, `direction` (`upload` or `reverse`), native
+`byte_limit_bytes` of 1048576–20971520, and `timeout_ms` of 1000–30000.
+Optional `source_interface` requests an exact interface ID; it does not prove
+actual egress. No server is selected or retried automatically. The component
+must be present before any active start; confirmed absence returns
+`status: "unavailable", reason: "component-not-installed"` without iPerf3
+traffic. The standard component can be installed manually through KeeneticOS
+component options; never install it through this tool. Completion indicates
+only the native job lifecycle; `throughput: "unknown"` remains true even if
+untrusted native sender/receiver markers are observed. `reverse` requests the
+candidate native marker, not a verified download. Native reverse, result units,
+and cancellation effects remain uncharacterized. Never benchmark a public
+server without authorization or use Stage A for tunnel-health claims.
+
+These tools are configuration-read-only but actively send packets, so they are
 available under `--read-only` and carry `openWorldHint=true`. Only one active
 diagnostic runs at a time and at most ten can start in a rolling minute. MCP
 cancellation triggers transport abort and the router-native DELETE cancel.
-Returned router text is marked untrusted, stripped of control sequences,
-redacted, and bounded. The reported `timeoutMs` is the smaller of `timeout_ms`
-and the operator's `KEENETIC_TIMEOUT_MS`. Outcomes distinguish `completed`,
+Ping/traceroute router text is marked untrusted, stripped of control sequences,
+redacted, and bounded; iPerf3 exposes only fixed untrusted marker names, never
+raw connection lines or local IPs. A failed/unknown DELETE blocks further active
+starts; a `{}` acknowledgement is not proof of the router-side effect. The
+reported `timeoutMs` is the smaller of `timeout_ms`
+and the operator's `KEENETIC_TIMEOUT_MS`. Ping/traceroute outcomes distinguish `completed`,
 `partial`, `timeout`, `unreachable`, and `not-found`; a deadline preserves any
-lines already received. `dns_lookup` remains unavailable because no exact
-finite RCI command has been verified.
+lines already received. When a strict response budget truncates an iPerf3 report,
+the status/reason/direction/limits envelope remains while server/source names
+are omitted and `truncated: true` is set. `dns_lookup` remains unavailable
+because no exact finite RCI command has been verified.
 
 ## DNS diagnosis
 

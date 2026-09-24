@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 import { ActiveDiagnosticUncertainError, ResourceError, ValidationError } from './errors.js';
 
 export type PingFamily = 'ipv4' | 'ipv6';
+export type Iperf3Direction = 'upload' | 'reverse';
 
 const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
@@ -48,17 +49,42 @@ export function pingCommand(target: string, family: PingFamily, count: number, s
     if (family !== 'ipv4') {
       throw new ValidationError('source_interface is supported only for IPv4 ping.');
     }
-    if (typeof sourceInterface !== 'string' || sourceInterface.length > 128 ||
-        !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)?$/.test(sourceInterface) ||
-        sourceInterface.includes('..')) {
-      throw new ValidationError('source_interface must be an exact, safe interface ID from list_interfaces.');
-    }
+    validateSourceInterface(sourceInterface);
   }
   return {
     path: family === 'ipv6' ? 'tools/ping6' : 'tools/ping',
     body: { host: safe, packetsize: 84, count,
       ...(sourceInterface === undefined ? {} : { 'source-interface': sourceInterface }) }
   };
+}
+
+function validateSourceInterface(sourceInterface: string): void {
+  if (typeof sourceInterface !== 'string' || sourceInterface.length > 128 ||
+      !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)?$/.test(sourceInterface) ||
+      sourceInterface.includes('..')) {
+    throw new ValidationError('source_interface must be an exact, safe interface ID from list_interfaces.');
+  }
+}
+
+export function iperf3Command(serverHost: string, serverPort: number, direction: Iperf3Direction,
+  byteLimitBytes: number, sourceInterface?: string): { path: 'tools/iperf3'; body: Record<string, unknown> } {
+  const host = validateDiagnosticTarget(serverHost);
+  if (isIP(host) === 6 || (isIP(host) === 0 && /^\d+(?:\.\d+){3}$/.test(host))) {
+    throw new ValidationError('iperf3 requires an ASCII hostname or canonical IPv4 address.');
+  }
+  if (!Number.isInteger(serverPort) || serverPort < 5201 || serverPort > 5210) {
+    throw new ValidationError('server_port must be an integer from 5201 through 5210.');
+  }
+  if (direction !== 'upload' && direction !== 'reverse') {
+    throw new ValidationError('direction must be upload or reverse.');
+  }
+  if (!Number.isInteger(byteLimitBytes) || byteLimitBytes < 1_048_576 || byteLimitBytes > 20_971_520) {
+    throw new ValidationError('byte_limit_bytes must be an integer from 1048576 through 20971520.');
+  }
+  if (sourceInterface !== undefined) validateSourceInterface(sourceInterface);
+  return { path: 'tools/iperf3', body: { host, ipv4: true, tcp: true, port: serverPort,
+    bytes: byteLimitBytes, ...(sourceInterface === undefined ? {} : { 'source-interface': sourceInterface }),
+    ...(direction === 'reverse' ? { reverse: true } : {}) } };
 }
 
 export function tracerouteCommand(target: string, maxHops: number): {
