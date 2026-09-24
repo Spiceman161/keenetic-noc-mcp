@@ -24,18 +24,33 @@ description: Inspect exactly classified Keenetic VPN interface observations and 
 
 ## Bounded path characterization
 
-Start with the passive VPN/WireGuard observations above; if packet flow needs
-testing, use a small IPv4 `ping` with `source_interface` before considering
-throughput. Only for a specific diagnostic question and a user-authorized
-server and load, consider the provisional typed `iperf3` Stage A operation:
-it can generate active TCP load with a finite native byte cap (1-20 MiB) and a
-local deadline (1-30 seconds). A requested `source_interface` is not proof of
-actual egress. If `component-not-installed` is reported, the user may manually
-install the standard iPerf3 component in Keenetic Web UI (`General System
-Settings -> KeeneticOS Update and Component Options -> Component options ->
-iPerf3`), then recheck capability; never auto-install or bypass the gate.
-The tested runtime confirms reverse mode only from an exact native marker and
-exposes separate sender/receiver summary units; DELETE's router-side effect
-remains uncharacterized. Do not infer a single speed or tunnel/Internet health
-from a result, ping, or handshake. Do not activate or use this local candidate
-in production without separately authorized operational activation.
+Start with the passive VPN/WireGuard observations above. To check whether
+traffic passes through an interface, prefer a small IPv4 `ping` with
+`source_interface`; do not use `iperf3` merely to prove reachability when ping
+is sufficient. Use `iperf3` only when throughput/data-plane characterization
+is requested or materially useful, and only with an explicit server. Prefer a
+user-controlled server. Reuse a server the user explicitly supplied or approved
+earlier in this conversation when the test still matches that approval; if none
+is known, ask for host:port. Use a public third-party server only with the
+user's explicit approval for that active test. Never discover servers, keep a
+public-server list, hard-code one, or silently substitute a server or port.
+The current `server_port` range is 5201–5210; report an unsupported port.
+
+Keep native `byte_limit_bytes` within 1–20 MiB. `timeout_ms` is a local hard
+deadline of at most 30 seconds, not a requested test duration. A continuous
+two-minute test is unavailable: offer one bounded byte-limited test instead;
+never split a longer test into multiple calls to bypass per-call limits. Use
+the direction requested; do not run upload and reverse automatically together.
+If a throughput question leaves direction unspecified, start with one bounded
+upload. Run reverse only for requested download/bidirectional characterization
+or when specifically needed and its additional active load fits the user's
+intent. `source_interface` requests native binding, not proof of physical
+egress. Keep sender and receiver as separate native observations; never select
+the larger value, average them, or claim a single true speed. Results apply
+only to this server, path and time: do not infer WireGuard health, maximum
+tunnel capacity, Internet health, server capacity or bottleneck cause.
+
+If `component-not-installed` is reported, the user may manually install the
+standard iPerf3 component in Keenetic Web UI (`General System Settings ->
+KeeneticOS Update and Component Options -> Component options -> iPerf3`), then
+recheck capability; never auto-install or bypass the component gate.
