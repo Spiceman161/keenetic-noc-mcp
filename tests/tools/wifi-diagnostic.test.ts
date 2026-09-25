@@ -90,6 +90,114 @@ describe('get_mesh_status', () => {
     expect(JSON.stringify(result)).not.toMatch(/02:00:00|secret-|WifiMaster|GigabitEthernet|Vlan1/);
   });
 
+  it('projects bounded wireless and wired member details from the existing reads only', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [
+      { ...rows[0], model: 'Buddy 5 (KN-3311)', hw_id: 'KN-3311', 'known-host': 'BuddyOffice',
+        associations: 0, 'fw-release': '5.01.C.5.0-0', fw: '5.1.5',
+        cid: 'cid-wifi-sentinel', license: 'license-wifi-sentinel', fqdn: 'wifi.example.invalid',
+        ip: '192.0.2.21', unexpected: { opaque: 'opaque-wifi-sentinel' },
+        backhaul: { ...rows[0]!.backhaul, rssi: -55, txrate: 100, ht: 80, mode: 'x',
+          mcs: 4, txss: 2, uptime: 20, cost: 19, speed: '100', duplex: 'full', 'port-label': '0' } },
+      { ...rows[1], model: 'Buddy 5 (KN-3311)', hw_id: 'KN-3311',
+        'known-host': 'BuddyNikola', associations: 3, cid: 'cid-wired-sentinel',
+        license: 'license-wired-sentinel', fqdn: 'wired.example.invalid', ip: '192.0.2.22',
+        unexpected: { opaque: 'opaque-wired-sentinel' }, backhaul: { ...rows[1]!.backhaul,
+          cost: 19, speed: '100', duplex: 'full', 'port-label': '0' } },
+      { ...rows[2], model: 'Buddy 5 (KN-3311)', hw_id: 'KN-3311', 'known-host': 'BuddySpare',
+        cid: 'cid-offline-sentinel', license: 'license-offline-sentinel',
+        fqdn: 'offline.example.invalid', ip: '192.0.2.23',
+        unexpected: { opaque: 'opaque-offline-sentinel' } }
+    ], 'show/interface/Bridge0': { mac: controllerMac }, 'show/version': { model: 'KN-4567' } } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/version']);
+    expect(result.members).toMatchObject([
+      { model: 'Buddy 5 (KN-3311)', hwId: 'KN-3311', displayName: 'BuddyOffice',
+        associationCount: 0, firmware: '5.1.5', medium: 'wireless', backhaulDetails: null },
+      { model: 'Buddy 5 (KN-3311)', hwId: 'KN-3311', displayName: 'BuddyNikola',
+        associationCount: 3, medium: 'wired', backhaulDetails: { duplex: 'full' } },
+      { model: 'Buddy 5 (KN-3311)', hwId: 'KN-3311', displayName: 'BuddySpare',
+        associationCount: null, firmware: null, authenticated: null,
+        medium: 'unknown', backhaulDetails: null, backhaul: 'not-observed' }
+    ]);
+    const output = JSON.stringify(result);
+    for (const field of ['port-label', 'cost', 'speed', 'rssi', 'txrate', 'ht', 'mcs', 'txss', 'uptime',
+      'cid', 'license', 'fqdn', 'ip', 'unexpected', 'ssid']) {
+      expect(output).not.toContain(`"${field}":`);
+    }
+    for (const value of [firstMac, secondMac, '02:00:00:00:00:04', 'WifiMaster0/WifiStation0',
+      'GigabitEthernet0/Vlan1', 'cid-wifi-sentinel', 'license-wifi-sentinel',
+      'wifi.example.invalid', '192.0.2.21', 'opaque-wifi-sentinel', 'cid-wired-sentinel',
+      'license-wired-sentinel', 'wired.example.invalid', '192.0.2.22', 'opaque-wired-sentinel',
+      'cid-offline-sentinel', 'license-offline-sentinel', 'offline.example.invalid',
+      '192.0.2.23', 'opaque-offline-sentinel', 'secret-one', 'secret-ssid', 'secret-license']) {
+      expect(output).not.toContain(value);
+    }
+  });
+
+  it('rejects an unseparated MAC as a display label without losing model or hardware ID', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [{ ...rows[0], model: 'Buddy 5 (KN-3311)',
+      hw_id: 'KN-3311', 'known-host': '020000000001' }] } });
+    const result = await fixture.handlers['get_mesh_status']!({});
+    const output = result.content.map(part => part.text).join('');
+    expect(JSON.parse(output).members[0]).toMatchObject({ model: 'Buddy 5 (KN-3311)',
+      hwId: 'KN-3311', displayName: null });
+    expect(output).not.toContain('020000000001');
+  });
+
+  it('retains typed association observations on stale members without stale link details', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [{ ...rows[1], associations: 7,
+      'known-host': 'BuddyOffice', rci: { errors: 1 }, backhaul: { ...rows[1]!.backhaul, duplex: 'full' } }] } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(result.members[0]).toMatchObject({ pollingError: true, associationCount: 7,
+      displayName: 'BuddyOffice', firmware: null, medium: 'unknown', authenticated: null,
+      backhaulDetails: null, parentKind: 'unknown' });
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it.each([null, -1, 0.1, 100_001, '0', Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER])(
+    'ignores invalid association count %s without discarding the member', async associations => {
+      const fixture = setup({ values: { 'show/mws/member': [{ ...rows[2], associations }] } });
+      expect(payload(await fixture.handlers['get_mesh_status']!({})).members[0].associationCount).toBeNull();
+    });
+
+  it.each(['token=payload', 'password secret', 'a\u001b[31mB', 'https://test.invalid/x',
+    'host.example', '192.0.2.1', '02:00:00:00:00:01', '02-00-00-00-00-01',
+    'sk-1234567890abcdef', 'x'.repeat(30), 'x'.repeat(49),
+    'tokenPayload', 'owner\u202eadmin', { name: 'BuddyOffice' }])(
+    'rejects unsafe known-host %s without exposing extra fields', async name => {
+      const fixture = setup({ values: { 'show/mws/member': [{ ...rows[2], 'known-host': name,
+        hw_id: 'KN-1234-02:00:00:00:00:01', model: 'secret (KN-3311)', associations: {},
+        backhaul: { duplex: { secret: 'secret-private' } }, cid: 'private-cid',
+        license: 'private-license', fqdn: 'private.example', ip: '192.0.2.1' }] } });
+      const output = payload(await fixture.handlers['get_mesh_status']!({}));
+      expect(output.members[0]).toMatchObject({ hwId: null, model: null, displayName: null,
+        associationCount: null, backhaulDetails: null });
+      expect(JSON.stringify(output)).not.toMatch(/private-|192\.0\.2\.1|host\.example|02:00:00|tokenPayload/);
+    });
+
+  it('withholds malformed optional duplex while retaining a valid current wired member', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [{ ...rows[1],
+      hw_id: 'KN-3311', 'known-host': ' BuddyOffice ', associations: 100_000,
+      backhaul: { ...rows[1]!.backhaul, duplex: { secret: 'hidden' },
+        speed: '100', 'port-label': 'private-port' } }] } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(result.members[0]).toMatchObject({ medium: 'wired', backhaul: 'observed',
+      displayName: 'BuddyOffice', hwId: 'KN-3311', associationCount: 100_000,
+      backhaulDetails: { duplex: null } });
+    expect(JSON.stringify(result)).not.toMatch(/private-port|hidden|"speed"/);
+  });
+
+  it('bounds the final serialized redacted member output under a tight cap', async () => {
+    const fixture = setup({ values: { 'show/mws/member': Array.from({ length: 12 }, (_, index) => ({
+      ...rows[2], 'known-host': `Buddy${index}LongDisplayLabel`, hw_id: 'KN-3311', associations: 0
+    })) }, maxBytes: 440 });
+    const result = await fixture.handlers['get_mesh_status']!({});
+    const text = result.content.map(part => part.text).join('');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(440);
+    expect(JSON.parse(text)).toMatchObject({ status: 'observed', configuredMembers: 12,
+      shown: 0, truncated: true, members: [], reason: null });
+  });
+
   it('suppresses stale polling backhaul, firmware and controller derivation', async () => {
     const fixture = setup({ values: { 'show/mws/member': [{ ...rows[0], rci: { errors: 1 } }] } });
     expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({ members: [{

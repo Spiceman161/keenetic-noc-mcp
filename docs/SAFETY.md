@@ -10,6 +10,10 @@ in v0.1, plus raw POST only when explicitly enabled.
 `get_mesh_status` is a bounded passive read of operational Mesh membership.
 It never reads Mesh configuration, scans, persists state, or emits router MACs,
 IP addresses, SSIDs, hostnames, secrets, or raw interface names. Optional
+`known-host` display labels are strictly sanitized and are not identity keys;
+top-level association counts are nullable snapshot observations, not unique
+people or evidence of a live link. Only exact current wired `full` duplex is
+projected; unknown telemetry, cost, speed and port labels are withheld. Optional
 bounded local bridge/version reads occur only for controller correlation and
 cannot erase valid membership on failure. An empty array, missing component,
 unsupported path, or error is not proof that no members are configured.

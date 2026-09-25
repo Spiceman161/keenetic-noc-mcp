@@ -153,12 +153,16 @@ export interface MeshMember {
   ref: string;
   role: 'extender' | 'unknown';
   model: string | null;
+  hwId: string | null;
+  displayName: string | null;
+  associationCount: number | null;
   firmware: string | null;
   parentKind: 'controller' | 'extender' | 'unknown';
   parentRef: string | null;
   backhaul: 'observed' | 'not-observed' | 'unknown';
   medium: 'wireless' | 'wired' | 'unknown';
   authenticated: boolean | null;
+  backhaulDetails: { duplex: 'full' | null } | null;
   pollingError: boolean | null;
 }
 
@@ -184,8 +188,23 @@ function meshIdentity(value: unknown): string | null {
   return /^[0-9a-f]{12}$/.test(normalized) ? normalized : null;
 }
 
+function meshSafeLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const label = value.trim();
+  return label.length > 0 && [...label].length <= 48 &&
+    /^[\p{L}\p{N} _'()\-]+$/u.test(label) &&
+    !/(?:password|passwd|passphrase|token|secret|private|credential|license|bearer|authorization|psk|key|cid)/i.test(label) &&
+    !/^[0-9a-f]{12}$/i.test(label) &&
+    !/(?:[0-9a-f]{2}-){5}[0-9a-f]{2}/i.test(label) &&
+    !/(?:sk-|pk-|ghp_|gho_|xoxb-|AKIA[0-9A-Z]{16})/i.test(label) &&
+    !/[\p{L}\p{N}]{20}/u.test(label)
+    ? label : null;
+}
+
 function meshModel(value: unknown): string | null {
-  return typeof value === 'string' && /^KN-\d{4}$/.test(value) ? value : null;
+  const label = meshSafeLabel(value);
+  return label !== null && (/^KN-\d{4}$/.test(label) ||
+    /^[\p{L}][\p{L}\p{N} -]{0,34} \(KN-\d{4}\)$/u.test(label)) ? label : null;
 }
 
 function meshFirmware(value: unknown): string | null {
@@ -263,7 +282,11 @@ export function projectMeshMembers(
       ref: `member-${index + 1}`,
       role: row['mode'] === 'extender' && row['hw_type'] === 'extender' ? 'extender' : 'unknown',
       model: meshModel(row['model']),
-      firmware: current ? meshFirmware(row['fw-release'] ?? row['fw']) : null,
+      hwId: typeof row['hw_id'] === 'string' && /^KN-\d{4}$/.test(row['hw_id']) ? row['hw_id'] : null,
+      displayName: meshSafeLabel(row['known-host']),
+      associationCount: typeof row['associations'] === 'number' && Number.isSafeInteger(row['associations']) &&
+        row['associations'] >= 0 && row['associations'] <= 100_000 ? row['associations'] : null,
+      firmware: current ? meshFirmware(row['fw-release']) ?? meshFirmware(row['fw']) : null,
       parentKind: parent.kind,
       parentRef: parent.kind === 'controller' && controllerDerived && parent.identity === localIdentity
         ? 'controller' : parent.kind === 'extender' && matches.length === 1 ? `member-${matches[0]! + 1}` : null,
@@ -271,6 +294,8 @@ export function projectMeshMembers(
         row['fw-release'] === undefined && row['rci'] === undefined ? 'not-observed' : 'unknown',
       medium: current ? medium : 'unknown',
       authenticated: current && typeof backhaul?.['authenticated'] === 'boolean' ? backhaul['authenticated'] as boolean : null,
+      backhaulDetails: current && medium === 'wired'
+        ? { duplex: backhaul?.['duplex'] === 'full' ? 'full' : null } : null,
       pollingError
     };
   });

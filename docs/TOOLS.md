@@ -200,6 +200,14 @@ client totals and signal buckets, but never client MACs, names, SSIDs or BSSIDs.
 Exact `{}` observes zero configured members; empty `[]`, unsupported paths and
 malformed responses do not establish absence. Member arrays provide response-local
 extender references, observed uplink medium and snapshot backhaul evidence.
+Members also expose bounded display model and hardware code (`KN-####`), a
+sanitized `known-host` display name (not an identity), and nullable top-level
+association observation counts (not distinct clients or proof of current users).
+Explicit zero is distinct from an absent offline count; a reported count may
+remain present despite a polling error. Current wired backhaul exposes only
+`duplex: full` when reported; speed, cost, port label and wireless link metrics
+are not interpreted or returned. Invalid release firmware falls back to valid
+`fw` only for current members.
 Only a no-backhaul, no-firmware member skeleton without polling telemetry is
 *not observed in this sample*, not a definitive offline verdict; missing
 backhaul with firmware or polling data remains unknown. Polling errors suppress
