@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/server';
+import * as z from 'zod/v4';
 import type { KeeneticClient } from '../../src/router/client.js';
 import { ActiveDiagnosticUncertainError, Iperf3UncertainError, RciError } from '../../src/router/errors.js';
 import { Rci, type ContinuedRciResult } from '../../src/router/rci.js';
@@ -150,6 +151,44 @@ describe('active diagnostic tools', () => {
 
   const iperfArgs = { server_host: 'example.test', server_port: 5201, direction: 'reverse',
     source_interface: 'Wireguard0', byte_limit_bytes: 1_048_576, timeout_ms: 5_000 };
+
+  it('advertises bounded speed characterization and keeps every active input explicit', () => {
+    const { configs } = setup();
+    const config = configs.iperf3;
+    expect(config.title).toMatch(/bounded.*iperf3.*speed/i);
+    expect(config.description).toMatch(/speed test.*router.*user-authorized/i);
+    expect(config.description).toMatch(/active network traffic.*not a universal/i);
+    expect(config.description).toMatch(/sender\/receiver rates.*separate.*completion does not prove/i);
+    expect(config.annotations).toEqual({ readOnlyHint: true, destructiveHint: false,
+      idempotentHint: false, openWorldHint: true });
+
+    const fields = config.inputSchema;
+    expect(fields.server_host.description).toMatch(/user-authorized.*never invent/i);
+    expect(fields.server_port.description).toMatch(/approved.*5201.*5210.*do not substitute/i);
+    expect(fields.direction.description).toMatch(/upload.*router client to server.*reverse.*server to router/i);
+    expect(fields.byte_limit_bytes.description).toMatch(/native per-job byte ceiling.*not an aggregate/i);
+    expect(fields.timeout_ms.description).toMatch(/local deadline.*not a test duration/i);
+    expect(fields.source_interface.description).toMatch(/exact interface ID.*not independently verified egress/i);
+
+    const schema = z.object(fields);
+    expect(schema.safeParse(iperfArgs).success).toBe(true);
+    expect(schema.safeParse({ ...iperfArgs, source_interface: undefined }).success).toBe(true);
+    for (const field of ['server_host', 'server_port', 'direction', 'byte_limit_bytes', 'timeout_ms']) {
+      const withoutField = { ...iperfArgs } as Record<string, unknown>;
+      delete withoutField[field];
+      expect(schema.safeParse(withoutField).success).toBe(false);
+      expect(fields[field]._def.type).not.toBe('default');
+    }
+    expect(schema.safeParse({ ...iperfArgs, server_port: 5200 }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, server_port: 5211 }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, direction: 'download' }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, byte_limit_bytes: 1_048_575 }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, byte_limit_bytes: 20_971_521 }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, timeout_ms: 999 }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, timeout_ms: 30_001 }).success).toBe(false);
+    expect(schema.safeParse({ ...iperfArgs, server_port: 5210, byte_limit_bytes: 20_971_520,
+      timeout_ms: 30_000 }).success).toBe(true);
+  });
 
   it('requires the component then uses the same bounded coordinator and candidate reverse body', async () => {
     const fixture = setup();

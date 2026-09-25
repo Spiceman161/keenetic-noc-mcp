@@ -81,18 +81,22 @@ export function registerActiveDiagnosticTools(server: ToolRegistrar, ctx: ToolCo
   }));
 
   server.registerTool('iperf3', {
-    title: 'Bounded iPerf3 client characterization',
-    description: 'Starts one finite byte-limited TCP iPerf3 client job to an explicitly authorized server. ' +
-      'This emits active network traffic; reverse is reported only when explicitly marked in native output. ' +
-      'Router-side cancellation is not proven; completion does not establish a single throughput verdict.',
+    title: 'Bounded iPerf3 speed/throughput characterization',
+    description: 'For an explicitly requested speed test, starts one bounded TCP iPerf3 job from the router ' +
+      'to an explicitly user-authorized reachable iPerf3 server; no server is chosen automatically. ' +
+      'Requires server host, port, direction, byte limit and deadline. This emits active network traffic, ' +
+      'not a universal Internet or VPN speed verdict. Native sender/receiver rates are separate observations; ' +
+      'completion does not prove throughput, VPN egress or router-side cancellation.',
     inputSchema: {
-      server_host: z.string().min(1).max(253).describe('One explicitly authorized ASCII hostname or IPv4 address.'),
-      server_port: z.number().int().min(5201).max(5210),
+      server_host: z.string().min(1).max(253).describe('Required explicitly user-authorized reachable iPerf3 server ASCII hostname or IPv4 address; never invent a server.'),
+      server_port: z.number().int().min(5201).max(5210).describe('Required port of that approved iPerf3 server (5201–5210); do not substitute another port.'),
       source_interface: z.string().min(1).max(128).optional()
         .describe('Exact interface ID from list_interfaces; requested source only, not independently verified egress.'),
-      direction: z.enum(['upload', 'reverse']),
-      byte_limit_bytes: z.number().int().min(1_048_576).max(20_971_520),
+      direction: z.enum(['upload', 'reverse']).describe('Required: upload sends router client to server; reverse requests server to router. Reverse is confirmed only by the native marker.'),
+      byte_limit_bytes: z.number().int().min(1_048_576).max(20_971_520)
+        .describe('Required native per-job byte ceiling (1–20 MiB), not an aggregate traffic bound.'),
       timeout_ms: z.number().int().min(1_000).max(30_000)
+        .describe('Required local deadline (1–30 seconds), not a test duration or router-side termination guarantee.')
     },
     annotations: ACTIVE
   }, guard(ctx, async ({ server_host, server_port, source_interface, direction,

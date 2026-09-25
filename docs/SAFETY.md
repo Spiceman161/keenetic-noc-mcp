@@ -86,5 +86,7 @@ only strictly parsed final sender/receiver amounts, interval seconds and exact
 are exposed. A singular throughput verdict remains unknown. An ambiguous iPerf3
 POST or unfinished job triggers one DELETE; even an empty-object acknowledgement
 does not prove router-side termination, so further active starts are blocked.
-No successful download is inferred. Do not deploy or use this local Stage A candidate on a
-router without separate operational attestation and approval.
+No successful download is inferred. The typed tool exists in source; this does
+not attest that it is activated in any operational deployment. Router use still
+requires explicit server approval and separate local deployment/attestation
+gates; source availability alone is not operational authorization.

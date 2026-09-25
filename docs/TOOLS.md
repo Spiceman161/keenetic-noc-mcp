@@ -80,12 +80,19 @@ to 15 hops and a 15-second deadline, with hard ceilings of 30 hops and 30
 seconds. Protocol, port, traceroute source interface, packet size, fan-out,
 ranges, and continuous operation are not exposed.
 
-`iperf3` is a provisional typed Stage A characterization operation, not a
-throughput verdict. It requires an explicitly authorized ASCII hostname or IPv4
+`iperf3` provides one bounded speed/throughput characterization from the router
+to an explicitly user-authorized reachable iPerf3 server, not a universal
+Internet or VPN speed verdict. It requires an explicitly authorized ASCII hostname or IPv4
 server, port 5201–5210, `direction` (`upload` or `reverse`), native
 `byte_limit_bytes` of 1048576–20971520, and `timeout_ms` of 1000–30000.
 Optional `source_interface` requests an exact interface ID; it does not prove
-actual egress. No server is selected or retried automatically. The component
+actual egress. `upload` sends router-to-server; `reverse` requests server-to-router.
+If an approved host:port and intended path are known but direction/limits are
+unspecified, one conservative operator choice is `direction: "upload"`,
+`byte_limit_bytes: 1048576`, `timeout_ms: 10000`; these are not schema defaults,
+duration promises or an invitation to repeat calls. The deadline is not a
+requested test duration, and the byte ceiling is per call, not aggregate traffic.
+No server is selected or retried automatically. The component
 must be present before any active start; confirmed absence returns
 `status: "unavailable", reason: "component-not-installed"` without iPerf3
 traffic. The standard component can be installed manually through KeeneticOS
@@ -108,7 +115,7 @@ An ambiguous dispatched iPerf3 result triggers one DELETE; even a `{}` reply
 only acknowledges DELETE, leaving `routerTermination: unknown` and blocking all
 later active starts in this server instance. Router-side cancellation effects
 remain uncharacterized. Never benchmark a public server without authorization
-or use Stage A for tunnel-health claims.
+or use this result for tunnel-health claims.
 
 These tools are configuration-read-only but actively send packets, so they are
 available under `--read-only` and carry `openWorldHint=true`. Only one active

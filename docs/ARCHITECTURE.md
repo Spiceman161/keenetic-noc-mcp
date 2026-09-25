@@ -193,19 +193,21 @@ not continuous history or causality. Response shaping preserves the version,
 selection, summary and truncation envelope before the global byte guard.
 
 Active diagnostics use the separate finite `/rci/tools/*` continued-job
-surface. One POST starts a native count/hop-bounded job, bounded GET polls read
-message chunks, and DELETE cancels an unfinished job. The MCP cancellation
-signal and a per-call deadline reach the HTTP transport, but native count and
-hop limits remain the primary router-side termination guarantee. The whole-job
+surface. One POST starts a native count/hop-bounded ping/traceroute or byte-limited
+iPerf3 job, bounded GET polls read message chunks, and DELETE requests
+cancellation of an unfinished job. The MCP cancellation signal and a per-call
+deadline reach the HTTP transport, but native count/hop or iPerf3 byte limits
+remain the primary router-side termination bound. The whole-job
 deadline is the smaller of the tool request and configured session timeout;
 timeouts retain bounded partial chunks after native cancellation. A shared
 coordinator permits one active job at a time and ten starts per rolling minute;
 it rejects excess work rather than building a queue. Active start POSTs are
 never transport-retried. On a cold remote session, a single-attempt read-only
 version request discovers authentication before the active POST, so that POST
-is never a shared authentication flight. A failed cancellation blocks new
-active work until the MCP server process restarts because no router-side
-duration is proven. Output is untrusted, redacted, control/format-stripped, and
+is never a shared authentication flight. An ambiguous dispatched iPerf3 outcome
+blocks further active starts even after a DELETE acknowledgement, which does
+not prove router-side termination; failed/unknown DELETE likewise blocks starts.
+Output is untrusted, redacted, control/format-stripped, and
 bounded before reaching the global response ceiling.
 
 ## Error boundary
