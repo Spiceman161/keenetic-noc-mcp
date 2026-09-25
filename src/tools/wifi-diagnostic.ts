@@ -119,7 +119,7 @@ export async function collectMeshStatus(ctx: ToolContext) {
   try {
     primary = await ctx.client.rci.get('show/mws/member', 256_000);
   } catch (error) {
-    if (error instanceof AuthError) throw error;
+    if (error instanceof AuthError) throw new AuthError('Mesh membership authentication failed.');
     return emptyMeshReport('unavailable', safeReason(error));
   }
   if (isRecord(primary) && (Object.getPrototypeOf(primary) === Object.prototype || Object.getPrototypeOf(primary) === null)

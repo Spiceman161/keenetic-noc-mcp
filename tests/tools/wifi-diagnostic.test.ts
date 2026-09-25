@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { AuthError, RciError, TransportError } from '../../src/router/errors.js';
 import type { KeeneticClient } from '../../src/router/client.js';
 import { registerWifiDiagnosticTools } from '../../src/tools/wifi-diagnostic.js';
-import type { ToolContext, ToolResult } from '../../src/tools/registry.js';
+import { getToolResultTelemetry, type ToolContext, type ToolResult } from '../../src/tools/registry.js';
 import { stubBackup } from '../helpers/backup.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
@@ -83,9 +83,9 @@ describe('get_mesh_status', () => {
     expect(result).toMatchObject({ status: 'observed', configuredMembers: 3, shown: 3,
       controller: { status: 'derived', ref: 'controller', model: 'KN-4567', firmware: '5.1.5' },
       members: [
-        { ref: 'member-1', role: 'extender', parentKind: 'controller', parentRef: 'controller', backhaul: 'observed', medium: 'wireless', authenticated: true },
-        { ref: 'member-2', parentKind: 'extender', parentRef: 'member-1', backhaul: 'observed', medium: 'wired' },
-        { ref: 'member-3', firmware: null, parentKind: 'unknown', backhaul: 'not-observed', medium: 'unknown' }
+        { ref: 'member-1', role: 'extender', firmware: '5.1.3', parentKind: 'controller', parentRef: 'controller', backhaul: 'observed', medium: 'wireless', authenticated: true },
+        { ref: 'member-2', firmware: '5.1.4', parentKind: 'extender', parentRef: 'member-1', backhaul: 'observed', medium: 'wired' },
+        { ref: 'member-3', model: 'KN-3456', firmware: null, parentKind: 'unknown', backhaul: 'not-observed', medium: 'unknown' }
       ] });
     expect(JSON.stringify(result)).not.toMatch(/02:00:00|secret-|WifiMaster|GigabitEthernet|Vlan1/);
   });
@@ -97,6 +97,41 @@ describe('get_mesh_status', () => {
     }], controller: { status: 'unknown' } });
     expect(fixture.order).toEqual(['show/mws/member']);
   });
+
+  it.each([undefined, '1', -1, 0.5])('does not infer current topology from errors %s', async (errors) => {
+    const fixture = setup({ values: { 'show/mws/member': [{ ...rows[0],
+      ...(errors === undefined ? { rci: undefined } : { rci: { errors } }) }],
+      'show/interface/Bridge0': { mac: controllerMac } } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(result).toMatchObject({ status: 'observed', configuredMembers: 1,
+      controller: { status: 'unknown', firmware: null }, members: [{ model: 'KN-1234',
+        pollingError: null, parentKind: 'unknown', parentRef: null, backhaul: 'unknown',
+        medium: 'unknown', firmware: null }] });
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it.each([{}, { bridge: `8000.${controllerMac}` },
+    { bridge: `8000.${controllerMac}`, uplink: 'other-uplink' }])(
+    'does not expose firmware or parent on partial backhaul %#', async (backhaul) => {
+      const fixture = setup({ values: { 'show/mws/member': [{ ...rows[0], backhaul }],
+        'show/interface/Bridge0': { mac: controllerMac } } });
+      const result = payload(await fixture.handlers['get_mesh_status']!({}));
+      expect(result).toMatchObject({ status: 'observed', configuredMembers: 1,
+        controller: { status: 'unknown' }, members: [{ model: 'KN-1234', firmware: null,
+          backhaul: 'unknown', medium: 'unknown', parentKind: 'unknown', parentRef: null }] });
+      expect(fixture.order).toEqual(['show/mws/member']);
+    });
+
+  it.each([{ source: [{}] }, { source: [{}, rows[2]] },
+    { source: [rows[2], { mac: firstMac, backhaul: { uplink: 9 } }] }])(
+    'rejects arrays containing identity-free or malformed member rows %#', async ({ source }) => {
+      const fixture = setup({ values: { 'show/mws/member': source } });
+      expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+        status: 'unavailable', reason: 'unexpected-response', configuredMembers: null,
+        controller: { status: 'unknown' }
+      });
+      expect(fixture.order).toEqual(['show/mws/member']);
+    });
 
   it.each([[], { error: 'nope' }, new Date(0), null, 42, [{ mac: 9 }]])('does not infer zero from uncertain shape', async (source) => {
     const fixture = setup({ values: { 'show/mws/member': source } });
@@ -153,11 +188,18 @@ describe('get_mesh_status', () => {
     expect(fixture.order).toEqual(['show/mws/member']);
   });
 
-  it('preserves fatal authentication handling for the required source', async () => {
-    const fixture = setup({ failures: { 'show/mws/member': new AuthError('Authentication failed') } });
+  it.each([
+    'Authentication failed for login synthetic-user at 192.0.2.91 router synthetic-router-id',
+    'Challenge failed at synthetic-router.example for synthetic-user router synthetic-router-id 192.0.2.91'
+  ])('preserves fatal authentication without exposing identifying text', async (message) => {
+    const fixture = setup({ failures: { 'show/mws/member': new AuthError(message) } });
     const result = await fixture.handlers['get_mesh_status']!({});
     expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toContain('Authentication failed');
+    expect(result.content[0]?.text).toContain('Mesh membership authentication failed.');
+    expect(getToolResultTelemetry(result)?.errorCode).toBe('authentication');
+    for (const identifier of ['synthetic-user', 'synthetic-router.example', 'synthetic-router-id', '192.0.2.91']) {
+      expect(JSON.stringify({ result, telemetry: getToolResultTelemetry(result) })).not.toContain(identifier);
+    }
     expect(fixture.order).toEqual(['show/mws/member']);
   });
 

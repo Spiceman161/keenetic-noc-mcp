@@ -192,22 +192,36 @@ function meshFirmware(value: unknown): string | null {
   return typeof value === 'string' && /^\d{1,2}(?:\.\d{1,3}){1,3}$/.test(value) ? value : null;
 }
 
+function meshMedium(backhaul: Record<string, unknown> | null): 'wireless' | 'wired' | 'unknown' {
+  const uplink = backhaul?.['uplink'];
+  return typeof uplink === 'string' && /^WifiMaster\d+\/WifiStation\d+$/.test(uplink)
+    ? 'wireless' : typeof uplink === 'string' && /^(?:FastEthernet|GigabitEthernet)\d+\/Vlan\d+$/.test(uplink)
+      ? 'wired' : 'unknown';
+}
+
+function meshCurrent(row: Record<string, unknown>): boolean {
+  const errors = meshRecord(row['rci']) ? row['rci']['errors'] : null;
+  const backhaul = meshRecord(row['backhaul']) ? row['backhaul'] : null;
+  return errors === 0 && meshMedium(backhaul) !== 'unknown';
+}
+
 export function validMeshMembers(value: unknown): value is Array<Record<string, unknown>> {
-  return Array.isArray(value) && value.every(row => meshRecord(row) &&
+  return Array.isArray(value) && value.every(row => meshRecord(row) && meshIdentity(row['mac']) !== null &&
     (row['mode'] === undefined || typeof row['mode'] === 'string') &&
     (row['hw_type'] === undefined || typeof row['hw_type'] === 'string') &&
     (row['model'] === undefined || typeof row['model'] === 'string') &&
     (row['fw'] === undefined || typeof row['fw'] === 'string') &&
     (row['fw-release'] === undefined || typeof row['fw-release'] === 'string') &&
-    (row['mac'] === undefined || typeof row['mac'] === 'string') &&
-    (row['backhaul'] === undefined || meshRecord(row['backhaul'])) &&
+    (row['backhaul'] === undefined || (meshRecord(row['backhaul']) &&
+      (row['backhaul']['bridge'] === undefined || typeof row['backhaul']['bridge'] === 'string') &&
+      (row['backhaul']['uplink'] === undefined || typeof row['backhaul']['uplink'] === 'string') &&
+      (row['backhaul']['authenticated'] === undefined || typeof row['backhaul']['authenticated'] === 'boolean'))) &&
     (row['rci'] === undefined || meshRecord(row['rci'])));
 }
 
 export function meshParentMarker(rows: Array<Record<string, unknown>>): boolean {
   return rows.some(row => {
-    const errors = meshRecord(row['rci']) ? row['rci']['errors'] : null;
-    if (typeof errors === 'number' && Number.isInteger(errors) && errors > 0) return false;
+    if (!meshCurrent(row)) return false;
     const bridge = meshRecord(row['backhaul']) ? row['backhaul']['bridge'] : null;
     return typeof bridge === 'string' && /^8000[.]([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(bridge);
   });
@@ -221,8 +235,7 @@ export function projectMeshMembers(
   const localIdentity = meshRecord(bridge) ? meshIdentity(bridge['mac']) : null;
   const identities = rows.map(row => meshIdentity(row['mac']));
   const parents = rows.map(row => {
-    const errors = meshRecord(row['rci']) ? row['rci']['errors'] : null;
-    if (typeof errors === 'number' && Number.isInteger(errors) && errors > 0) {
+    if (!meshCurrent(row)) {
       return { kind: 'unknown' as const, identity: null };
     }
     const backhaul = meshRecord(row['backhaul']) ? row['backhaul'] : null;
@@ -241,11 +254,8 @@ export function projectMeshMembers(
     const errors = rci?.['errors'];
     const pollingError = typeof errors === 'number' && Number.isInteger(errors) && errors >= 0
       ? errors > 0 : null;
-    const uplink = backhaul?.['uplink'];
-    const medium = typeof uplink === 'string' && /^WifiMaster\d+\/WifiStation\d+$/.test(uplink)
-      ? 'wireless' : typeof uplink === 'string' && /^(?:FastEthernet|GigabitEthernet)\d+\/Vlan\d+$/.test(uplink)
-        ? 'wired' : 'unknown';
-    const current = pollingError === false && medium !== 'unknown';
+    const medium = meshMedium(backhaul);
+    const current = meshCurrent(row);
     const parent = parents[index]!;
     const matches = parent.kind === 'extender' && parent.identity !== null
       ? identities.flatMap((identity, position) => identity === parent.identity && position !== index ? [position] : []) : [];
@@ -253,7 +263,7 @@ export function projectMeshMembers(
       ref: `member-${index + 1}`,
       role: row['mode'] === 'extender' && row['hw_type'] === 'extender' ? 'extender' : 'unknown',
       model: meshModel(row['model']),
-      firmware: backhaul === null || pollingError === true ? null : meshFirmware(row['fw-release'] ?? row['fw']),
+      firmware: current ? meshFirmware(row['fw-release'] ?? row['fw']) : null,
       parentKind: parent.kind,
       parentRef: parent.kind === 'controller' && controllerDerived && parent.identity === localIdentity
         ? 'controller' : parent.kind === 'extender' && matches.length === 1 ? `member-${matches[0]! + 1}` : null,
