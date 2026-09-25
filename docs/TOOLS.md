@@ -200,8 +200,10 @@ client totals and signal buckets, but never client MACs, names, SSIDs or BSSIDs.
 Exact `{}` observes zero configured members; empty `[]`, unsupported paths and
 malformed responses do not establish absence. Member arrays provide response-local
 extender references, observed uplink medium and snapshot backhaul evidence.
-An absent backhaul is only *not observed in this sample*, not a definitive offline
-verdict; polling errors suppress stale link observations. Only a matching local
+Only a no-backhaul, no-firmware member skeleton without polling telemetry is
+*not observed in this sample*, not a definitive offline verdict; missing
+backhaul with firmware or polling data remains unknown. Polling errors suppress
+stale link observations. Only a matching local
 `Bridge0` identity derives a controller reference; local version is optional
 and is read only after that match. Failed optional reads retain the member report.
 MACs, interface identifiers, SSIDs and unknown router fields are not returned.

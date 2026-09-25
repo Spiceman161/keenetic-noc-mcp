@@ -267,7 +267,8 @@ export function projectMeshMembers(
       parentKind: parent.kind,
       parentRef: parent.kind === 'controller' && controllerDerived && parent.identity === localIdentity
         ? 'controller' : parent.kind === 'extender' && matches.length === 1 ? `member-${matches[0]! + 1}` : null,
-      backhaul: current ? 'observed' : backhaul === null && pollingError !== true ? 'not-observed' : 'unknown',
+      backhaul: current ? 'observed' : backhaul === null && row['fw'] === undefined &&
+        row['fw-release'] === undefined && row['rci'] === undefined ? 'not-observed' : 'unknown',
       medium: current ? medium : 'unknown',
       authenticated: current && typeof backhaul?.['authenticated'] === 'boolean' ? backhaul['authenticated'] as boolean : null,
       pollingError

@@ -85,7 +85,7 @@ describe('get_mesh_status', () => {
       members: [
         { ref: 'member-1', role: 'extender', firmware: '5.1.3', parentKind: 'controller', parentRef: 'controller', backhaul: 'observed', medium: 'wireless', authenticated: true },
         { ref: 'member-2', firmware: '5.1.4', parentKind: 'extender', parentRef: 'member-1', backhaul: 'observed', medium: 'wired' },
-        { ref: 'member-3', model: 'KN-3456', firmware: null, parentKind: 'unknown', backhaul: 'not-observed', medium: 'unknown' }
+        { ref: 'member-3', model: 'KN-3456', firmware: null, parentKind: 'unknown', backhaul: 'not-observed', medium: 'unknown', pollingError: null }
       ] });
     expect(JSON.stringify(result)).not.toMatch(/02:00:00|secret-|WifiMaster|GigabitEthernet|Vlan1/);
   });
@@ -95,6 +95,23 @@ describe('get_mesh_status', () => {
     expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({ members: [{
       pollingError: true, firmware: null, parentKind: 'unknown', backhaul: 'unknown', medium: 'unknown'
     }], controller: { status: 'unknown' } });
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it.each([
+    { label: 'fw', row: { ...rows[2], fw: '5.1.5' }, pollingError: null },
+    { label: 'fw-release', row: { ...rows[2], 'fw-release': '5.1.5' }, pollingError: null },
+    { label: 'successful polling', row: { ...rows[2], rci: { errors: 0 } }, pollingError: false },
+    { label: 'failed polling', row: { ...rows[2], rci: { errors: 1 } }, pollingError: true },
+    { label: 'malformed polling errors', row: { ...rows[2], rci: { errors: '1' } }, pollingError: null },
+    { label: 'incomplete polling', row: { ...rows[2], rci: {} }, pollingError: null }
+  ])('keeps missing backhaul unknown with $label', async ({ row, pollingError }) => {
+    const fixture = setup({ values: { 'show/mws/member': [row] } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'observed', configuredMembers: 1, members: [{ ref: 'member-1', model: 'KN-3456',
+        firmware: null, parentKind: 'unknown', parentRef: null, backhaul: 'unknown',
+        medium: 'unknown', pollingError }]
+    });
     expect(fixture.order).toEqual(['show/mws/member']);
   });
 
