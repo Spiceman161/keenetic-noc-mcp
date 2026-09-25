@@ -26,7 +26,8 @@ function setup(options: { values?: Record<string, unknown>; failures?: Record<st
   const order: string[] = [];
   const get = vi.fn(async (path: string, maxBytes?: number) => {
     order.push(path);
-    expect(maxBytes).toBe(path === 'show/version' ? 64_000 : 256_000);
+    expect(maxBytes).toBe(path === 'show/version' ? 64_000
+      : path === 'show/interface/Bridge0' ? 32_000 : 256_000);
     const failure = options.failures?.[path];
     if (failure) throw failure;
     return responses[path];
@@ -49,6 +50,127 @@ function setup(options: { values?: Record<string, unknown>; failures?: Record<st
 function payload(result: ToolResult): any {
   return JSON.parse(result.content.map(part => part.text).join(''));
 }
+
+describe('get_mesh_status', () => {
+  const controllerMac = '02:00:00:00:00:01';
+  const firstMac = '02:00:00:00:00:02';
+  const secondMac = '02:00:00:00:00:03';
+  const rows = [
+    { mac: firstMac, mode: 'extender', hw_type: 'extender', model: 'KN-1234', fw: '5.1.3',
+      rci: { errors: 0 }, backhaul: { bridge: `8000.${controllerMac}`, uplink: 'WifiMaster0/WifiStation0', authenticated: true },
+      port: [{ link: false }], password: 'secret-one' },
+    { mac: secondMac, mode: 'extender', hw_type: 'extender', model: 'KN-2345', fw: '5.1.4',
+      rci: { errors: 0 }, backhaul: { bridge: `e000.${firstMac}`, uplink: 'GigabitEthernet0/Vlan1', authenticated: true },
+      port: [{ link: true }], ssid: 'secret-ssid' },
+    { mac: '02:00:00:00:00:04', model: 'KN-3456', license: 'secret-license' }
+  ];
+
+  it('observes exact empty object with only one GET', async () => {
+    const fixture = setup({ values: { 'show/mws/member': {} } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'observed', configuredMembers: 0, members: [], controller: { status: 'unknown' }
+    });
+    expect(fixture.order).toEqual(['show/mws/member']);
+    expect(fixture.configs['get_mesh_status']?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+  });
+
+  it('projects current links, response-local parent, offline skeleton and conditional controller', async () => {
+    const fixture = setup({ values: { 'show/mws/member': rows,
+      'show/interface/Bridge0': { mac: controllerMac, password: 'secret-bridge' },
+      'show/version': { model: 'KN-4567', release: '5.1.5', token: 'secret-version' } } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/version']);
+    expect(result).toMatchObject({ status: 'observed', configuredMembers: 3, shown: 3,
+      controller: { status: 'derived', ref: 'controller', model: 'KN-4567', firmware: '5.1.5' },
+      members: [
+        { ref: 'member-1', role: 'extender', parentKind: 'controller', parentRef: 'controller', backhaul: 'observed', medium: 'wireless', authenticated: true },
+        { ref: 'member-2', parentKind: 'extender', parentRef: 'member-1', backhaul: 'observed', medium: 'wired' },
+        { ref: 'member-3', firmware: null, parentKind: 'unknown', backhaul: 'not-observed', medium: 'unknown' }
+      ] });
+    expect(JSON.stringify(result)).not.toMatch(/02:00:00|secret-|WifiMaster|GigabitEthernet|Vlan1/);
+  });
+
+  it('suppresses stale polling backhaul, firmware and controller derivation', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [{ ...rows[0], rci: { errors: 1 } }] } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({ members: [{
+      pollingError: true, firmware: null, parentKind: 'unknown', backhaul: 'unknown', medium: 'unknown'
+    }], controller: { status: 'unknown' } });
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it.each([[], { error: 'nope' }, new Date(0), null, 42, [{ mac: 9 }]])('does not infer zero from uncertain shape', async (source) => {
+    const fixture = setup({ values: { 'show/mws/member': source } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(result.status).not.toBe('observed');
+    expect(result.configuredMembers).toBeNull();
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it('bounds rows and payload detail without losing member counts', async () => {
+    const many = setup({ values: { 'show/mws/member': Array.from({ length: 33 }, () => rows[2]) } });
+    expect(payload(await many.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'unavailable', reason: 'member-limit', configuredMembers: null, truncated: true
+    });
+    const small = setup({ values: { 'show/mws/member': rows.slice(1) }, maxBytes: 440 });
+    const output = await small.handlers['get_mesh_status']!({});
+    expect(Buffer.byteLength(output.content[0]!.text!, 'utf8')).toBeLessThanOrEqual(440);
+    expect(payload(output)).toMatchObject({ status: 'observed', configuredMembers: 2, truncated: true });
+  });
+
+  it.each([
+    ['show/interface/Bridge0', new AuthError('secret auth'), ['show/mws/member', 'show/interface/Bridge0']],
+    ['show/interface/Bridge0', new TransportError('secret transport'), ['show/mws/member', 'show/interface/Bridge0']],
+    ['show/version', new AuthError('secret auth'), ['show/mws/member', 'show/interface/Bridge0', 'show/version']],
+    ['show/version', new TransportError('secret transport'), ['show/mws/member', 'show/interface/Bridge0', 'show/version']]
+  ] as const)('keeps primary on optional %s failure', async (path, failure, order) => {
+    const fixture = setup({ values: { 'show/mws/member': rows, 'show/interface/Bridge0': { mac: controllerMac } },
+      failures: { [path]: failure } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(fixture.order).toEqual(order);
+    expect(result).toMatchObject({ status: 'observed', configuredMembers: 3, shown: 3 });
+    expect(result.sources[path === 'show/version' ? 'version' : 'bridge']).toBe(
+      failure instanceof AuthError ? 'authentication-error' : 'transport-error'
+    );
+    expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
+  it('does not derive controller on bridge mismatch or ambiguous extender identity', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [rows[0], rows[0], rows[1]],
+      'show/interface/Bridge0': { mac: '02:00:00:00:00:ff' } } });
+    const result = payload(await fixture.handlers['get_mesh_status']!({}));
+    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0']);
+    expect(result).toMatchObject({ controller: { status: 'unknown' },
+      members: [{ parentRef: null }, { parentRef: null }, { parentKind: 'extender', parentRef: null }] });
+  });
+
+  it('reports unsupported or missing primary source as unavailable with one GET', async () => {
+    const fixture = setup({ failures: { 'show/mws/member': new RciError('private response', {
+      path: 'show/mws/member', code: '404', ident: 'http'
+    }) } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'unavailable', reason: 'rci-error', configuredMembers: null
+    });
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it('preserves fatal authentication handling for the required source', async () => {
+    const fixture = setup({ failures: { 'show/mws/member': new AuthError('Authentication failed') } });
+    const result = await fixture.handlers['get_mesh_status']!({});
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('Authentication failed');
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+
+  it('does not treat a capped primary read as zero members', async () => {
+    const fixture = setup({ failures: { 'show/mws/member': new RciError('oversized', {
+      path: 'show/mws/member', code: 'response-too-large', ident: 'rci'
+    }) } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'unavailable', reason: 'response-too-large', configuredMembers: null
+    });
+    expect(fixture.order).toEqual(['show/mws/member']);
+  });
+});
 
 describe('diagnose_wifi', () => {
   it('collects fresh bounded sources sequentially and returns only aggregate client data', async () => {

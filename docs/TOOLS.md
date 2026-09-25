@@ -6,7 +6,7 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
 `list_dns_upstreams`, `diagnose_dns`, `diagnose_device`, `diagnose_wifi`,
-`get_wifi_client_health`, `compare_router_state`, `get_recent_changes`,
+`get_wifi_client_health`, `get_mesh_status`, `compare_router_state`, `get_recent_changes`,
 and bounded raw `rci_call` GET.
 
 ## System information
@@ -196,6 +196,15 @@ facts. The tool sends no active traffic and performs no mutation.
 `diagnose_wifi` takes `{}` and sequentially reads fresh version, interface, and
 association state. Its versioned report contains bounded radio/AP summaries,
 client totals and signal buckets, but never client MACs, names, SSIDs or BSSIDs.
+`get_mesh_status` takes `{}` and makes one bounded read of `show/mws/member`.
+Exact `{}` observes zero configured members; empty `[]`, unsupported paths and
+malformed responses do not establish absence. Member arrays provide response-local
+extender references, observed uplink medium and snapshot backhaul evidence.
+An absent backhaul is only *not observed in this sample*, not a definitive offline
+verdict; polling errors suppress stale link observations. Only a matching local
+`Bridge0` identity derives a controller reference; local version is optional
+and is read only after that match. Failed optional reads retain the member report.
+MACs, interface identifiers, SSIDs and unknown router fields are not returned.
 `get_wifi_client_health` accepts exactly one of `mac`, `ip`, or `name`, using the
 same normalization and ambiguity rules as `diagnose_device`. It resolves the
 bounded hotspot list first, then reads associations and interfaces. Only the

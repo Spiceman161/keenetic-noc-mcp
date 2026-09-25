@@ -130,6 +130,16 @@ reduction removes optional AP/client metric detail before checks, findings,
 totals, or selected identity. No band, utilization, retry, or event history is
 derived from channel numbers, `busy-channels`, `_11`, or `roam`.
 
+`get_mesh_status` independently reads bounded `show/mws/member` once, then
+projects only allowlisted Mesh member fields. Exact `{}` is observed zero
+configured members; an empty array or failure remains uncertain. Current
+backhaul evidence requires a recognized uplink without polling errors; a
+skeleton only means backhaul was not observed in that sample. A local controller
+is derived only when an `8000.` parent identity matches bounded local
+`show/interface/Bridge0`; bounded `show/version` is requested only after that
+match. Optional failures preserve primary members and never trigger fallback
+reads. Parent references are response-local ordinals, never raw identifiers.
+
 Configuration reads use a separate 256 KB input-bounded reader whose errors
 never contain response bodies. CLI secrets are redacted before sectioning,
 filtering, or literal search, and complete configuration documents are never

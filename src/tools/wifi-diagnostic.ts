@@ -6,10 +6,15 @@ import type { SafeReason } from '../shape/internet-diagnostic.js';
 import {
   budgetWifiClientHealth,
   budgetWifiDiagnostic,
+  budgetMeshReport,
   buildWifiClientHealth,
   buildWifiDiagnostic,
+  emptyMeshReport,
+  meshParentMarker,
   projectWifiClientEvidence,
-  projectWifiTopology
+  projectWifiTopology,
+  projectMeshMembers,
+  validMeshMembers
 } from '../shape/wifi-diagnostic.js';
 import { compactOk, guard, READ_ONLY, type ToolContext } from './registry.js';
 
@@ -109,7 +114,63 @@ export async function collectWifiClientHealth(
   return buildWifiClientHealth(evidence);
 }
 
+export async function collectMeshStatus(ctx: ToolContext) {
+  let primary: unknown;
+  try {
+    primary = await ctx.client.rci.get('show/mws/member', 256_000);
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    return emptyMeshReport('unavailable', safeReason(error));
+  }
+  if (isRecord(primary) && (Object.getPrototypeOf(primary) === Object.prototype || Object.getPrototypeOf(primary) === null)
+    && Object.keys(primary).length === 0) return emptyMeshReport('observed', null);
+  if (Array.isArray(primary) && primary.length === 0) return emptyMeshReport('unknown', 'unverified-empty-array');
+  if (Array.isArray(primary) && primary.length > 32) return emptyMeshReport('unavailable', 'member-limit');
+  if (!validMeshMembers(primary)) return emptyMeshReport('unavailable', 'unexpected-response');
+  let bridge: unknown = null;
+  let version: unknown = null;
+  let bridgeReason: ReturnType<typeof safeReason> | 'not-requested' | null = 'not-requested';
+  let versionReason: ReturnType<typeof safeReason> | 'not-requested' | null = 'not-requested';
+  if (meshParentMarker(primary)) {
+    try {
+      const candidate = await ctx.client.rci.get('show/interface/Bridge0', 32_000);
+      if (isRecord(candidate) && typeof candidate['mac'] === 'string') {
+        bridge = candidate;
+        bridgeReason = projectMeshMembers(primary, bridge).controller.status === 'derived'
+          ? null : 'unexpected-response';
+      } else bridgeReason = 'unexpected-response';
+    } catch (error) {
+      bridgeReason = safeReason(error);
+    }
+    if (bridgeReason === null) {
+      const projected = projectMeshMembers(primary, bridge);
+      if (projected.controller.status === 'derived') {
+        try {
+          const candidate = await ctx.client.rci.get('show/version', 64_000);
+          if (isRecord(candidate)) {
+            version = candidate;
+            versionReason = null;
+          } else versionReason = 'unexpected-response';
+        } catch (error) {
+          versionReason = safeReason(error);
+        }
+      }
+    }
+  }
+  const result = projectMeshMembers(primary, bridge, version);
+  result.sources.bridge = bridgeReason;
+  result.sources.version = versionReason;
+  return result;
+}
+
 export function registerWifiDiagnosticTools(server: ToolRegistrar, ctx: ToolContext): void {
+  server.registerTool('get_mesh_status', {
+    title: 'Observe Mesh members and backhaul',
+    description: 'Reads bounded operational Mesh membership; reports only snapshot topology, conditional local controller and privacy-safe backhaul observations.',
+    inputSchema: {}, annotations: READ_ONLY
+  }, guard(ctx, async () => compactOk(
+    budgetMeshReport(await collectMeshStatus(ctx), ctx.maxResponseBytes), ctx.maxResponseBytes
+  )));
   server.registerTool('diagnose_wifi', {
     title: 'Diagnose Wi-Fi health',
     description: 'Aggregates bounded radio, access-point, association and signal health without exposing client identifiers, SSIDs or BSSIDs.',

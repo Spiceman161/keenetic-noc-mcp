@@ -7,6 +7,13 @@ state or stores tool argument values/result bodies. Writable mode exposes
 `backup_config`, `set_interface_state`, `restart_interface`, and `save_config`
 in v0.1, plus raw POST only when explicitly enabled.
 
+`get_mesh_status` is a bounded passive read of operational Mesh membership.
+It never reads Mesh configuration, scans, persists state, or emits router MACs,
+IP addresses, SSIDs, hostnames, secrets, or raw interface names. Optional
+bounded local bridge/version reads occur only for controller correlation and
+cannot erase valid membership on failure. An empty array, missing component,
+unsupported path, or error is not proof that no members are configured.
+
 The standalone `router snapshot <profile-id>` CLI command is outside the MCP
 tool registry. When explicitly invoked, it performs bounded read-only router
 requests and writes one owner-only local summary. It is never scheduled by the

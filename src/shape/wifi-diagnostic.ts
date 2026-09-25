@@ -149,6 +149,153 @@ export interface WifiClientHealthReport {
   truncated: boolean;
 }
 
+export interface MeshMember {
+  ref: string;
+  role: 'extender' | 'unknown';
+  model: string | null;
+  firmware: string | null;
+  parentKind: 'controller' | 'extender' | 'unknown';
+  parentRef: string | null;
+  backhaul: 'observed' | 'not-observed' | 'unknown';
+  medium: 'wireless' | 'wired' | 'unknown';
+  authenticated: boolean | null;
+  pollingError: boolean | null;
+}
+
+export interface MeshReport {
+  schemaVersion: 1;
+  status: 'observed' | 'unknown' | 'unavailable';
+  reason: SafeReason | 'unverified-empty-array' | 'member-limit' | null;
+  configuredMembers: number | null;
+  members: MeshMember[];
+  shown: number;
+  controller: { status: 'derived' | 'unknown'; ref: 'controller' | null; model: string | null; firmware: string | null };
+  sources: { members: SafeReason | null; bridge: SafeReason | 'not-requested' | null; version: SafeReason | 'not-requested' | null };
+  truncated: boolean;
+  untrustedRouterData: true;
+}
+
+const meshRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function meshIdentity(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/[:-]/g, '').toLowerCase();
+  return /^[0-9a-f]{12}$/.test(normalized) ? normalized : null;
+}
+
+function meshModel(value: unknown): string | null {
+  return typeof value === 'string' && /^KN-\d{4}$/.test(value) ? value : null;
+}
+
+function meshFirmware(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{1,2}(?:\.\d{1,3}){1,3}$/.test(value) ? value : null;
+}
+
+export function validMeshMembers(value: unknown): value is Array<Record<string, unknown>> {
+  return Array.isArray(value) && value.every(row => meshRecord(row) &&
+    (row['mode'] === undefined || typeof row['mode'] === 'string') &&
+    (row['hw_type'] === undefined || typeof row['hw_type'] === 'string') &&
+    (row['model'] === undefined || typeof row['model'] === 'string') &&
+    (row['fw'] === undefined || typeof row['fw'] === 'string') &&
+    (row['fw-release'] === undefined || typeof row['fw-release'] === 'string') &&
+    (row['mac'] === undefined || typeof row['mac'] === 'string') &&
+    (row['backhaul'] === undefined || meshRecord(row['backhaul'])) &&
+    (row['rci'] === undefined || meshRecord(row['rci'])));
+}
+
+export function meshParentMarker(rows: Array<Record<string, unknown>>): boolean {
+  return rows.some(row => {
+    const errors = meshRecord(row['rci']) ? row['rci']['errors'] : null;
+    if (typeof errors === 'number' && Number.isInteger(errors) && errors > 0) return false;
+    const bridge = meshRecord(row['backhaul']) ? row['backhaul']['bridge'] : null;
+    return typeof bridge === 'string' && /^8000[.]([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(bridge);
+  });
+}
+
+export function projectMeshMembers(
+  rows: Array<Record<string, unknown>>,
+  bridge: unknown = null,
+  version: unknown = null
+): MeshReport {
+  const localIdentity = meshRecord(bridge) ? meshIdentity(bridge['mac']) : null;
+  const identities = rows.map(row => meshIdentity(row['mac']));
+  const parents = rows.map(row => {
+    const errors = meshRecord(row['rci']) ? row['rci']['errors'] : null;
+    if (typeof errors === 'number' && Number.isInteger(errors) && errors > 0) {
+      return { kind: 'unknown' as const, identity: null };
+    }
+    const backhaul = meshRecord(row['backhaul']) ? row['backhaul'] : null;
+    const raw = backhaul?.['bridge'];
+    if (typeof raw !== 'string') return { kind: 'unknown' as const, identity: null };
+    const match = /^(8000|e000)[.]((?:[0-9a-f]{2}:){5}[0-9a-f]{2})$/i.exec(raw);
+    return match ? { kind: match[1]!.toLowerCase() === '8000' ? 'controller' as const : 'extender' as const,
+      identity: meshIdentity(match[2]) } : { kind: 'unknown' as const, identity: null };
+  });
+  const controllerMatches = localIdentity === null ? 0 : parents.filter(parent =>
+    parent.kind === 'controller' && parent.identity === localIdentity).length;
+  const controllerDerived = controllerMatches > 0;
+  const members: MeshMember[] = rows.map((row, index) => {
+    const backhaul = meshRecord(row['backhaul']) ? row['backhaul'] : null;
+    const rci = meshRecord(row['rci']) ? row['rci'] : null;
+    const errors = rci?.['errors'];
+    const pollingError = typeof errors === 'number' && Number.isInteger(errors) && errors >= 0
+      ? errors > 0 : null;
+    const uplink = backhaul?.['uplink'];
+    const medium = typeof uplink === 'string' && /^WifiMaster\d+\/WifiStation\d+$/.test(uplink)
+      ? 'wireless' : typeof uplink === 'string' && /^(?:FastEthernet|GigabitEthernet)\d+\/Vlan\d+$/.test(uplink)
+        ? 'wired' : 'unknown';
+    const current = pollingError === false && medium !== 'unknown';
+    const parent = parents[index]!;
+    const matches = parent.kind === 'extender' && parent.identity !== null
+      ? identities.flatMap((identity, position) => identity === parent.identity && position !== index ? [position] : []) : [];
+    return {
+      ref: `member-${index + 1}`,
+      role: row['mode'] === 'extender' && row['hw_type'] === 'extender' ? 'extender' : 'unknown',
+      model: meshModel(row['model']),
+      firmware: backhaul === null || pollingError === true ? null : meshFirmware(row['fw-release'] ?? row['fw']),
+      parentKind: parent.kind,
+      parentRef: parent.kind === 'controller' && controllerDerived && parent.identity === localIdentity
+        ? 'controller' : parent.kind === 'extender' && matches.length === 1 ? `member-${matches[0]! + 1}` : null,
+      backhaul: current ? 'observed' : backhaul === null && pollingError !== true ? 'not-observed' : 'unknown',
+      medium: current ? medium : 'unknown',
+      authenticated: current && typeof backhaul?.['authenticated'] === 'boolean' ? backhaul['authenticated'] as boolean : null,
+      pollingError
+    };
+  });
+  return {
+    schemaVersion: 1, status: 'observed', reason: null, configuredMembers: rows.length,
+    members, shown: members.length,
+    controller: { status: controllerDerived ? 'derived' : 'unknown', ref: controllerDerived ? 'controller' : null,
+      model: controllerDerived && meshRecord(version) ? meshModel(version['model']) : null,
+      firmware: controllerDerived && meshRecord(version) ? meshFirmware(version['release'] ?? version['title']) : null },
+    sources: { members: null, bridge: 'not-requested', version: 'not-requested' },
+    truncated: false, untrustedRouterData: true
+  };
+}
+
+export function emptyMeshReport(status: MeshReport['status'], reason: MeshReport['reason']): MeshReport {
+  return { schemaVersion: 1, status, reason, configuredMembers: status === 'observed' ? 0 : null,
+    members: [], shown: 0, controller: { status: 'unknown', ref: null, model: null, firmware: null },
+    sources: { members: status === 'unavailable' && reason !== 'member-limit' && reason !== 'unverified-empty-array'
+      ? reason : null, bridge: 'not-requested', version: 'not-requested' },
+    truncated: reason === 'member-limit', untrustedRouterData: true };
+}
+
+export function budgetMeshReport(report: MeshReport, maxBytes: number): MeshReport {
+  while (report.members.length > 0 && Buffer.byteLength(JSON.stringify(redact(report)), 'utf8') > maxBytes) {
+    report.members.pop();
+    report.shown = report.members.length;
+    report.truncated = true;
+  }
+  if (Buffer.byteLength(JSON.stringify(redact(report)), 'utf8') > maxBytes) {
+    report.controller.model = null;
+    report.controller.firmware = null;
+    report.truncated = true;
+  }
+  return report;
+}
+
 export const WIFI_TELEMETRY_AVAILABILITY: WifiTelemetryAvailability = {
   retryCounters: 'not-exposed',
   errorCounters: 'not-exposed',

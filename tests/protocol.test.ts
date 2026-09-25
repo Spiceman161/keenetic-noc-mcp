@@ -28,6 +28,7 @@ const READ_TOOLS = [
   'list_dns_upstreams',
   'get_logs',
   'get_logs_by_device',
+  'get_mesh_status',
   'get_config_diff',
   'compare_router_state',
   'get_recent_changes',
