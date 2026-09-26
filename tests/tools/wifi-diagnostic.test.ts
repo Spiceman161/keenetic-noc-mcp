@@ -490,6 +490,17 @@ describe('bounded Mesh controller associations and native events', () => {
     expect(Buffer.byteLength(output.content[0]!.text!, 'utf8')).toBeLessThanOrEqual(300);
     expect(payload(output)).toMatchObject({ shown: 0, truncated: true, sources: { log: null } });
   });
+
+  it('skips both optional reads when a single valid event cannot fit the output cap', async () => {
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': { log: { '0': event } } }, maxBytes: 300 });
+    const output = await fixture.handlers['get_mesh_events']!({});
+    expect(fixture.order).toEqual(['POST /rci/show/mws/log']);
+    expect(fixture.readMeshLog).toHaveBeenCalledTimes(1);
+    expect(fixture.get).not.toHaveBeenCalled();
+    expect(payload(output)).toMatchObject({ status: 'observed', reason: null, events: [], shown: 0,
+      truncated: true, sources: { log: null, members: 'not-requested', interfaces: 'not-requested' } });
+    expect(Buffer.byteLength(output.content[0]!.text!, 'utf8')).toBeLessThanOrEqual(300);
+  });
 });
 
 describe('diagnose_wifi', () => {

@@ -183,6 +183,8 @@ export async function collectMeshEvents(ctx: ToolContext) {
   }
   const initial = projectMeshEvents(log, null, null);
   if (initial.events.length === 0) return initial;
+  const firstEvent = budgetMeshEvents({ ...initial, events: [initial.events[0]!], shown: 1 }, ctx.maxResponseBytes);
+  if (firstEvent.shown === 0) return budgetMeshEvents(initial, ctx.maxResponseBytes);
   let members: unknown = null;
   let interfaces: unknown = null;
   let membersReason: SafeReason | null = null;
