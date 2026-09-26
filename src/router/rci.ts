@@ -202,6 +202,11 @@ export class Rci {
     return this.parse<T>(res, 'POST /rci/', maxBytes);
   }
 
+  async readMeshLog<T = unknown>(): Promise<T> {
+    const res = await this.session.request('POST', '/rci/show/mws/log', { once: true, 'max-lines': 20 });
+    return this.parse<T>(res, 'POST /rci/show/mws/log', 64_000);
+  }
+
   /**
    * Runs one of Keenetic's finite `/rci/tools/*` jobs. These endpoints return
    * message chunks plus `continued=true`; GET polls retrieve later chunks and

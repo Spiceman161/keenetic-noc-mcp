@@ -7,13 +7,17 @@ import {
   budgetWifiClientHealth,
   budgetWifiDiagnostic,
   budgetMeshReport,
+  budgetMeshEvents,
   buildWifiClientHealth,
   buildWifiDiagnostic,
   emptyMeshReport,
+  emptyMeshEvents,
+  controllerAssociations,
   meshParentMarker,
   projectWifiClientEvidence,
   projectWifiTopology,
   projectMeshMembers,
+  projectMeshEvents,
   validMeshMembers
 } from '../shape/wifi-diagnostic.js';
 import { compactOk, guard, READ_ONLY, type ToolContext } from './registry.js';
@@ -160,7 +164,52 @@ export async function collectMeshStatus(ctx: ToolContext) {
   const result = projectMeshMembers(primary, bridge, version);
   result.sources.bridge = bridgeReason;
   result.sources.version = versionReason;
+  try {
+    const associations = await ctx.client.rci.get('show/associations', INPUT_LIMITS.associations);
+    result.controller.associationCount = controllerAssociations(associations);
+    result.sources.associations = result.controller.associationCount === null ? 'unexpected-response' : null;
+  } catch (error) {
+    result.sources.associations = safeReason(error);
+  }
   return result;
+}
+
+export async function collectMeshEvents(ctx: ToolContext) {
+  let log: unknown;
+  try {
+    log = await ctx.client.rci.readMeshLog();
+  } catch (error) {
+    return emptyMeshEvents(safeReason(error));
+  }
+  const initial = projectMeshEvents(log, null, null);
+  if (initial.events.length === 0) return initial;
+  let members: unknown = null;
+  let interfaces: unknown = null;
+  let membersReason: SafeReason | null = null;
+  let interfacesReason: SafeReason | null = null;
+  try {
+    members = await ctx.client.rci.get('show/mws/member', 256_000);
+    if (!((isRecord(members) && Object.keys(members).length === 0) ||
+      (Array.isArray(members) && members.length > 0 && members.length <= 32 && validMeshMembers(members)))) {
+      membersReason = 'unexpected-response';
+      members = null;
+    }
+  } catch (error) {
+    membersReason = safeReason(error);
+  }
+  try {
+    interfaces = await ctx.client.rci.get('show/interface', INPUT_LIMITS.interfaces);
+    if (!isInterfaces(interfaces) || Object.keys(interfaces).length === 0) {
+      interfacesReason = 'unexpected-response';
+      interfaces = null;
+    }
+  } catch (error) {
+    interfacesReason = safeReason(error);
+  }
+  const report = projectMeshEvents(log, members, interfaces);
+  report.sources.members = membersReason;
+  report.sources.interfaces = interfacesReason;
+  return report;
 }
 
 export function registerWifiDiagnosticTools(server: ToolRegistrar, ctx: ToolContext): void {
@@ -170,6 +219,13 @@ export function registerWifiDiagnosticTools(server: ToolRegistrar, ctx: ToolCont
     inputSchema: {}, annotations: READ_ONLY
   }, guard(ctx, async () => compactOk(
     budgetMeshReport(await collectMeshStatus(ctx), ctx.maxResponseBytes), ctx.maxResponseBytes
+  )));
+  server.registerTool('get_mesh_events', {
+    title: 'Observe recent Mesh client events',
+    description: 'Reads one bounded native Mesh event snapshot with optional current endpoint joins; no history or roaming quality verdict.',
+    inputSchema: {}, annotations: READ_ONLY
+  }, guard(ctx, async () => compactOk(
+    budgetMeshEvents(await collectMeshEvents(ctx), ctx.maxResponseBytes), ctx.maxResponseBytes
   )));
   server.registerTool('diagnose_wifi', {
     title: 'Diagnose Wi-Fi health',

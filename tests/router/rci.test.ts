@@ -125,6 +125,17 @@ describe('Rci.post', () => {
   });
 });
 
+describe('Rci.readMeshLog', () => {
+  it('uses only the fixed native path, body, and finite byte limit', async () => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ log: {} })));
+    await expect(new Rci({ request }).readMeshLog()).resolves.toEqual({ log: {} });
+    expect(request).toHaveBeenCalledExactlyOnceWith('POST', '/rci/show/mws/log',
+      { once: true, 'max-lines': 20 });
+    request.mockResolvedValueOnce(new Response(JSON.stringify({ log: { text: 'x'.repeat(65_000) } })));
+    await expect(new Rci({ request }).readMeshLog()).rejects.toMatchObject({ code: 'response-too-large' });
+  });
+});
+
 describe('Rci.runContinued', () => {
   const iperfBody = { host: 'example.test', port: 5201, ipv4: true, tcp: true,
     bytes: 1_048_576, 'source-interface': 'Wireguard0' };

@@ -21,6 +21,15 @@ a path through the same tree you would walk in the CLI.
 | `GET /rci/` | the entire running configuration, about 35 KB |
 | `POST /rci/` | a command object, or an array of them for batching |
 
+On one characterized KN-1912 / KeeneticOS 5.1.5 Mesh network, native
+`POST /rci/show/mws/log` with fixed `{ "once": true, "max-lines": 20 }`
+returns a finite numeric-keyed `log` map of router-local timestamps, client
+and AP identifiers, optional `left` AP/band, band index and roam marker.
+This is a separate read-only endpoint, **not** the dispatcher `POST /rci/`;
+`Rci.post(body)` does not access it. The MCP tool projects at most 20
+privacy-minimized entries, never raw log rows or a continuous history.
+Availability and shape on other firmware are not established.
+
 The top level of the configuration tree:
 
 ```

@@ -17,6 +17,22 @@ projected; unknown telemetry, cost, speed and port labels are withheld. Optional
 bounded local bridge/version reads occur only for controller correlation and
 cannot erase valid membership on failure. An empty array, missing component,
 unsupported path, or error is not proof that no members are configured.
+An additional optional bounded `show/associations` read counts only local
+ordinary AccessPoint association rows (not unique clients or traffic); a
+malformed or unavailable response leaves the nullable controller count unknown
+without changing membership or topology.
+
+`get_mesh_events` reads one finite native Mesh log snapshot via fixed read-only
+`POST /rci/show/mws/log` (`once=true`, `max-lines=20`), not the command
+dispatcher `POST /rci/` or a generic raw POST. At most two optional bounded
+reads join event AP MACs to unique current extender or local controller AP
+identities. Failures keep usable log events with unknown endpoints. Client
+references are ordinal and local to the response; no raw client/AP MAC, log
+identifier, interface name, SSID, or arbitrary log field is returned. A
+malformed row makes the snapshot partial or unavailable, not truncated;
+`truncated` means an actual source-entry cap or output-budget trim. Empty
+snapshots do not establish continuous history, absence of problems, or roaming
+quality. A band index is not a GHz frequency or an active client path.
 
 The standalone `router snapshot <profile-id>` CLI command is outside the MCP
 tool registry. When explicitly invoked, it performs bounded read-only router

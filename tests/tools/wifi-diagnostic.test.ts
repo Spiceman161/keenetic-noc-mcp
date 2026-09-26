@@ -32,7 +32,13 @@ function setup(options: { values?: Record<string, unknown>; failures?: Record<st
     if (failure) throw failure;
     return responses[path];
   });
-  const client = { rci: { get } } as unknown as KeeneticClient;
+  const readMeshLog = vi.fn(async () => {
+    order.push('POST /rci/show/mws/log');
+    const failure = options.failures?.['POST /rci/show/mws/log'];
+    if (failure) throw failure;
+    return responses['POST /rci/show/mws/log'];
+  });
+  const client = { rci: { get, readMeshLog } } as unknown as KeeneticClient;
   const ctx: ToolContext = { client, maxResponseBytes: options.maxBytes ?? 25_000,
     readOnly: true, backup: stubBackup() };
   const server = new McpServer({ name: 'test', version: '0.0.0' });
@@ -44,7 +50,7 @@ function setup(options: { values?: Record<string, unknown>; failures?: Record<st
     return {} as never;
   }) as never);
   registerWifiDiagnosticTools(server, ctx);
-  return { handlers, configs, get, order };
+  return { handlers, configs, get, readMeshLog, order };
 }
 
 function payload(result: ToolResult): any {
@@ -79,7 +85,7 @@ describe('get_mesh_status', () => {
       'show/interface/Bridge0': { mac: controllerMac, password: 'secret-bridge' },
       'show/version': { model: 'KN-4567', release: '5.1.5', token: 'secret-version' } } });
     const result = payload(await fixture.handlers['get_mesh_status']!({}));
-    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/version']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/version', 'show/associations']);
     expect(result).toMatchObject({ status: 'observed', configuredMembers: 3, shown: 3,
       controller: { status: 'derived', ref: 'controller', model: 'KN-4567', firmware: '5.1.5' },
       members: [
@@ -109,7 +115,7 @@ describe('get_mesh_status', () => {
         unexpected: { opaque: 'opaque-offline-sentinel' } }
     ], 'show/interface/Bridge0': { mac: controllerMac }, 'show/version': { model: 'KN-4567' } } });
     const result = payload(await fixture.handlers['get_mesh_status']!({}));
-    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/version']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/version', 'show/associations']);
     expect(result.members).toMatchObject([
       { model: 'Buddy 5 (KN-3311)', hwId: 'KN-3311', displayName: 'BuddyOffice',
         associationCount: 0, firmware: '5.1.5', medium: 'wireless', backhaulDetails: null },
@@ -151,7 +157,7 @@ describe('get_mesh_status', () => {
     expect(result.members[0]).toMatchObject({ pollingError: true, associationCount: 7,
       displayName: 'BuddyOffice', firmware: null, medium: 'unknown', authenticated: null,
       backhaulDetails: null, parentKind: 'unknown' });
-    expect(fixture.order).toEqual(['show/mws/member']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/associations']);
   });
 
   it.each([null, -1, 0.1, 100_001, '0', Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER])(
@@ -203,7 +209,7 @@ describe('get_mesh_status', () => {
     expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({ members: [{
       pollingError: true, firmware: null, parentKind: 'unknown', backhaul: 'unknown', medium: 'unknown'
     }], controller: { status: 'unknown' } });
-    expect(fixture.order).toEqual(['show/mws/member']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/associations']);
   });
 
   it.each([
@@ -220,7 +226,7 @@ describe('get_mesh_status', () => {
         firmware: null, parentKind: 'unknown', parentRef: null, backhaul: 'unknown',
         medium: 'unknown', pollingError }]
     });
-    expect(fixture.order).toEqual(['show/mws/member']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/associations']);
   });
 
   it.each([undefined, '1', -1, 0.5])('does not infer current topology from errors %s', async (errors) => {
@@ -232,7 +238,7 @@ describe('get_mesh_status', () => {
       controller: { status: 'unknown', firmware: null }, members: [{ model: 'KN-1234',
         pollingError: null, parentKind: 'unknown', parentRef: null, backhaul: 'unknown',
         medium: 'unknown', firmware: null }] });
-    expect(fixture.order).toEqual(['show/mws/member']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/associations']);
   });
 
   it.each([{}, { bridge: `8000.${controllerMac}` },
@@ -244,7 +250,7 @@ describe('get_mesh_status', () => {
       expect(result).toMatchObject({ status: 'observed', configuredMembers: 1,
         controller: { status: 'unknown' }, members: [{ model: 'KN-1234', firmware: null,
           backhaul: 'unknown', medium: 'unknown', parentKind: 'unknown', parentRef: null }] });
-      expect(fixture.order).toEqual(['show/mws/member']);
+      expect(fixture.order).toEqual(['show/mws/member', 'show/associations']);
     });
 
   it.each([{ source: [{}] }, { source: [{}, rows[2]] },
@@ -278,10 +284,10 @@ describe('get_mesh_status', () => {
   });
 
   it.each([
-    ['show/interface/Bridge0', new AuthError('secret auth'), ['show/mws/member', 'show/interface/Bridge0']],
-    ['show/interface/Bridge0', new TransportError('secret transport'), ['show/mws/member', 'show/interface/Bridge0']],
-    ['show/version', new AuthError('secret auth'), ['show/mws/member', 'show/interface/Bridge0', 'show/version']],
-    ['show/version', new TransportError('secret transport'), ['show/mws/member', 'show/interface/Bridge0', 'show/version']]
+    ['show/interface/Bridge0', new AuthError('secret auth'), ['show/mws/member', 'show/interface/Bridge0', 'show/associations']],
+    ['show/interface/Bridge0', new TransportError('secret transport'), ['show/mws/member', 'show/interface/Bridge0', 'show/associations']],
+    ['show/version', new AuthError('secret auth'), ['show/mws/member', 'show/interface/Bridge0', 'show/version', 'show/associations']],
+    ['show/version', new TransportError('secret transport'), ['show/mws/member', 'show/interface/Bridge0', 'show/version', 'show/associations']]
   ] as const)('keeps primary on optional %s failure', async (path, failure, order) => {
     const fixture = setup({ values: { 'show/mws/member': rows, 'show/interface/Bridge0': { mac: controllerMac } },
       failures: { [path]: failure } });
@@ -298,7 +304,7 @@ describe('get_mesh_status', () => {
     const fixture = setup({ values: { 'show/mws/member': [rows[0], rows[0], rows[1]],
       'show/interface/Bridge0': { mac: '02:00:00:00:00:ff' } } });
     const result = payload(await fixture.handlers['get_mesh_status']!({}));
-    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0']);
+    expect(fixture.order).toEqual(['show/mws/member', 'show/interface/Bridge0', 'show/associations']);
     expect(result).toMatchObject({ controller: { status: 'unknown' },
       members: [{ parentRef: null }, { parentRef: null }, { parentKind: 'extender', parentRef: null }] });
   });
@@ -336,6 +342,153 @@ describe('get_mesh_status', () => {
       status: 'unavailable', reason: 'response-too-large', configuredMembers: null
     });
     expect(fixture.order).toEqual(['show/mws/member']);
+  });
+});
+
+describe('bounded Mesh controller associations and native events', () => {
+  const extender = '02:00:00:00:00:21';
+  const controller = '02:00:00:00:00:22';
+  const other = '02:00:00:00:00:23';
+  const client = '02:00:00:00:00:31';
+  const member = { mac: extender, mode: 'extender', hw_type: 'extender', 'known-host': 'MeshOffice' };
+  const interfaces = { ap0: { mac: controller, type: 'AccessPoint', group: 'Bridge0', ssid: 'private-ssid' } };
+  const event = { timestamp: 'Sep 26 01:13:51', mac: client, left: { ap: controller, band: 0 },
+    ap: extender, band: 1, roam: 'ft', id: 'secret-event-id', segment: 'private-segment' };
+
+  it('counts association rows, excluding known backhaul, and verifies empty station', async () => {
+    const fixture = setup({ values: { 'show/mws/member': [member], 'show/associations': {
+      station: [{ ap: 'WifiMaster0/AccessPoint0' }, { ap: 'WifiMaster0/AccessPoint0', mac: client },
+        { ap: 'WifiMaster0/Backhaul0' }] } } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'observed', controller: { associationCount: 2 }, sources: { associations: null }
+    });
+    expect(fixture.order).toEqual(['show/mws/member', 'show/associations']);
+    const zero = setup({ values: { 'show/mws/member': [member], 'show/associations': { station: [] } } });
+    expect(payload(await zero.handlers['get_mesh_status']!({})).controller.associationCount).toBe(0);
+  });
+
+  it.each([
+    [{ station: [{ ap: 'WifiMaster0/AccessPoint0' }, { ap: 'other' }] }, 'unexpected-response'],
+    [{ station: [{ ap: 1 }] }, 'unexpected-response'],
+    [{}, 'unexpected-response'],
+    [[], 'unexpected-response']
+  ])('preserves member evidence on invalid optional association %j', async (source, reason) => {
+    const fixture = setup({ values: { 'show/mws/member': [member], 'show/associations': source } });
+    expect(payload(await fixture.handlers['get_mesh_status']!({}))).toMatchObject({
+      status: 'observed', configuredMembers: 1, members: [{ ref: 'member-1' }],
+      controller: { associationCount: null }, sources: { associations: reason }
+    });
+  });
+
+  it.each([new AuthError('private'), new TransportError('private'),
+    new RciError('private', { path: 'show/associations', code: 'response-too-large', ident: 'rci' })])(
+    'retains primary status on optional error %s', async error => {
+      const fixture = setup({ values: { 'show/mws/member': [member] }, failures: { 'show/associations': error } });
+      const report = payload(await fixture.handlers['get_mesh_status']!({}));
+      expect(report).toMatchObject({ status: 'observed', members: [{ ref: 'member-1' }],
+        controller: { associationCount: null } });
+      expect(JSON.stringify(report)).not.toContain('private');
+      expect(fixture.readMeshLog).not.toHaveBeenCalled();
+    });
+
+  it('projects independent transition endpoints and response-local client references', async () => {
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': { log: {
+      '10': { ...event, left: { ap: extender, band: 0 }, ap: controller, band: 1 },
+      '2': event,
+      '11': { ...event, mac: other, left: undefined, ap: extender, band: 7, roam: 'unknown' },
+      '12': { ...event, mac: client, left: { ap: extender, band: 1 }, ap: extender, band: 0 },
+      '13': { ...event, mac: other, ap: undefined, left: { ap: controller, band: 0 } }
+    } }, 'show/mws/member': [member], 'show/interface': interfaces } });
+    const result = payload(await fixture.handlers['get_mesh_events']!({}));
+    expect(fixture.order).toEqual(['POST /rci/show/mws/log', 'show/mws/member', 'show/interface']);
+    expect(fixture.configs['get_mesh_events']?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+    expect(result).toMatchObject({ schemaVersion: 1, status: 'observed', shown: 5, truncated: false,
+      sources: { log: null, members: null, interfaces: null }, events: [
+        { type: 'transition', clientRef: 'client-1', fromNode: { kind: 'controller', ref: 'controller' },
+          toNode: { kind: 'extender', ref: 'member-1', displayName: 'MeshOffice' },
+          fromBandIndex: 0, toBandIndex: 1, roamMethod: 'ft', timestamp: 'Sep 26 01:13:51' },
+        { type: 'transition', clientRef: 'client-1', fromNode: { kind: 'extender' }, toNode: { kind: 'controller' } },
+        { type: 'association', clientRef: 'client-2', fromNode: null, toBandIndex: null, roamMethod: null },
+        { type: 'transition', clientRef: 'client-1', fromNode: { ref: 'member-1' },
+          toNode: { ref: 'member-1' } },
+        { type: 'departure', clientRef: 'client-2', toNode: null, toBandIndex: null }
+      ] });
+    expect(JSON.stringify(result)).not.toMatch(/02:00:00|secret-|private-|WifiMaster|ssid|segment|"id":/);
+  });
+
+  it('keeps usable rows on malformed rows without falsely setting truncated', async () => {
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': { log: {
+      '0': { ...event, mac: 'invalid' }, '1': event,
+      '2': { ...event, left: { ap: 'invalid', band: 0 } }
+    } }, 'show/mws/member': [], 'show/interface': {} } });
+    expect(payload(await fixture.handlers['get_mesh_events']!({}))).toMatchObject({
+      status: 'observed', reason: 'unexpected-response', shown: 1, truncated: false,
+      sources: { log: 'unexpected-response', members: 'unexpected-response', interfaces: 'unexpected-response' },
+      events: [{ fromNode: { kind: 'unknown', ref: null, displayName: null },
+        toNode: { kind: 'unknown', ref: null, displayName: null } }]
+    });
+  });
+
+  it('rejects ambiguous, unmatched, and conflicting AP joins without losing events', async () => {
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': { log: {
+      '0': event, '1': { ...event, mac: other, ap: other }
+    } }, 'show/mws/member': [member, { ...member, mac: extender.toUpperCase() }],
+    'show/interface': { ...interfaces, duplicate: { ...interfaces.ap0 } } } });
+    const report = payload(await fixture.handlers['get_mesh_events']!({}));
+    expect(report).toMatchObject({ status: 'observed', shown: 2, truncated: false,
+      events: [
+        { fromNode: { kind: 'unknown', ref: null }, toNode: { kind: 'unknown', ref: null } },
+        { toNode: { kind: 'unknown', ref: null } }
+      ] });
+    const conflict = setup({ values: { 'POST /rci/show/mws/log': { log: { '0': event } },
+      'show/mws/member': [member], 'show/interface': { ap0: { ...interfaces.ap0, mac: extender } } } });
+    expect(payload(await conflict.handlers['get_mesh_events']!({})).events[0].toNode)
+      .toMatchObject({ kind: 'unknown', ref: null });
+  });
+
+  it.each(['show/mws/member', 'show/interface'])('fails soft on optional %s read', async path => {
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': { log: { '0': event } },
+      'show/mws/member': [member], 'show/interface': interfaces },
+    failures: { [path]: new AuthError('secret-credential') } });
+    const report = payload(await fixture.handlers['get_mesh_events']!({}));
+    expect(report).toMatchObject({ status: 'observed', shown: 1, truncated: false,
+      sources: { [path === 'show/mws/member' ? 'members' : 'interfaces']: 'authentication-error' } });
+    expect(report.events[0][path === 'show/mws/member' ? 'toNode' : 'fromNode'].kind).toBe('unknown');
+    expect(JSON.stringify(report)).not.toContain('secret-credential');
+  });
+
+  it('reports only unavailable on malformed rows with no usable event', async () => {
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': { log: {
+      '0': { mac: client, ap: 'not-a-mac', id: 'secret' }
+    } } } });
+    expect(payload(await fixture.handlers['get_mesh_events']!({}))).toMatchObject({
+      status: 'unavailable', reason: 'unexpected-response', shown: 0, truncated: false,
+      sources: { log: 'unexpected-response', members: 'not-requested', interfaces: 'not-requested' }
+    });
+    expect(fixture.order).toEqual(['POST /rci/show/mws/log']);
+  });
+
+  it('skips enrichment on empty, invalid or failed log reads', async () => {
+    for (const [log, status] of [[{ log: {} }, 'observed'], [{ wrong: {} }, 'unavailable']] as const) {
+      const fixture = setup({ values: { 'POST /rci/show/mws/log': log } });
+      expect(payload(await fixture.handlers['get_mesh_events']!({}))).toMatchObject({ status, events: [],
+        sources: { members: 'not-requested', interfaces: 'not-requested' } });
+      expect(fixture.order).toEqual(['POST /rci/show/mws/log']);
+    }
+    const failed = setup({ failures: { 'POST /rci/show/mws/log': new AuthError('secret') } });
+    expect(payload(await failed.handlers['get_mesh_events']!({}))).toMatchObject({ status: 'unavailable',
+      reason: 'authentication-error', truncated: false });
+    expect(failed.order).toEqual(['POST /rci/show/mws/log']);
+  });
+
+  it('marks actual entry and output trimming only', async () => {
+    const log = { log: Object.fromEntries(Array.from({ length: 21 }, (_, index) => [String(index), event])) };
+    const fixture = setup({ values: { 'POST /rci/show/mws/log': log } });
+    expect(payload(await fixture.handlers['get_mesh_events']!({}))).toMatchObject({ shown: 20, truncated: true });
+    const small = setup({ values: { 'POST /rci/show/mws/log': log }, maxBytes: 300 });
+    const output = await small.handlers['get_mesh_events']!({});
+    expect(Buffer.byteLength(output.content[0]!.text!, 'utf8')).toBeLessThanOrEqual(300);
+    expect(payload(output)).toMatchObject({ shown: 0, truncated: true, sources: { log: null } });
   });
 });
 

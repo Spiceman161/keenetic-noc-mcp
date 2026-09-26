@@ -173,8 +173,8 @@ export interface MeshReport {
   configuredMembers: number | null;
   members: MeshMember[];
   shown: number;
-  controller: { status: 'derived' | 'unknown'; ref: 'controller' | null; model: string | null; firmware: string | null };
-  sources: { members: SafeReason | null; bridge: SafeReason | 'not-requested' | null; version: SafeReason | 'not-requested' | null };
+  controller: { status: 'derived' | 'unknown'; ref: 'controller' | null; model: string | null; firmware: string | null; associationCount: number | null };
+  sources: { members: SafeReason | null; bridge: SafeReason | 'not-requested' | null; version: SafeReason | 'not-requested' | null; associations: SafeReason | 'not-requested' | null };
   truncated: boolean;
   untrustedRouterData: true;
 }
@@ -304,17 +304,18 @@ export function projectMeshMembers(
     members, shown: members.length,
     controller: { status: controllerDerived ? 'derived' : 'unknown', ref: controllerDerived ? 'controller' : null,
       model: controllerDerived && meshRecord(version) ? meshModel(version['model']) : null,
-      firmware: controllerDerived && meshRecord(version) ? meshFirmware(version['release'] ?? version['title']) : null },
-    sources: { members: null, bridge: 'not-requested', version: 'not-requested' },
+      firmware: controllerDerived && meshRecord(version) ? meshFirmware(version['release'] ?? version['title']) : null,
+      associationCount: null },
+    sources: { members: null, bridge: 'not-requested', version: 'not-requested', associations: 'not-requested' },
     truncated: false, untrustedRouterData: true
   };
 }
 
 export function emptyMeshReport(status: MeshReport['status'], reason: MeshReport['reason']): MeshReport {
   return { schemaVersion: 1, status, reason, configuredMembers: status === 'observed' ? 0 : null,
-    members: [], shown: 0, controller: { status: 'unknown', ref: null, model: null, firmware: null },
+    members: [], shown: 0, controller: { status: 'unknown', ref: null, model: null, firmware: null, associationCount: null },
     sources: { members: status === 'unavailable' && reason !== 'member-limit' && reason !== 'unverified-empty-array'
-      ? reason : null, bridge: 'not-requested', version: 'not-requested' },
+      ? reason : null, bridge: 'not-requested', version: 'not-requested', associations: 'not-requested' },
     truncated: reason === 'member-limit', untrustedRouterData: true };
 }
 
@@ -327,6 +328,128 @@ export function budgetMeshReport(report: MeshReport, maxBytes: number): MeshRepo
   if (Buffer.byteLength(JSON.stringify(redact(report)), 'utf8') > maxBytes) {
     report.controller.model = null;
     report.controller.firmware = null;
+    report.truncated = true;
+  }
+  return report;
+}
+
+export function controllerAssociations(value: unknown): number | null {
+  if (!meshRecord(value) || !Array.isArray(value['station'])) return null;
+  let count = 0;
+  for (const row of value['station']) {
+    if (!meshRecord(row) || typeof row['ap'] !== 'string') return null;
+    if (/^WifiMaster\d+\/AccessPoint\d+$/.test(row['ap'])) count += 1;
+    else if (!/^WifiMaster\d+\/Backhaul\d+$/.test(row['ap'])) return null;
+  }
+  return count;
+}
+
+export interface MeshEventNode {
+  kind: 'controller' | 'extender' | 'unknown';
+  ref: string | null;
+  displayName: string | null;
+}
+
+export interface MeshEvent {
+  timestamp: string | null;
+  clientRef: string;
+  type: 'transition' | 'association' | 'departure';
+  fromNode: MeshEventNode | null;
+  toNode: MeshEventNode | null;
+  fromBandIndex: 0 | 1 | null;
+  toBandIndex: 0 | 1 | null;
+  roamMethod: 'ft' | null;
+}
+
+export interface MeshEventsReport {
+  schemaVersion: 1;
+  status: 'observed' | 'unavailable';
+  reason: SafeReason | null;
+  events: MeshEvent[];
+  shown: number;
+  truncated: boolean;
+  sources: { log: SafeReason | null; members: SafeReason | 'not-requested' | null;
+    interfaces: SafeReason | 'not-requested' | null };
+  untrustedRouterData: true;
+}
+
+export function emptyMeshEvents(reason: SafeReason | null = null): MeshEventsReport {
+  return { schemaVersion: 1, status: reason === null ? 'observed' : 'unavailable', reason,
+    events: [], shown: 0, truncated: false,
+    sources: { log: reason, members: 'not-requested', interfaces: 'not-requested' },
+    untrustedRouterData: true };
+}
+
+export function projectMeshEvents(value: unknown, members: unknown, interfaces: unknown): MeshEventsReport {
+  if (!meshRecord(value) || !meshRecord(value['log'])) return emptyMeshEvents('unexpected-response');
+  const report = emptyMeshEvents();
+  const entries = Object.entries(value['log']);
+  const keys = entries.filter(([key]) => /^(?:0|[1-9]\d*)$/.test(key) && Number.isSafeInteger(Number(key)))
+    .sort(([first], [second]) => Number(first) - Number(second));
+  if (keys.length !== entries.length) report.sources.log = report.reason = 'unexpected-response';
+  if (keys.length > 20) report.truncated = true;
+  const memberRows = Array.isArray(members) && members.length > 0 && members.length <= 32 && validMeshMembers(members)
+    ? members : null;
+  const interfaceRows = meshRecord(interfaces) && Object.values(interfaces).every(meshRecord)
+    ? Object.values(interfaces) as Array<Record<string, unknown>> : null;
+  const clients = new Map<string, string>();
+  function endpoint(identity: string): MeshEventNode {
+    const matchingMembers = memberRows?.flatMap((row, index) => meshIdentity(row['mac']) === identity
+      ? [index] : []) ?? [];
+    const matchingInterfaces = interfaceRows?.filter(row => meshIdentity(row['mac']) === identity) ?? [];
+    if (matchingMembers.length === 1 && memberRows![matchingMembers[0]!]!['mode'] === 'extender' &&
+      memberRows![matchingMembers[0]!]!['hw_type'] === 'extender' &&
+      matchingInterfaces.length === 0) {
+      const index = matchingMembers[0]!;
+      return { kind: 'extender', ref: `member-${index + 1}`,
+        displayName: meshSafeLabel(memberRows![index]!['known-host']) };
+    }
+    if (matchingMembers.length === 0 && matchingInterfaces.length === 1 &&
+      matchingInterfaces[0]!['type'] === 'AccessPoint' && matchingInterfaces[0]!['group'] === 'Bridge0') {
+      return { kind: 'controller', ref: 'controller', displayName: null };
+    }
+    return { kind: 'unknown', ref: null, displayName: null };
+  }
+  for (const [, raw] of keys.slice(0, 20)) {
+    if (!meshRecord(raw)) { report.sources.log = report.reason = 'unexpected-response'; continue; }
+    const client = meshIdentity(raw['mac']);
+    const hasArrival = raw['ap'] !== undefined;
+    const hasDeparture = raw['left'] !== undefined;
+    const arrival = hasArrival ? meshIdentity(raw['ap']) : null;
+    const departure = hasDeparture && meshRecord(raw['left']) ? meshIdentity(raw['left']['ap']) : null;
+    if (client === null || (!hasArrival && !hasDeparture) || (hasArrival && arrival === null) ||
+      (hasDeparture && departure === null)) {
+      report.sources.log = report.reason = 'unexpected-response';
+      continue;
+    }
+    let clientRef = clients.get(client);
+    if (clientRef === undefined) {
+      clientRef = `client-${clients.size + 1}`;
+      clients.set(client, clientRef);
+    }
+    const band = (candidate: unknown): 0 | 1 | null => candidate === 0 || candidate === 1 ? candidate : null;
+    report.events.push({
+      timestamp: typeof raw['timestamp'] === 'string' &&
+        /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(?:[1-9]|[12]\d|3[01])\s+(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(raw['timestamp'])
+        ? raw['timestamp'] : null,
+      clientRef,
+      type: hasArrival && hasDeparture ? 'transition' : hasArrival ? 'association' : 'departure',
+      fromNode: departure === null ? null : endpoint(departure),
+      toNode: arrival === null ? null : endpoint(arrival),
+      fromBandIndex: hasDeparture && meshRecord(raw['left']) ? band(raw['left']['band']) : null,
+      toBandIndex: hasArrival ? band(raw['band']) : null,
+      roamMethod: raw['roam'] === 'ft' ? 'ft' : null
+    });
+  }
+  report.shown = report.events.length;
+  if (report.events.length === 0 && report.reason !== null) report.status = 'unavailable';
+  return report;
+}
+
+export function budgetMeshEvents(report: MeshEventsReport, maxBytes: number): MeshEventsReport {
+  while (report.events.length > 0 && Buffer.byteLength(JSON.stringify(redact(report)), 'utf8') > maxBytes) {
+    report.events.pop();
+    report.shown = report.events.length;
     report.truncated = true;
   }
   return report;

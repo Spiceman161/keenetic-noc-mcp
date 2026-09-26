@@ -6,7 +6,7 @@ Read tools: `get_system_info`, `get_config_state`, `get_connection_status`,
 `list_policies`, `list_devices`, `get_device`, `get_wifi_status`, `list_vpn`,
 `get_vpn`, `get_dns_status`, `get_logs`, `get_logs_by_device`, `list_segments`,
 `list_dns_upstreams`, `diagnose_dns`, `diagnose_device`, `diagnose_wifi`,
-`get_wifi_client_health`, `get_mesh_status`, `compare_router_state`, `get_recent_changes`,
+`get_wifi_client_health`, `get_mesh_status`, `get_mesh_events`, `compare_router_state`, `get_recent_changes`,
 and bounded raw `rci_call` GET.
 
 ## System information
@@ -215,6 +215,24 @@ stale link observations. Only a matching local
 `Bridge0` identity derives a controller reference; local version is optional
 and is read only after that match. Failed optional reads retain the member report.
 MACs, interface identifiers, SSIDs and unknown router fields are not returned.
+An additional optional `show/associations` read counts ordinary local
+AccessPoint association rows in `controller.associationCount`; it neither
+deduplicates clients nor measures traffic/load. Verified `station: []` means
+zero; malformed, unsupported or failed responses yield null and a sanitized
+`sources.associations` reason without changing the Mesh primary report.
+
+`get_mesh_events` takes `{}` and reads one finite native Mesh log snapshot
+(`POST /rci/show/mws/log`, fixed `once=true`, `max-lines=20`), never as part
+of `get_mesh_status`. Optional bounded member and broad interface reads only
+resolve exact unique current extender/controller AP MAC matches; missing,
+ambiguous or failed joins leave event endpoints unknown. Rows independently
+describe transitions, associations or departures with response-local client
+and member refs, native router-local timestamp when valid, exact `ft` marker,
+and numeric band index 0 or 1 (not GHz). A valid empty log is a zero-row
+snapshot, not evidence of no problem or ongoing history. Malformed skipped
+rows carry a partial/unavailable reason; `truncated` records only actual
+source-entry or output trimming. No raw identifiers, roaming quality score,
+channel, or causal inter-row history is exposed.
 `get_wifi_client_health` accepts exactly one of `mac`, `ip`, or `name`, using the
 same normalization and ambiguity rules as `diagnose_device`. It resolves the
 bounded hotspot list first, then reads associations and interfaces. Only the

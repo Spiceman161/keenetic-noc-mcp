@@ -29,6 +29,7 @@ const READ_TOOLS = [
   'get_logs',
   'get_logs_by_device',
   'get_mesh_status',
+  'get_mesh_events',
   'get_config_diff',
   'compare_router_state',
   'get_recent_changes',
